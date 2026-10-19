@@ -17,7 +17,10 @@ export default defineNuxtConfig({
           content: 'A focused pull request review workspace. Read diffs, leave comments, and submit reviews with GitHub.',
         },
       ],
-      link: [{ rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' }],
+      link: [
+        { rel: 'icon', href: '/favicon.ico', sizes: '48x48' },
+        { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' },
+      ],
     },
   },
 });

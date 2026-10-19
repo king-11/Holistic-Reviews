@@ -3,17 +3,9 @@
   padding-bottom: 8px;
 }
 .brand-mark {
-  background: var(--color-brand);
-  color: var(--color-white);
   height: 28px;
   width: 28px;
   border-radius: var(--radius-lg);
-  display: grid;
-  place-items: center;
-}
-.brand-mark svg {
-  width: 24px;
-  height: 24px;
 }
 .header-connect {
   font-size: var(--text-xs);

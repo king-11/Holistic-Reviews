@@ -27,6 +27,7 @@ import '@fontsource-variable/geist';
 import '@fontsource-variable/geist-mono';
 import './styles.css';
 import styles from './App.module.css';
+import logoUrl from './assets/hermes-logo.png';
 
 const defaults: DiffSettings = {
   layout: 'unified',
@@ -244,17 +245,7 @@ export default defineComponent(() => {
           disabled={mutationBusy.value}
           aria-label="Review home"
         >
-          <span class={`${styles['brand-mark']}`}>
-            <svg viewBox="0 0 28 28" fill="none">
-              <path
-                d="M7 6v16m0-8h7m0 0 7-7m-7 7 7 7"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-          </span>
+          <img class={`${styles['brand-mark']}`} src={logoUrl} alt="" width={28} height={28} />
           <span>
             review<span class="text-indigo">.</span>
           </span>
