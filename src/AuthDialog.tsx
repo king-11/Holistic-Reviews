@@ -4,6 +4,9 @@ import { GitHub, type TokenInfo } from './github';
 import { Github, Modal, Spinner, inputValue } from './ui';
 import styles from './AuthDialog.module.css';
 
+const tokenName = 'Holistic Review App Token';
+const tokenUrl = `https://github.com/settings/tokens/new?scopes=repo,read:org,workflow&description=${encodeURIComponent(tokenName)}`;
+
 export default defineComponent(
   (props: { onClose: () => void; onConnect: (token: string, info: TokenInfo) => void }) => {
     const token = ref('');
@@ -31,7 +34,8 @@ export default defineComponent(
         busy.value = false;
       }
     }
-    const command = 'gh auth login --scopes repo,read:org\n# If already logged in: gh auth refresh --scopes repo,read:org\ngh auth token';
+    const command =
+      'gh auth login --scopes repo,read:org,workflow\n# If already logged in: gh auth refresh --scopes repo,read:org,workflow\ngh auth token';
     return () => (
       <Modal title="Connect to GitHub" subtitle="Your reviews, right where you need them." onClose={props.onClose}>
         <div class={`flex items-center gap-3 pt-0 ${styles['pb-6']} px-0 text-xs text-secondary leading-relaxed`}>
@@ -65,13 +69,12 @@ export default defineComponent(
           </button>
         </div>
         <details class={`${styles['token-help']}`}>
-          <summary>Using a fine-grained personal access token?</summary>
+          <summary>Prefer to create a personal access token on GitHub?</summary>
           <p>
-            Select the repositories you want to review. Set <strong>Pull requests: Read and write</strong> and{' '}
-            <strong>Contents: Read</strong> for surrounding file context. Metadata read is automatic. Classic tokens need <code>repo</code>{' '}
-            for private repositories, or <code>public_repo</code> for public repositories only. Authorize organization SSO if required.
+            The link opens a classic token named <strong>{tokenName}</strong> with the <code>repo</code>, <code>read:org</code> and{' '}
+            <code>workflow</code> scopes already selected. Pick an expiration, generate it, and authorize organization SSO if required.
           </p>
-          <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">
+          <a href={tokenUrl} target="_blank" rel="noopener noreferrer">
             Create a token on GitHub <ArrowUpRight size={13} />
           </a>
         </details>

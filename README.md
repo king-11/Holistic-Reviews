@@ -20,13 +20,15 @@ Select **Connect GitHub** and paste a personal token. The app validates your ide
 Generate a classic token locally using the GitHub CLI:
 
 ```sh
-gh auth login --scopes repo,read:org
+gh auth login --scopes repo,read:org,workflow
 # If already logged in:
-gh auth refresh --scopes repo,read:org
+gh auth refresh --scopes repo,read:org,workflow
 gh auth token
 ```
 
-Never share the output in chat. Classic tokens need `repo` for private repositories (`public_repo` for public-only use). Fine-grained PATs need access to the selected repositories, **Pull requests: Read and write**, and **Contents: Read** for full-file context; repository metadata read is automatic. Organization SSO authorization may be required. Identity and reported classic scopes are validated; fine-grained grants and organization policies are enforced by GitHub on each request, not claimed as verified.
+Or [create a classic token on GitHub](https://github.com/settings/tokens/new?scopes=repo,read:org,workflow&description=Holistic%20Review%20App%20Token): the link pre-fills the name **Holistic Review App Token** and the `repo`, `read:org` and `workflow` scopes; pick an expiration and generate it.
+
+Never share the output in chat. Classic tokens need `repo` for private repositories (`public_repo` for public-only use). Organization SSO authorization may be required. Identity and reported classic scopes are validated; fine-grained grants and organization policies are enforced by GitHub on each request, not claimed as verified.
 
 ## Review workflow
 
