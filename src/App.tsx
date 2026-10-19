@@ -1,21 +1,7 @@
 import { computed, defineComponent, onMounted, onUnmounted, shallowRef } from 'vue';
 import { AnimatePresence } from 'motion-v';
-import {
-  ArrowRight,
-  ArrowUpRight,
-  Check,
-  ChevronDown,
-  Command,
-  Keyboard,
-  KeyRound,
-  LogOut,
-  Palette,
-  Search,
-  ShieldCheck,
-  X,
-} from '@lucide/vue';
-import { GitHub, mergeabilityPending, parsePRUrl, type InboxItem, type PRRef, type TokenInfo, type Workspace } from './github';
-import { demoPR, demoWorkspace } from './demo';
+import { ArrowRight, Check, ChevronDown, Command, Keyboard, KeyRound, LogOut, Palette, Search, ShieldCheck, X } from '@lucide/vue';
+import { GitHub, errorMessage, mergeabilityPending, parsePRUrl, type PRRef, type TokenInfo, type Workspace } from './github';
 import AuthDialog from './AuthDialog';
 import { comboKeys, eventCombo, modalOpen, shortcutGroups } from './shortcuts';
 import Inbox from './Inbox';
@@ -115,18 +101,25 @@ export default defineComponent(() => {
     loading.value = false;
     window.history.replaceState(null, '', window.location.pathname);
   }
-  async function openPR(url: string, item?: InboxItem, refresh = false) {
+  async function openPR(url: string, refresh = false) {
     if (mutationBusy.value) return;
     let ref;
     try {
       ref = parsePRUrl(url);
     } catch (error) {
-      openError.value = error instanceof Error ? error.message : 'Invalid URL.';
+      openError.value = errorMessage(error, 'Invalid URL.');
       return;
     }
     openDialog.value = false;
     openError.value = '';
     error.value = '';
+    // connect() opens the remembered PR once a token is in place.
+    const live = api.value;
+    if (!live) {
+      window.history.replaceState(null, '', `${window.location.pathname}?pr=${encodeURIComponent(url)}`);
+      authOpen.value = true;
+      return;
+    }
     controller?.abort();
     controller = new AbortController();
     const version = ++loadVersion;
@@ -136,40 +129,25 @@ export default defineComponent(() => {
       loading.value = true;
     }
     // A refresh follows a write or a manual click, so it must not reuse a cached read.
-    const client = refresh ? (api.value?.fresh() ?? null) : api.value;
+    const client = refresh ? live.fresh() : live;
     try {
-      const result = client
-        ? await client.workspace(ref, controller.signal, value => {
-            if (version !== loadVersion) return;
-            workspace.value = value;
-            loading.value = false;
-          })
-        : demoWorkspace(
-            item
-              ? {
-                  ...demoPR,
-                  id: item.id,
-                  number: item.number,
-                  title: item.title,
-                  user: item.user,
-                  draft: item.draft,
-                  html_url: item.html_url,
-                  base: { ...demoPR.base, repo: { id: 1, full_name: `${ref.owner}/${ref.repo}` } },
-                }
-              : demoPR,
-          );
+      const result = await client.workspace(ref, controller.signal, value => {
+        if (version !== loadVersion) return;
+        workspace.value = value;
+        loading.value = false;
+      });
       if (version !== loadVersion) return;
       workspace.value = result;
       recheckMergeability(ref, version);
       window.history.replaceState(
         null,
         '',
-        `${window.location.pathname}?pr=${encodeURIComponent(client ? `https://github.com/${ref.owner}/${ref.repo}/pull/${ref.number}` : result.pr.html_url)}`,
+        `${window.location.pathname}?pr=${encodeURIComponent(`https://github.com/${ref.owner}/${ref.repo}/pull/${ref.number}`)}`,
       );
     } catch (failure) {
       if (version === loadVersion && !controller.signal.aborted) {
         workspace.value = null;
-        error.value = failure instanceof Error ? failure.message : 'Unable to load the pull request.';
+        error.value = errorMessage(failure, 'Unable to load the pull request.');
       }
     } finally {
       if (version === loadVersion) loading.value = false;
@@ -224,7 +202,7 @@ export default defineComponent(() => {
         .catch(error => {
           if (restore.signal.aborted) return;
           tryStorage(() => sessionStorage.removeItem('review.github-token'));
-          storageNotice.value = error instanceof Error ? error.message : 'Reconnect to GitHub.';
+          storageNotice.value = errorMessage(error, 'Reconnect to GitHub.');
         })
         .finally(() => (restoring.value = false));
     }
@@ -251,6 +229,23 @@ export default defineComponent(() => {
       document.removeEventListener('keydown', keyHandler);
     });
   });
+  const connectButton = (variant: string) => (
+    <button
+      class={`button ${variant}`}
+      title="Connect your GitHub account to load PRs and submit feedback"
+      disabled={restoring.value}
+      onClick={() => (authOpen.value = true)}
+    >
+      {restoring.value ? (
+        <Spinner text="Connecting…" />
+      ) : (
+        <>
+          <Github size={15} />
+          Connect GitHub
+        </>
+      )}
+    </button>
+  );
   return () => (
     <div class={`app min-h-screen bg-surface`}>
       <header class="global-header">
@@ -384,21 +379,7 @@ export default defineComponent(() => {
               </div>
             </>
           ) : (
-            <button
-              class={`button ${styles['header-connect']}`}
-              title="Connect your GitHub account to load PRs and submit feedback"
-              disabled={restoring.value}
-              onClick={() => (authOpen.value = true)}
-            >
-              {restoring.value ? (
-                <Spinner text="Connecting…" />
-              ) : (
-                <>
-                  <Github size={15} />
-                  Connect GitHub
-                </>
-              )}
-            </button>
+            connectButton(styles['header-connect'])
           )}
         </div>
       </header>
@@ -412,7 +393,14 @@ export default defineComponent(() => {
           </div>
         </>
       )}
-      {page.value === 'review' ? (
+      {!api.value || !info.value ? (
+        <main class="empty-state">
+          <Github size={35} />
+          <h2>Connect GitHub to start reviewing</h2>
+          <p>Your review requests, authored PRs, and drafts load straight from GitHub.</p>
+          {connectButton('primary')}
+        </main>
+      ) : page.value === 'review' ? (
         <>
           {!loading.value ? (
             <>
@@ -426,7 +414,7 @@ export default defineComponent(() => {
                     onSettings={changeSettings}
                     onOpen={url => void openPR(url)}
                     onBack={back}
-                    onRefresh={() => void openPR(workspace.value!.pr.html_url, undefined, true)}
+                    onRefresh={() => void openPR(workspace.value!.pr.html_url, true)}
                     onBusy={value => {
                       mutationBusy.value = value;
                     }}
@@ -461,8 +449,7 @@ export default defineComponent(() => {
         <Inbox
           api={api.value}
           info={info.value}
-          onOpen={(url, item) => void openPR(url, item)}
-          onConnect={() => (authOpen.value = true)}
+          onOpen={url => void openPR(url)}
           onOpenDialog={() => {
             prUrl.value = '';
             openError.value = '';
@@ -482,17 +469,7 @@ export default defineComponent(() => {
             <form
               onSubmit={event => {
                 event.preventDefault();
-                if (!api.value) {
-                  try {
-                    parsePRUrl(prUrl.value);
-                  } catch (error) {
-                    openError.value = error instanceof Error ? error.message : 'Invalid URL.';
-                    return;
-                  }
-                  openDialog.value = false;
-                  authOpen.value = true;
-                  window.history.replaceState(null, '', `${window.location.pathname}?pr=${encodeURIComponent(prUrl.value)}`);
-                } else void openPR(prUrl.value);
+                void openPR(prUrl.value);
               }}
             >
               <label class="input-label" for="pr-url">
@@ -519,22 +496,9 @@ export default defineComponent(() => {
               <p class="submission-note">
                 {api.value
                   ? 'Uses your connected GitHub token. Private repository and SSO access may be required.'
-                  : 'Connect GitHub next to open a real PR. You can explore the sample without a token.'}
+                  : 'You’ll connect GitHub next, then this pull request opens.'}
               </p>
               <div class="modal-footer">
-                {!api.value && (
-                  <>
-                    <button
-                      class="button"
-                      title="Explore sample data without connecting to GitHub"
-                      type="button"
-                      onClick={() => void openPR(demoPR.html_url)}
-                    >
-                      Explore sample
-                      <ArrowUpRight size={13} />
-                    </button>
-                  </>
-                )}
                 <button
                   class="button primary"
                   title={

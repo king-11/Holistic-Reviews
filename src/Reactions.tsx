@@ -2,7 +2,7 @@ import { defineComponent, onMounted, onUnmounted, shallowRef, Teleport, watch } 
 import { motion } from 'motion-v';
 import { pop } from './motion';
 import { SmilePlus } from '@lucide/vue';
-import type { GitHub, PRRef, ReactionContent, ReactionSubject, Reactions } from './github';
+import { errorMessage, type GitHub, type PRRef, type ReactionContent, type ReactionSubject, type Reactions } from './github';
 import styles from './Reactions.module.css';
 
 export const reactionChoices: { content: ReactionContent; emoji: string; label: string }[] = [
@@ -28,9 +28,9 @@ export interface ReactionActions {
 }
 const initial: ReactionState = { reactionGroups: [], viewerCanReact: false, loading: false, loaded: false, busy: false, error: '' };
 
-export function createReactionActions(api: () => GitHub | null, ref: () => PRRef, viewerId: () => number): ReactionActions {
+export function createReactionActions(api: () => GitHub, ref: () => PRRef, viewerId: () => number): ReactionActions {
   const states = shallowRef<Record<string, ReactionState>>({});
-  const key = (comment: ReactionSubject) => comment.node_id || `demo-${comment.id}`;
+  const key = (comment: ReactionSubject) => comment.node_id ?? String(comment.id);
   const state = (comment: ReactionSubject) => states.value[key(comment)] || initial;
   const update = (comment: ReactionSubject, patch: Partial<ReactionState>) => {
     states.value = { ...states.value, [key(comment)]: { ...(states.value[key(comment)] || initial), ...patch } };
@@ -41,11 +41,10 @@ export function createReactionActions(api: () => GitHub | null, ref: () => PRRef
       if (state(comment).loading || state(comment).busy || (state(comment).loaded && !force)) return;
       update(comment, { loading: true, error: '' });
       try {
-        const client = force ? api()?.fresh() : api();
-        const result = client ? await client.reactions(ref(), comment, viewerId()) : { viewerCanReact: true, reactionGroups: [] };
+        const result = await (force ? api().fresh() : api()).reactions(ref(), comment, viewerId());
         update(comment, { ...result, loaded: true });
       } catch (error) {
-        update(comment, { error: error instanceof Error ? error.message : 'Reactions could not be loaded.' });
+        update(comment, { error: errorMessage(error, 'Reactions could not be loaded.') });
       } finally {
         update(comment, { loading: false });
       }
@@ -56,27 +55,11 @@ export function createReactionActions(api: () => GitHub | null, ref: () => PRRef
       update(comment, { busy: true, error: '' });
       const mine = current.reactionGroups.find(group => group.content === content)?.viewerHasReacted || false;
       try {
-        const client = api();
-        const result = client
-          ? await client.setReaction(ref(), comment, content, !mine, viewerId(), current)
-          : {
-              viewerCanReact: true,
-              reactionGroups: [
-                ...current.reactionGroups.filter(group => group.content !== content),
-                {
-                  content,
-                  viewerHasReacted: !mine,
-                  reactors: {
-                    totalCount:
-                      (current.reactionGroups.find(group => group.content === content)?.reactors.totalCount || 0) + (mine ? -1 : 1),
-                  },
-                },
-              ],
-            };
+        const result = await api().setReaction(ref(), comment, content, !mine, viewerId(), current);
         update(comment, result);
       } catch (error) {
         update(comment, {
-          error: `${error instanceof Error ? error.message : 'Reaction could not be confirmed.'} Refresh reactions before trying again.`,
+          error: `${errorMessage(error, 'Reaction could not be confirmed.')} Refresh reactions before trying again.`,
         });
       } finally {
         update(comment, { busy: false });

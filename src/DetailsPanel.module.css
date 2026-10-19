@@ -232,6 +232,13 @@ button.chip:hover {
   flex-shrink: 0;
   border-radius: 50%;
 }
+.auto-merge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-xs);
+  cursor: default;
+}
 .trigger {
   padding-right: 8px;
 }

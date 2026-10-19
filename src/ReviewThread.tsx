@@ -1,6 +1,6 @@
 import { defineComponent, onMounted, onUnmounted, shallowRef } from 'vue';
 import { Check, ChevronRight, MessageSquare, RotateCcw } from '@lucide/vue';
-import type { Comment, ReviewThread as Thread } from './github';
+import { errorMessage, type Comment, type ReviewThread as Thread } from './github';
 import { Avatar, inputValue, timeAgo } from './ui';
 import { CommentActions, CommentBody, type EditActions } from './CommentEditor';
 import ReactionBar, { type ReactionActions } from './Reactions';
@@ -78,7 +78,7 @@ export default defineComponent(
           replyOpen.value = false;
         }
       } catch (failure) {
-        error.value = failure instanceof Error ? failure.message : 'Reply could not be confirmed. Refresh before posting it again.';
+        error.value = errorMessage(failure, 'Reply could not be confirmed. Refresh before posting it again.');
       } finally {
         busy.value = false;
       }

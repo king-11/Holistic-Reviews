@@ -119,7 +119,7 @@ const restReactions: Record<ReactionContent, string> = {
 export type ReactionSubject = Pick<Comment, 'id' | 'node_id' | 'path' | 'pull_request_review_id'> & { state?: string };
 // Reviews have no REST reactions endpoint, so only they fall back to GraphQL.
 const commentPath = (ref: PRRef, comment: Pick<Comment, 'id' | 'path' | 'pull_request_review_id'>) =>
-  `/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}/${comment.path || comment.pull_request_review_id ? 'pulls' : 'issues'}/comments/${comment.id}`;
+  `${repoPath(ref)}/${comment.path || comment.pull_request_review_id ? 'pulls' : 'issues'}/comments/${comment.id}`;
 const reactionPath = (ref: PRRef, subject: ReactionSubject) => (subject.state ? null : `${commentPath(ref, subject)}/reactions`);
 const immutableSha = /^[0-9a-f]{40}$/i;
 
@@ -193,6 +193,16 @@ export interface SearchOrder {
   order: 'asc' | 'desc';
 }
 const defaultSearchOrder: SearchOrder = { sort: 'updated', order: 'desc' };
+export const searchPageSize = 30;
+// GitHub search returns at most 1,000 results.
+export const searchResultCap = 1000;
+const restPageSize = 100;
+// Bounds requests on huge PRs; 30 full pages reach REST's 3,000-file ceiling, and PR commits stop at 250.
+const maxPages = { default: 30, reviews: 20, lists: 10, commits: 3, pickers: 3 } as const;
+// GitHub's compare endpoint returns at most 300 files.
+const compareFileLimit = 300;
+const maxTextFileBytes = 1_048_576;
+const contentCacheSize = 32;
 // Review fields feed the authored classification; they are fetched for every page so one query serves all groups.
 const pullRequestDetailFields =
   'createdAt additions deletions commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } participants(first: 10) { totalCount nodes { login avatarUrl(size: 40) } } reviewDecision latestReviews(first: 50) { nodes { state author { __typename login } } } reviewRequests(first: 50) { nodes { requestedReviewer { ... on User { login } } } }';
@@ -336,6 +346,14 @@ export function classifyReview(summary: ReviewSummary, author: string): ReviewSt
   return 'waiting';
 }
 
+export function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
+export function itemRepository(item: Pick<InboxItem, 'repository_url'>): string {
+  return item.repository_url.replace('https://api.github.com/repos/', '');
+}
+
 export type MergedFilter = 'all' | 'mine' | 'reviewing';
 export function inboxQuery(group: InboxGroup, login: string, repos: string[] = [], merged: MergedFilter = 'mine'): string {
   const base = ['is:pr archived:false', ...repos.map(repo => `repo:${repo}`)].join(' ');
@@ -388,6 +406,16 @@ export class GitHub {
     });
     if (data.errors?.length) throw new Error(data.errors.map(error => error.message).join(' '));
     return data.data;
+  }
+
+  // GitHub names every mutation input `<Mutation>Input`, so one template serves them all.
+  private async mutation<T>(name: string, input: object, selection: string) {
+    const type = `${name[0].toUpperCase()}${name.slice(1)}`;
+    const data = await this.graphql<Record<string, T | null>>(
+      `mutation ${type}($input: ${type}Input!) { ${name}(input: $input) { ${selection} } }`,
+      { input },
+    );
+    return data?.[name];
   }
 
   async request<T>(path: string, options: RequestInit = {}): Promise<{ data: T; headers: Headers }> {
@@ -460,15 +488,17 @@ export class GitHub {
   async pages<T, B = T[]>(
     path: string,
     signal?: AbortSignal,
-    maxPages = 30,
+    pageLimit: number = maxPages.default,
     pick: (body: B) => T[] = body => body as unknown as T[],
   ): Promise<{ items: T[]; truncated: boolean }> {
     const items: T[] = [];
-    for (let page = 1; page <= maxPages; page++) {
-      const { data, headers } = await this.request<B>(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`, { signal });
+    for (let page = 1; page <= pageLimit; page++) {
+      const { data, headers } = await this.request<B>(`${path}${path.includes('?') ? '&' : '?'}per_page=${restPageSize}&page=${page}`, {
+        signal,
+      });
       const batch = pick(data);
       items.push(...batch);
-      const more = headers.get('link')?.includes('rel="next"') ?? batch.length === 100;
+      const more = headers.get('link')?.includes('rel="next"') ?? batch.length === restPageSize;
       if (!more) return { items, truncated: false };
     }
     return { items, truncated: true };
@@ -500,8 +530,7 @@ export class GitHub {
       };
       if (!signal?.aborted) onUpdate(current);
     };
-    const failed = (name: string) => (error: unknown) =>
-      `${name} could not be loaded: ${String(error instanceof Error ? error.message : error)}`;
+    const failed = (name: string, error: unknown) => `${name} could not be loaded: ${errorMessage(error, String(error))}`;
     const section = <T>(
       name: WorkspaceSection,
       label: string,
@@ -511,7 +540,7 @@ export class GitHub {
       load().then(
         ({ items, truncated }) =>
           settle(name, patch(items, truncated), truncated ? [`${label} is limited to the first ${items.length} results.`] : []),
-        error => settle(name, {}, [failed(label)(error)]),
+        error => settle(name, {}, [failed(label, error)]),
       );
     await Promise.all([
       this.pages<ChangedFile>(`${path}/files`, signal).then(
@@ -523,30 +552,30 @@ export class GitHub {
               ? ['GitHub returned an incomplete file list (REST supports up to 3,000 files). Open GitHub to see the rest.']
               : [],
           ),
-        error => settle('files', {}, [failed('Changed files')(error)]),
+        error => settle('files', {}, [failed('Changed files', error)]),
       ),
       section(
         'comments',
         'Conversation',
-        () => this.pages<Comment>(`/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments`, signal, 10),
+        () => this.pages<Comment>(`${repoPath(ref)}/issues/${ref.number}/comments`, signal, maxPages.lists),
         items => ({ comments: items }),
       ),
       section(
         'inlineComments',
         'Inline comments',
-        () => this.pages<Comment>(`${path}/comments`, signal, 10),
+        () => this.pages<Comment>(`${path}/comments`, signal, maxPages.lists),
         items => ({ inlineComments: items }),
       ),
       section(
         'reviews',
         'Reviews',
-        () => this.pages<Review>(`${path}/reviews`, signal, 20),
+        () => this.pages<Review>(`${path}/reviews`, signal, maxPages.reviews),
         (items, truncated) => ({ reviews: items, reviewsLoaded: !truncated }),
       ),
       section(
         'related',
         'Branch dependencies',
-        () => this.pages<PullRequest>(`/repos/${ref.owner}/${ref.repo}/pulls?state=open`, signal, 10),
+        () => this.pages<PullRequest>(`${repoPath(ref)}/pulls?state=open`, signal, maxPages.lists),
         items => ({ related: items }),
       ),
       section(
@@ -557,7 +586,7 @@ export class GitHub {
       ),
       this.checks(ref, pr.head.sha, signal).then(
         checks => settle('checks', { checks }),
-        error => settle('checks', {}, [failed('Checks')(error)]),
+        error => settle('checks', {}, [failed('Checks', error)]),
       ),
       this.development(ref, signal).then(
         development => settle('linkedIssues', development),
@@ -593,13 +622,13 @@ export class GitHub {
     type WorkflowRun = { name: string | null; workflow_id: number; check_suite_id: number };
     type Status = { id: number; context: string; state: string; target_url: string | null; description: string | null };
     const [runs, { data: combined }, workflows] = await Promise.all([
-      this.pages<Run, { check_runs: Run[] }>(`${base}/check-runs`, signal, 30, body => body.check_runs),
+      this.pages<Run, { check_runs: Run[] }>(`${base}/check-runs`, signal, maxPages.default, body => body.check_runs),
       this.request<{ statuses: Status[] }>(`${base}/status`, { signal }),
       // Best-effort: without Actions read access, checks still list with plain job names.
       this.pages<WorkflowRun, { workflow_runs: WorkflowRun[] }>(
         `${repoPath(ref)}/actions/runs?head_sha=${sha}`,
         signal,
-        10,
+        maxPages.lists,
         body => body.workflow_runs,
       ).then(
         result => result.items,
@@ -645,17 +674,18 @@ export class GitHub {
   }
 
   async commits(ref: PRRef, signal?: AbortSignal) {
-    return this.pages<Commit>(`${refPath(ref)}/commits`, signal, 3);
+    return this.pages<Commit>(`${refPath(ref)}/commits`, signal, maxPages.commits);
   }
 
   async compare(ref: PRRef, base: string, head: string, signal?: AbortSignal): Promise<Comparison> {
     if (!immutableSha.test(base) || !immutableSha.test(head)) throw new Error('Select immutable commit SHAs to compare.');
+    // Files are not paginated; one commit per page keeps the unused commit list small.
     const { data } = await this.request<{ files: ChangedFile[]; merge_base_commit: { sha: string } }>(
-      `/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}/compare/${base}...${head}?per_page=1`,
+      `${repoPath(ref)}/compare/${base}...${head}?per_page=1`,
       { signal },
     );
     if (!data.files || !immutableSha.test(data.merge_base_commit?.sha)) throw new Error('GitHub did not return a complete comparison.');
-    return { files: data.files, mergeBase: data.merge_base_commit.sha, truncated: data.files.length >= 300 };
+    return { files: data.files, mergeBase: data.merge_base_commit.sha, truncated: data.files.length >= compareFileLimit };
   }
 
   async textFile(repository: string, path: string, sha: string): Promise<string> {
@@ -676,7 +706,7 @@ export class GitHub {
     }
     const promise = (async () => {
       const { data } = await this.request<{ type: string; encoding: string; size: number; content?: string }>(endpoint);
-      if (data.type !== 'file' || data.encoding !== 'base64' || data.size > 1_048_576 || data.content === undefined)
+      if (data.type !== 'file' || data.encoding !== 'base64' || data.size > maxTextFileBytes || data.content === undefined)
         throw new Error('Full context is only available for UTF-8 text files up to 1 MiB. Open this file on GitHub instead.');
       try {
         const bytes = Uint8Array.from(atob(data.content.replace(/\s/g, '')), char => char.charCodeAt(0));
@@ -687,7 +717,7 @@ export class GitHub {
         throw new Error('This file is binary or is not valid UTF-8. Open it on GitHub instead.');
       }
     })();
-    if (this.contentCache.size >= 32) this.contentCache.delete(this.contentCache.keys().next().value!);
+    if (this.contentCache.size >= contentCacheSize) this.contentCache.delete(this.contentCache.keys().next().value!);
     this.contentCache.set(endpoint, promise);
     try {
       return await promise;
@@ -713,14 +743,14 @@ export class GitHub {
     const path = reactionPath(ref, subject);
     if (!path) {
       if (!subject.node_id) throw new Error('Refresh this PR to load the GitHub review ID.');
-      const data: { node: Reactions | null } | undefined = await this.graphql<{ node: Reactions | null }>(
+      const data = await this.graphql<{ node: Reactions | null }>(
         `query CommentReactions($id: ID!) { node(id: $id) { ... on Reactable { ${reactionFields} } } }`,
         { id: subject.node_id },
       );
       if (!data?.node?.reactionGroups) throw new Error('Comment reactions could not be loaded.');
       return data.node;
     }
-    const { items } = await this.pages<{ id: number; content: string; user: User | null }>(path, undefined, 10);
+    const { items } = await this.pages<{ id: number; content: string; user: User | null }>(path, undefined, maxPages.lists);
     const contents = Object.keys(restReactions) as ReactionContent[];
     const mine: Partial<Record<ReactionContent, number>> = {};
     const reactionGroups = contents.flatMap(content => {
@@ -742,14 +772,13 @@ export class GitHub {
   ): Promise<Reactions> {
     const path = reactionPath(ref, subject);
     if (!path) {
-      const name = add ? 'addReaction' : 'removeReaction';
-      const inputType = add ? 'AddReactionInput' : 'RemoveReactionInput';
-      const data: Record<string, { subject: Reactions | null }> | undefined = await this.graphql<
-        Record<string, { subject: Reactions | null }>
-      >(`mutation CommentReaction($input: ${inputType}!) { ${name}(input: $input) { subject { ${reactionFields} } } }`, {
-        input: { subjectId: subject.node_id, content },
-      });
-      const confirmed = data?.[name]?.subject;
+      const confirmed = (
+        await this.mutation<{ subject: Reactions | null }>(
+          add ? 'addReaction' : 'removeReaction',
+          { subjectId: subject.node_id, content },
+          `subject { ${reactionFields} }`,
+        )
+      )?.subject;
       if (!confirmed?.reactionGroups) throw new Error('GitHub did not confirm the reaction. Refresh before trying again.');
       return confirmed;
     }
@@ -763,24 +792,21 @@ export class GitHub {
   }
 
   async stack(ref: PRRef, signal?: AbortSignal): Promise<NativeStack | undefined> {
-    type StackResult = {
-      data?: {
-        repository: {
-          pullRequest: {
-            stack: {
-              number: number;
-              size: number;
-              entries: {
-                nodes: { position: number; pullRequest: { number: number; title: string; url: string; state: string } | null }[];
-                pageInfo: { hasNextPage: boolean };
-              };
-            } | null;
-          };
+    type Result = {
+      repository: {
+        pullRequest: {
+          stack: {
+            number: number;
+            size: number;
+            entries: {
+              nodes: { position: number; pullRequest: { number: number; title: string; url: string; state: string } | null }[];
+              pageInfo: { hasNextPage: boolean };
+            };
+          } | null;
         };
       };
-      errors?: { message: string }[];
     };
-    const data: NonNullable<StackResult['data']> | undefined = await this.graphql<NonNullable<StackResult['data']>>(
+    const data = await this.graphql<Result>(
       'query ReviewStack($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { stack { number size entries(first: 100) { nodes { position pullRequest { number title url state } } pageInfo { hasNextPage } } } } } }',
       ref,
       signal,
@@ -800,22 +826,22 @@ export class GitHub {
 
   async inbox(
     group: InboxGroup,
-    login: string,
-    repos: string[] = [],
-    page = 1,
+    {
+      login,
+      repos = [],
+      page = 1,
+      merged = 'mine',
+      order = defaultSearchOrder,
+    }: { login: string; repos?: string[]; page?: number; merged?: MergedFilter; order?: SearchOrder },
     signal?: AbortSignal,
-    merged: MergedFilter = 'mine',
-    order: SearchOrder = defaultSearchOrder,
   ) {
     const query = inboxQuery(group, login, repos, merged);
     // Only the OR of review-requested and reviewed-by needs advanced search; plain search rejects it with 422.
     const advanced = group === 'merged' && merged === 'reviewing' ? '&advanced_search=true' : '';
-    const result = (
-      await this.request<InboxResult>(
-        `/search/issues?q=${encodeURIComponent(query)}&sort=${order.sort}&order=${order.order}&per_page=30&page=${page}${advanced}`,
-        { signal },
-      )
-    ).data;
+    const { data: result } = await this.request<InboxResult>(
+      `/search/issues?q=${encodeURIComponent(query)}&sort=${order.sort}&order=${order.order}&per_page=${searchPageSize}&page=${page}${advanced}`,
+      { signal },
+    );
     if (!result.items.length) return result;
     try {
       return { ...result, items: await this.withPullRequestDetails(group, result.items, signal) };
@@ -839,7 +865,7 @@ export class GitHub {
     const variables: Record<string, string | number> = {};
     const declarations: string[] = [];
     const selections = items.map((item, index) => {
-      const [owner, name] = item.repository_url.split('/repos/')[1].split('/');
+      const [owner, name] = itemRepository(item).split('/');
       variables[`owner${index}`] = owner;
       variables[`name${index}`] = name;
       variables[`number${index}`] = item.number;
@@ -884,11 +910,12 @@ export class GitHub {
       comments: { nodes: { databaseId: number | null }[] };
     };
     type Connection = { nodes: ThreadNode[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
-    type Result = { data?: { repository: { pullRequest: { reviewThreads: Connection } } }; errors?: { message: string }[] };
+    type Result = { repository: { pullRequest: { reviewThreads: Connection } } };
     const items: ReviewThread[] = [];
     let cursor: string | null = null;
-    for (let page = 0; page < 10; page++) {
-      const data: NonNullable<Result['data']> | undefined = await this.graphql<NonNullable<Result['data']>>(
+    for (let page = 0; page < maxPages.lists; page++) {
+      // Annotated because `cursor` feeds back into this call, which defeats inference.
+      const data: Result | undefined = await this.graphql<Result>(
         'query ReviewThreads($owner: String!, $repo: String!, $number: Int!, $cursor: String) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { reviewThreads(first: 100, after: $cursor) { nodes { id isResolved viewerCanResolve viewerCanUnresolve path line diffSide isOutdated subjectType comments(first: 1) { nodes { databaseId } } } pageInfo { hasNextPage endCursor } } } } }',
         { ...ref, cursor },
         signal,
@@ -918,17 +945,13 @@ export class GitHub {
   }
 
   async setThreadResolved(id: string, resolved: boolean) {
-    const operation = resolved ? 'resolveReviewThread' : 'unresolveReviewThread';
-    const inputType = resolved ? 'ResolveReviewThreadInput' : 'UnresolveReviewThreadInput';
-    type Result = {
-      data?: Record<string, { thread: { id: string; isResolved: boolean; viewerCanResolve: boolean; viewerCanUnresolve: boolean } | null }>;
-      errors?: { message: string }[];
-    };
-    const data: NonNullable<Result['data']> | undefined = await this.graphql<NonNullable<Result['data']>>(
-      `mutation UpdateReviewThread($input: ${inputType}!) { ${operation}(input: $input) { thread { id isResolved viewerCanResolve viewerCanUnresolve } } }`,
-      { input: { threadId: id } },
-    );
-    const thread = data?.[operation]?.thread;
+    const thread = (
+      await this.mutation<{ thread: { id: string; isResolved: boolean; viewerCanResolve: boolean; viewerCanUnresolve: boolean } | null }>(
+        resolved ? 'resolveReviewThread' : 'unresolveReviewThread',
+        { threadId: id },
+        'thread { id isResolved viewerCanResolve viewerCanUnresolve }',
+      )
+    )?.thread;
     if (!thread || thread.id !== id || thread.isResolved !== resolved)
       throw new Error('GitHub did not confirm the thread update. Refresh before retrying.');
     return { id: thread.id, resolved: thread.isResolved, canResolve: thread.viewerCanResolve, canUnresolve: thread.viewerCanUnresolve };
@@ -942,7 +965,7 @@ export class GitHub {
 
   async comment(ref: PRRef, body: string) {
     return (
-      await this.request<Comment>(`/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments`, {
+      await this.request<Comment>(`${repoPath(ref)}/issues/${ref.number}/comments`, {
         method: 'POST',
         body: JSON.stringify({ body }),
       })
@@ -959,35 +982,17 @@ export class GitHub {
     ).data;
   }
 
-  async inlineComment(
-    ref: PRRef,
-    sha: string,
-    body: string,
-    path: string,
-    line: number,
-    side: 'LEFT' | 'RIGHT',
-    review?: Review,
-    start?: { line: number; side: 'LEFT' | 'RIGHT' },
-  ) {
+  async inlineComment(ref: PRRef, sha: string, { body, path, line, side, start_line, start_side }: ReviewCommentInput, review?: Review) {
+    const start = start_line && start_side ? { line: start_line, side: start_side } : undefined;
     await this.ensureHead(ref, sha);
     if (review) {
       if (review.commit_id !== sha) throw new Error('Your pending review is on an older commit. Discard it and start a new review.');
-      const data: { addPullRequestReviewThread: { thread: { id: string } } } | undefined = await this.graphql<{
-        addPullRequestReviewThread: { thread: { id: string } };
-      }>(
-        'mutation AddReviewThread($input: AddPullRequestReviewThreadInput!) { addPullRequestReviewThread(input: $input) { thread { id } } }',
-        {
-          input: {
-            pullRequestReviewId: review.node_id,
-            body,
-            path,
-            line,
-            side,
-            ...(start ? { startLine: start.line, startSide: start.side } : {}),
-          },
-        },
+      const added = await this.mutation<{ thread: { id: string } | null }>(
+        'addPullRequestReviewThread',
+        { pullRequestReviewId: review.node_id, body, path, line, side, ...(start ? { startLine: start.line, startSide: start.side } : {}) },
+        'thread { id }',
       );
-      if (!data?.addPullRequestReviewThread.thread) throw new Error('GitHub did not confirm the review comment.');
+      if (!added?.thread) throw new Error('GitHub did not confirm the review comment.');
       return;
     }
     await this.request<Comment>(`${refPath(ref)}/comments`, {
@@ -1022,13 +1027,13 @@ export class GitHub {
         author: { login: string; __typename: string; databaseId?: number } | null;
         pullRequestReview: { databaseId: number };
       };
-      const data: { addPullRequestReviewThreadReply?: { comment: Reply | null } } | undefined = await this.graphql<{
-        addPullRequestReviewThreadReply?: { comment: Reply | null };
-      }>(
-        'mutation AddReviewReply($input: AddPullRequestReviewThreadReplyInput!) { addPullRequestReviewThreadReply(input: $input) { comment { id databaseId body createdAt url path line author { login __typename ... on User { databaseId } ... on Bot { databaseId } } pullRequestReview { databaseId } } } }',
-        { input: { pullRequestReviewId: review.node_id, pullRequestReviewThreadId: threadId, body } },
-      );
-      const comment = data?.addPullRequestReviewThreadReply?.comment;
+      const comment = (
+        await this.mutation<{ comment: Reply | null }>(
+          'addPullRequestReviewThreadReply',
+          { pullRequestReviewId: review.node_id, pullRequestReviewThreadId: threadId, body },
+          'comment { id databaseId body createdAt url path line author { login __typename ... on User { databaseId } ... on Bot { databaseId } } pullRequestReview { databaseId } }',
+        )
+      )?.comment;
       if (!comment?.databaseId || comment.pullRequestReview?.databaseId !== review.id)
         throw new Error('GitHub did not confirm a reply in your pending review. Refresh before trying again.');
       return {
@@ -1055,11 +1060,13 @@ export class GitHub {
   async editComment(ref: PRRef, comment: Comment, body: string, pending = false) {
     if (!pending) return (await this.request<Comment>(commentPath(ref, comment), { method: 'PATCH', body: JSON.stringify({ body }) })).data;
     if (!comment.node_id) throw new Error('Refresh this PR to load the GitHub comment ID.');
-    const data: { updatePullRequestReviewComment?: { pullRequestReviewComment: { body: string } | null } } | undefined = await this.graphql(
-      'mutation EditPendingComment($input: UpdatePullRequestReviewCommentInput!) { updatePullRequestReviewComment(input: $input) { pullRequestReviewComment { id body } } }',
-      { input: { pullRequestReviewCommentId: comment.node_id, body } },
-    );
-    const confirmed = data?.updatePullRequestReviewComment?.pullRequestReviewComment;
+    const confirmed = (
+      await this.mutation<{ pullRequestReviewComment: { body: string } | null }>(
+        'updatePullRequestReviewComment',
+        { pullRequestReviewCommentId: comment.node_id, body },
+        'pullRequestReviewComment { id body }',
+      )
+    )?.pullRequestReviewComment;
     if (!confirmed) throw new Error('GitHub did not confirm the comment update. Refresh before trying again.');
     return { ...comment, body: confirmed.body };
   }
@@ -1070,10 +1077,7 @@ export class GitHub {
       return;
     }
     if (!comment.node_id) throw new Error('Refresh this PR to load the GitHub comment ID.');
-    await this.graphql(
-      'mutation DeletePendingComment($input: DeletePullRequestReviewCommentInput!) { deletePullRequestReviewComment(input: $input) { clientMutationId } }',
-      { input: { id: comment.node_id } },
-    );
+    await this.mutation('deletePullRequestReviewComment', { id: comment.node_id }, 'clientMutationId');
   }
 
   async editReview(ref: PRRef, id: number, body: string) {
@@ -1152,13 +1156,14 @@ export class GitHub {
 
   // REST cannot toggle draft state; only these GraphQL mutations can.
   async setDraft(pr: PullRequest, draft: boolean) {
-    const name = draft ? 'convertPullRequestToDraft' : 'markPullRequestReadyForReview';
-    const inputType = draft ? 'ConvertPullRequestToDraftInput' : 'MarkPullRequestReadyForReviewInput';
-    const data = await this.graphql<Record<string, { pullRequest: { isDraft: boolean } | null }>>(
-      `mutation PullRequestDraft($input: ${inputType}!) { ${name}(input: $input) { pullRequest { isDraft } } }`,
-      { input: { pullRequestId: pr.node_id } },
-    );
-    if (data?.[name]?.pullRequest?.isDraft !== draft) throw new Error('GitHub did not confirm the draft change. Refresh before retrying.');
+    const confirmed = (
+      await this.mutation<{ pullRequest: { isDraft: boolean } | null }>(
+        draft ? 'convertPullRequestToDraft' : 'markPullRequestReadyForReview',
+        { pullRequestId: pr.node_id },
+        'pullRequest { isDraft }',
+      )
+    )?.pullRequest;
+    if (confirmed?.isDraft !== draft) throw new Error('GitHub did not confirm the draft change. Refresh before retrying.');
   }
 
   async merge(ref: PRRef, sha: string, method: MergeMethod) {
@@ -1173,16 +1178,15 @@ export class GitHub {
   // Clean PRs refuse auto-merge, so they merge directly; GitHub then reports the queue state.
   async setAutoMerge(pr: PullRequest, method: MergeMethod | null) {
     const enable = method !== null;
-    const name = enable ? 'enablePullRequestAutoMerge' : 'disablePullRequestAutoMerge';
-    const data = await this.graphql<Record<string, { pullRequest: { autoMergeRequest: unknown } | null } | null>>(
-      enable
-        ? 'mutation EnableAutoMerge($input: EnablePullRequestAutoMergeInput!) { enablePullRequestAutoMerge(input: $input) { pullRequest { autoMergeRequest { mergeMethod } } } }'
-        : 'mutation DisableAutoMerge($input: DisablePullRequestAutoMergeInput!) { disablePullRequestAutoMerge(input: $input) { pullRequest { autoMergeRequest { mergeMethod } } } }',
-      enable
-        ? { input: { pullRequestId: pr.node_id, mergeMethod: method.toUpperCase(), expectedHeadOid: pr.head.sha } }
-        : { input: { pullRequestId: pr.node_id } },
-    );
-    const confirmed = data?.[name]?.pullRequest;
+    const confirmed = (
+      await this.mutation<{ pullRequest: { autoMergeRequest: unknown } | null }>(
+        enable ? 'enablePullRequestAutoMerge' : 'disablePullRequestAutoMerge',
+        enable
+          ? { pullRequestId: pr.node_id, mergeMethod: method.toUpperCase(), expectedHeadOid: pr.head.sha }
+          : { pullRequestId: pr.node_id },
+        'pullRequest { autoMergeRequest { mergeMethod } }',
+      )
+    )?.pullRequest;
     if (!confirmed || !!confirmed.autoMergeRequest !== enable)
       throw new Error('GitHub did not confirm the auto-merge change. Refresh before trying again.');
   }
@@ -1217,7 +1221,7 @@ export class GitHub {
   }
 
   async repoLabels(ref: PRRef) {
-    return (await this.pages<Label>(`${repoPath(ref)}/labels`, undefined, 3)).items;
+    return (await this.pages<Label>(`${repoPath(ref)}/labels`, undefined, maxPages.pickers)).items;
   }
 
   async setLabels(ref: PRRef, labels: string[]) {
@@ -1227,11 +1231,11 @@ export class GitHub {
   }
 
   async assignableUsers(ref: PRRef) {
-    return (await this.pages<User>(`${repoPath(ref)}/assignees`, undefined, 3)).items;
+    return (await this.pages<User>(`${repoPath(ref)}/assignees`, undefined, maxPages.pickers)).items;
   }
 
   async repoTeams(ref: PRRef) {
-    return (await this.pages<Team>(`${repoPath(ref)}/teams`, undefined, 3)).items;
+    return (await this.pages<Team>(`${repoPath(ref)}/teams`, undefined, maxPages.pickers)).items;
   }
 
   // Teams are keyed `org/slug`; logins can't contain '/', and GitHub takes team slugs separately.

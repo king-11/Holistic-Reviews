@@ -1,10 +1,7 @@
 import { computed, defineComponent, onUnmounted, shallowRef, watch } from 'vue';
-import { createShortcuts, modalOpen, step } from './shortcuts';
-import { AnimatePresence, motion } from 'motion-v';
-import { fade } from './motion';
+import { AnimatePresence } from 'motion-v';
 import {
   ArrowDownWideNarrow,
-  ArrowRight,
   ArrowUpRight,
   BookOpen,
   Check,
@@ -26,18 +23,22 @@ import {
   ThumbsUp,
 } from '@lucide/vue';
 import {
+  errorMessage,
+  itemRepository,
+  searchPageSize,
+  searchResultCap,
   type GitHub,
   type InboxGroup,
   type InboxItem,
   type InboxResult,
   type MergedFilter,
   type ReviewState,
-  type SearchOrder,
   type TokenInfo,
 } from './github';
-import { demoInbox } from './demo';
-import { checkIcons } from './Checks';
-import { Avatar, IconButton, SearchField, Spinner, inputValue, timeAgo, tryStorage, Dismiss } from './ui';
+import { clientOrders, rankCounts, readPreferences, savePreferences, serverOrder, sortOptions, type SortChoice } from './inboxPreferences';
+import InboxRow from './InboxRow';
+import { createShortcuts, modalOpen, step } from './shortcuts';
+import { Dismiss, IconButton, SearchField, Spinner, inputValue } from './ui';
 import styles from './Inbox.module.css';
 
 // Each section is a view of one fetched group; the authored group splits by review state.
@@ -101,6 +102,7 @@ const fetchedGroups = [...new Set(sections.map(section => section.group))];
 const sectionById = (id: string) => sections.find(section => section.id === id)!;
 // Items GitHub search returns before review data arrives count as waiting.
 const reviewOf = (item: InboxItem) => item.review ?? 'waiting';
+
 const mergedOptions: { value: MergedFilter; label: string; title: string }[] = [
   { value: 'all', label: 'All', title: 'Every merged pull request in the selected repositories' },
   { value: 'mine', label: 'By me', title: 'Merged pull requests you authored' },
@@ -112,87 +114,18 @@ const mergedOptions: { value: MergedFilter; label: string; title: string }[] = [
 ];
 // Without a repository selection, "all" falls back to the viewer's own PRs, matching the query.
 const effectiveMerged = (repos: string[], filter: MergedFilter): MergedFilter => (filter === 'all' && !repos.length ? 'mine' : filter);
-// Demo items use "you" for the signed-in viewer.
-const demoViewer = 'you';
-const demoMerged = (repos: string[], filter: MergedFilter) => {
-  const mode = effectiveMerged(repos, filter);
-  return demoInbox.merged.filter(item => {
-    const mine = item.user.login === demoViewer;
-    return (!repos.length || repos.includes(repository(item))) && (mode === 'all' || (mode === 'mine' ? mine : !mine));
-  });
-};
-const demoResult = (items: InboxItem[]): InboxResult => ({ items, total_count: items.length, incomplete_results: false });
-
-const sortChoices = [
-  'title-asc',
-  'title-desc',
-  'size-desc',
-  'size-asc',
-  'updated-desc',
-  'updated-asc',
-  'created-desc',
-  'created-asc',
-] as const;
-type SortChoice = (typeof sortChoices)[number];
-const sortOptions: { value: SortChoice; label: string; detail: string }[] = [
-  { value: 'title-asc', label: 'Title', detail: 'A–Z' },
-  { value: 'title-desc', label: 'Title', detail: 'Z–A' },
-  { value: 'size-desc', label: 'Size of change', detail: 'Largest first' },
-  { value: 'size-asc', label: 'Size of change', detail: 'Smallest first' },
-  { value: 'updated-desc', label: 'Updated', detail: 'Latest first' },
-  { value: 'updated-asc', label: 'Updated', detail: 'Oldest first' },
-  { value: 'created-desc', label: 'Created', detail: 'Latest first' },
-  { value: 'created-asc', label: 'Created', detail: 'Oldest first' },
-];
-// Updated and created are GitHub's own ordering, so they re-query; the rest reorder what is loaded.
-const serverOrder = (choice: SortChoice): SearchOrder => ({
-  sort: choice.startsWith('created') ? 'created' : 'updated',
-  order: choice.endsWith('asc') ? 'asc' : 'desc',
-});
-const sizeOf = (item: InboxItem) => (item.details ? item.details.additions + item.details.deletions : undefined);
-// Items without size data sort last whichever way the size is ordered.
-const bySize = (direction: 1 | -1) => (a: InboxItem, b: InboxItem) => {
-  const [sizeA, sizeB] = [sizeOf(a), sizeOf(b)];
-  if (sizeA === undefined || sizeB === undefined) return Number(sizeA === undefined) - Number(sizeB === undefined);
-  return direction * (sizeA - sizeB);
-};
-const clientOrders: Partial<Record<SortChoice, (a: InboxItem, b: InboxItem) => number>> = {
-  'title-asc': (a, b) => a.title.localeCompare(b.title),
-  'title-desc': (a, b) => b.title.localeCompare(a.title),
-  'size-asc': bySize(1),
-  'size-desc': bySize(-1),
-};
-
-type InboxPreferences = { repos?: string[]; sort?: SortChoice; known?: string[] };
-const preferencesKey = 'review.inbox';
-const stringList = (value: unknown) =>
-  Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined;
-function readPreferences(): InboxPreferences {
-  const saved = tryStorage(() => JSON.parse(localStorage.getItem(preferencesKey) ?? 'null')) as Record<string, unknown> | null;
-  return {
-    repos: stringList(saved?.repos),
-    sort: sortChoices.find(choice => choice === saved?.sort),
-    known: stringList(saved?.known),
-  };
-}
-// Saved order stands in for counts, so the repository menu keeps its order until a fresh unfiltered load recounts.
-const rankCounts = (repos: string[]) => new Map(repos.map((repo, index) => [repo, repos.length - index]));
-const savePreferences = (preferences: InboxPreferences) =>
-  tryStorage(() => localStorage.setItem(preferencesKey, JSON.stringify(preferences)));
 
 type Props = {
-  api: GitHub | null;
-  info: TokenInfo | null;
-  onOpen: (url: string, item?: InboxItem) => void;
+  api: GitHub;
+  info: TokenInfo;
+  onOpen: (url: string) => void;
   onOpenDialog: () => void;
-  onConnect: () => void;
 };
 
 export default defineComponent(
   (props: Props) => {
-    const data = shallowRef<Partial<Record<InboxGroup, InboxResult>>>({});
-    const errors = shallowRef<Partial<Record<InboxGroup, string>>>({});
-    const loading = shallowRef(false);
+    const preferences = readPreferences();
+
     const query = shallowRef('');
     const search = shallowRef<HTMLInputElement>();
     const move = (delta: 1 | -1) =>
@@ -200,48 +133,26 @@ export default defineComponent(
     const keydown = createShortcuts(() => ({ '/': () => search.value?.focus(), j: () => move(1), k: () => move(-1) }), modalOpen);
     document.addEventListener('keydown', keydown);
     onUnmounted(() => document.removeEventListener('keydown', keydown));
-    const active = shallowRef('all');
-    const collapsed = shallowRef<Set<string>>(new Set(['reviewed', 'merged']));
-    const repoMenu = shallowRef(false);
-    const sortMenu = shallowRef(false);
-    const preferences = readPreferences();
+
     const selected = shallowRef<string[]>(preferences.repos ?? []);
-    const sortChoice = shallowRef<SortChoice>(preferences.sort ?? 'updated-desc');
-    const serverSort = computed(() => serverOrder(sortChoice.value));
     // Until a first unfiltered load picks the most-used repository, the choice is not saved, so it can still default.
     let repoDefaulted = preferences.repos !== undefined;
-    // Live counts start from the saved list; demo counts are kept apart so they never overwrite it before sign-in.
-    const knownRepos = shallowRef<string[]>(preferences.known ?? []);
-    const repoCounts = shallowRef(rankCounts(knownRepos.value));
-    const demoRepoCounts = shallowRef(new Map<string, number>());
+    const repoCounts = shallowRef(rankCounts(preferences.known ?? []));
     const customRepos = shallowRef<string[]>([]);
     const repoOptions = computed(() => {
-      const counts = props.api && props.info ? repoCounts.value : demoRepoCounts.value;
+      const counts = repoCounts.value;
       return [...new Set([...counts.keys(), ...customRepos.value, ...selected.value])].sort(
         (a, b) => (counts.get(b) ?? 0) - (counts.get(a) ?? 0) || a.localeCompare(b),
       );
     });
-    watch(repoOptions, options => {
-      if (props.api && props.info) knownRepos.value = options;
-    });
+    const repoMenu = shallowRef(false);
     const customRepo = shallowRef('');
     const repoError = shallowRef('');
-    const refresh = shallowRef(0);
-    const moreBusy = shallowRef<InboxGroup | null>(null);
-    let request = 0;
-    let forceFresh = false;
-    let controller: AbortController | undefined;
-    // Each merged load (full reload or filter change) bumps this so only the newest one may write its result.
-    let mergedVersion = 0;
-    const mergedFilter = shallowRef<MergedFilter>('all');
-    const mergedLoading = shallowRef(false);
-    const stale = (group: InboxGroup, version: number, stamp: number) =>
-      version !== request || (group === 'merged' && stamp !== mergedVersion);
     // Unfiltered loads define how many PRs each repository has; filtered loads only add repositories not yet seen.
-    const countRepos = (target: typeof repoCounts, items: InboxItem[], unfiltered: boolean) => {
-      const counts = new Map(target.value);
-      for (const item of items) counts.set(repository(item), (counts.get(repository(item)) ?? 0) + (unfiltered ? 1 : 0));
-      target.value = counts;
+    const countRepos = (items: InboxItem[], unfiltered: boolean) => {
+      const counts = new Map(repoCounts.value);
+      for (const item of items) counts.set(itemRepository(item), (counts.get(itemRepository(item)) ?? 0) + (unfiltered ? 1 : 0));
+      repoCounts.value = counts;
     };
     function applyDefaultRepo() {
       if (repoDefaulted) return;
@@ -249,141 +160,6 @@ export default defineComponent(
       const [first] = repoOptions.value;
       if (first) selected.value = [first];
     }
-    watch([selected, sortChoice, knownRepos], ([repos, sort, known]) =>
-      savePreferences({ repos: repoDefaulted ? repos : undefined, sort, known }),
-    );
-    watch(
-      [() => props.api, () => props.info, selected, refresh, serverSort],
-      ([api, info, repos]) => {
-        controller?.abort();
-        const version = ++request;
-        if (!api || !info) {
-          if (!repos.length) demoRepoCounts.value = new Map();
-          data.value = Object.fromEntries(
-            fetchedGroups.map(group => {
-              const items =
-                group === 'merged'
-                  ? demoMerged(repos, mergedFilter.value)
-                  : demoInbox[group].filter(item => !repos.length || repos.includes(repository(item)));
-              countRepos(demoRepoCounts, items, !repos.length);
-              return [group, demoResult(items)];
-            }),
-          );
-          errors.value = {};
-          loading.value = false;
-          return;
-        }
-        if (!repos.length) repoCounts.value = new Map();
-        const signal = (controller = new AbortController()).signal;
-        const client = forceFresh ? api.fresh() : api;
-        forceFresh = false;
-        const mergedStamp = ++mergedVersion;
-        mergedLoading.value = false;
-        loading.value = true;
-        errors.value = {};
-        data.value = {};
-        void Promise.all(
-          fetchedGroups.map(async group => {
-            try {
-              const result = await client.inbox(group, info.user.login, repos, 1, signal, mergedFilter.value, serverSort.value);
-              if (stale(group, version, mergedStamp)) return;
-              data.value = { ...data.value, [group]: result };
-              countRepos(repoCounts, result.items, !repos.length);
-            } catch (error) {
-              if (version === request && !signal.aborted)
-                errors.value = { ...errors.value, [group]: error instanceof Error ? error.message : 'Could not load this section.' };
-            }
-          }),
-        ).finally(() => {
-          if (version !== request) return;
-          loading.value = false;
-          applyDefaultRepo();
-        });
-      },
-      { immediate: true },
-    );
-    // Only the merged group reloads on a filter change; the other sections keep their results.
-    function reloadMerged() {
-      const version = ++mergedVersion;
-      errors.value = { ...errors.value, merged: undefined };
-      if (!props.api || !props.info) {
-        data.value = { ...data.value, merged: demoResult(demoMerged(selected.value, mergedFilter.value)) };
-        return;
-      }
-      mergedLoading.value = true;
-      data.value = { ...data.value, merged: undefined };
-      props.api.inbox('merged', props.info.user.login, selected.value, 1, undefined, mergedFilter.value, serverSort.value).then(
-        result => {
-          if (version !== mergedVersion) return;
-          data.value = { ...data.value, merged: result };
-          mergedLoading.value = false;
-        },
-        error => {
-          if (version !== mergedVersion) return;
-          errors.value = { ...errors.value, merged: error instanceof Error ? error.message : 'Could not load this section.' };
-          mergedLoading.value = false;
-        },
-      );
-    }
-    watch(mergedFilter, reloadMerged);
-    onUnmounted(() => {
-      request++;
-      controller?.abort();
-    });
-    const items = (section: Section) => {
-      const q = query.value.toLowerCase();
-      const shown = (data.value[section.group]?.items || []).filter(
-        item =>
-          (!section.review || reviewOf(item) === section.review) &&
-          `${item.title} ${item.number} ${item.user.login} ${repository(item)}`.toLowerCase().includes(q),
-      );
-      const compare = clientOrders[sortChoice.value];
-      return compare ? shown.sort(compare) : shown;
-    };
-    const visibleSections = computed(() => sections.filter(section => active.value === 'all' || section.id === active.value));
-    function toggleGroup(id: string) {
-      const next = new Set(collapsed.value);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      collapsed.value = next;
-    }
-    async function loadMore(id: InboxGroup) {
-      const api = props.api,
-        info = props.info,
-        current = data.value[id],
-        version = request,
-        stamp = mergedVersion;
-      if (!api || !info || !current || moreBusy.value) return;
-      moreBusy.value = id;
-      try {
-        const next = await api.inbox(
-          id,
-          info.user.login,
-          selected.value,
-          Math.floor(current.items.length / 30) + 1,
-          controller?.signal,
-          mergedFilter.value,
-          serverSort.value,
-        );
-        if (!stale(id, version, stamp)) {
-          data.value = { ...data.value, [id]: { ...next, items: [...current.items, ...next.items] } };
-          countRepos(repoCounts, next.items, !selected.value.length);
-        }
-      } catch (error) {
-        if (!stale(id, version, stamp))
-          errors.value = { ...errors.value, [id]: error instanceof Error ? error.message : 'Could not load more.' };
-      } finally {
-        moreBusy.value = null;
-      }
-    }
-    const groupTotal = (group: InboxGroup) => data.value[group]?.total_count ?? '–';
-    // Review sections count loaded items; a trailing + means more authored pages can still arrive.
-    const sectionCount = (section: Section) => {
-      const result = data.value[section.group];
-      if (!result || !section.review) return groupTotal(section.group);
-      const loaded = result.items.filter(item => reviewOf(item) === section.review).length;
-      return `${loaded}${result.items.length < result.total_count ? '+' : ''}`;
-    };
     const toggleRepo = (repo: string) => {
       selected.value = selected.value.includes(repo) ? selected.value.filter(r => r !== repo) : [...selected.value, repo];
     };
@@ -399,6 +175,156 @@ export default defineComponent(
       customRepo.value = '';
       repoError.value = '';
     }
+
+    const sortChoice = shallowRef<SortChoice>(preferences.sort ?? 'updated-desc');
+    const sortMenu = shallowRef(false);
+    const serverSort = computed(() => serverOrder(sortChoice.value));
+    watch([selected, sortChoice, repoOptions], ([repos, sort, known]) =>
+      savePreferences({ repos: repoDefaulted ? repos : undefined, sort, known }),
+    );
+
+    const mergedFilter = shallowRef<MergedFilter>('all');
+    const mergedLoading = shallowRef(false);
+    // Each merged load (full reload or filter change) bumps this so only the newest one may write its result.
+    let mergedVersion = 0;
+
+    const data = shallowRef<Partial<Record<InboxGroup, InboxResult>>>({});
+    const errors = shallowRef<Partial<Record<InboxGroup, string>>>({});
+    const loading = shallowRef(false);
+    const refresh = shallowRef(0);
+    const moreBusy = shallowRef<InboxGroup | null>(null);
+    let request = 0;
+    let forceFresh = false;
+    let controller: AbortController | undefined;
+    const reload = () => {
+      forceFresh = true;
+      refresh.value++;
+    };
+    const stale = (group: InboxGroup, version: number, stamp: number) =>
+      version !== request || (group === 'merged' && stamp !== mergedVersion);
+    watch(
+      [() => props.api, () => props.info, selected, refresh, serverSort],
+      ([api, info, repos]) => {
+        controller?.abort();
+        const version = ++request;
+        if (!repos.length) repoCounts.value = new Map();
+        const signal = (controller = new AbortController()).signal;
+        const client = forceFresh ? api.fresh() : api;
+        forceFresh = false;
+        const mergedStamp = ++mergedVersion;
+        mergedLoading.value = false;
+        loading.value = true;
+        errors.value = {};
+        data.value = {};
+        void Promise.all(
+          fetchedGroups.map(async group => {
+            try {
+              const result = await client.inbox(
+                group,
+                { login: info.user.login, repos, merged: mergedFilter.value, order: serverSort.value },
+                signal,
+              );
+              if (stale(group, version, mergedStamp)) return;
+              data.value = { ...data.value, [group]: result };
+              countRepos(result.items, !repos.length);
+            } catch (error) {
+              if (version === request && !signal.aborted)
+                errors.value = { ...errors.value, [group]: errorMessage(error, 'Could not load this section.') };
+            }
+          }),
+        ).finally(() => {
+          if (version !== request) return;
+          loading.value = false;
+          applyDefaultRepo();
+        });
+      },
+      { immediate: true },
+    );
+    // Only the merged group reloads on a filter change; the other sections keep their results.
+    function reloadMerged() {
+      const version = ++mergedVersion;
+      errors.value = { ...errors.value, merged: undefined };
+      mergedLoading.value = true;
+      data.value = { ...data.value, merged: undefined };
+      props.api
+        .inbox('merged', { login: props.info.user.login, repos: selected.value, merged: mergedFilter.value, order: serverSort.value })
+        .then(
+          result => {
+            if (version !== mergedVersion) return;
+            data.value = { ...data.value, merged: result };
+            mergedLoading.value = false;
+          },
+          error => {
+            if (version !== mergedVersion) return;
+            errors.value = { ...errors.value, merged: errorMessage(error, 'Could not load this section.') };
+            mergedLoading.value = false;
+          },
+        );
+    }
+    watch(mergedFilter, reloadMerged);
+    onUnmounted(() => {
+      request++;
+      controller?.abort();
+    });
+    async function loadMore(id: InboxGroup) {
+      const current = data.value[id],
+        version = request,
+        stamp = mergedVersion;
+      if (!current || moreBusy.value) return;
+      moreBusy.value = id;
+      try {
+        const next = await props.api.inbox(
+          id,
+          {
+            login: props.info.user.login,
+            repos: selected.value,
+            page: Math.floor(current.items.length / searchPageSize) + 1,
+            merged: mergedFilter.value,
+            order: serverSort.value,
+          },
+          controller?.signal,
+        );
+        if (!stale(id, version, stamp)) {
+          data.value = { ...data.value, [id]: { ...next, items: [...current.items, ...next.items] } };
+          countRepos(next.items, !selected.value.length);
+        }
+      } catch (error) {
+        if (!stale(id, version, stamp)) errors.value = { ...errors.value, [id]: errorMessage(error, 'Could not load more.') };
+      } finally {
+        moreBusy.value = null;
+      }
+    }
+
+    const active = shallowRef('all');
+    const visibleSections = computed(() => sections.filter(section => active.value === 'all' || section.id === active.value));
+    const items = (section: Section) => {
+      const q = query.value.toLowerCase();
+      const shown = (data.value[section.group]?.items || []).filter(
+        item =>
+          (!section.review || reviewOf(item) === section.review) &&
+          `${item.title} ${item.number} ${item.user.login} ${itemRepository(item)}`.toLowerCase().includes(q),
+      );
+      const compare = clientOrders[sortChoice.value];
+      return compare ? shown.sort(compare) : shown;
+    };
+    const groupTotal = (group: InboxGroup) => data.value[group]?.total_count ?? '–';
+    // Review sections count loaded items; a trailing + means more authored pages can still arrive.
+    const sectionCount = (section: Section) => {
+      const result = data.value[section.group];
+      if (!result || !section.review) return groupTotal(section.group);
+      const loaded = result.items.filter(item => reviewOf(item) === section.review).length;
+      return `${loaded}${result.items.length < result.total_count ? '+' : ''}`;
+    };
+
+    const collapsed = shallowRef<Set<string>>(new Set(['reviewed', 'merged']));
+    const allCollapsed = () => collapsed.value.size === sections.length;
+    function toggleGroup(id: string) {
+      const next = new Set(collapsed.value);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      collapsed.value = next;
+    }
+
     const navItem = (id: string, title: string, Icon: typeof InboxIcon, label: string, total: Section) => (
       <button
         class={`nav-item ${active.value === id ? 'selected' : ''}`}
@@ -412,7 +338,6 @@ export default defineComponent(
         <span class="nav-count">{sectionCount(total)}</span>
       </button>
     );
-    const allCollapsed = () => collapsed.value.size === sections.length;
     return () => (
       <div class="inbox-layout">
         <aside class="app-sidebar">
@@ -420,10 +345,10 @@ export default defineComponent(
             <span
               class={`grid place-items-center w-7 h-7 bg-accent-soft text-indigo ${styles['font-display']} text-xs rounded-lg border ${styles['border-border-strong']}`}
             >
-              {props.info?.user.login.slice(0, 1).toUpperCase() || 'Y'}
+              {props.info.user.login.slice(0, 1).toUpperCase()}
             </span>
             <span>
-              {props.info?.user.login || 'Your workspace'}
+              {props.info.user.login}
               <small>Personal workspace</small>
             </span>
           </div>
@@ -481,7 +406,7 @@ export default defineComponent(
           </div>
           <div class="border-t border-t-border py-3 px-2 flex items-center gap-1.5 text-muted text-xs">
             <span class="status-dot" />
-            {props.api ? 'Connected to GitHub' : 'Demo workspace'}
+            Connected to GitHub
             <span class="version ml-auto text-xs">v0.2</span>
           </div>
         </aside>
@@ -492,14 +417,7 @@ export default defineComponent(
             <ChevronRight size={13} />
             <strong>Inbox</strong>
             <div class="breadcrumb-actions">
-              <IconButton
-                label="Refresh inbox"
-                onClick={() => {
-                  forceFresh = true;
-                  refresh.value++;
-                }}
-                disabled={loading.value}
-              >
+              <IconButton label="Refresh inbox" onClick={reload} disabled={loading.value}>
                 <RefreshCw size={15} class={loading.value ? 'spin' : ''} />
               </IconButton>
               <span class="divider" />
@@ -514,7 +432,7 @@ export default defineComponent(
               <div>
                 <div class={`${styles['eyebrow']}`}>YOUR WORK, IN FOCUS</div>
                 <h1>
-                  {active.value === 'all' ? 'Inbox' : sections.find(section => section.id === active.value)?.label}
+                  {active.value === 'all' ? 'Inbox' : sectionById(active.value).label}
                   <span class="text-indigo">.</span>
                 </h1>
                 <p>A clear view of what needs your attention.</p>
@@ -528,25 +446,6 @@ export default defineComponent(
                 </span>
               </div>
             </div>
-            {!props.api && (
-              <div class="demo-card">
-                <div class="demo-card-icon">
-                  <GitPullRequest size={23} />
-                </div>
-                <div>
-                  <h3>A better place for your next review.</h3>
-                  <p>You’re exploring sample PRs. Connect GitHub to bring in your own.</p>
-                </div>
-                <button
-                  class="button primary"
-                  title="Connect your GitHub account to replace sample PRs with your inbox"
-                  onClick={() => props.onConnect()}
-                >
-                  Connect GitHub
-                  <ArrowRight size={15} />
-                </button>
-              </div>
-            )}
             <div class="inbox-toolbar">
               <SearchField
                 class="inbox-search"
@@ -739,43 +638,13 @@ export default defineComponent(
                             {shown.length ? (
                               <AnimatePresence initial={false}>
                                 {shown.map(item => (
-                                  <motion.button
-                                    {...fade()}
+                                  <InboxRow
                                     key={item.id}
-                                    class="pr-row"
-                                    title={`Review ${repository(item)}#${item.number}: ${item.title}${item.draft ? ' (draft)' : ''}`}
-                                    onClick={() => props.onOpen(item.html_url, item)}
-                                  >
-                                    <span class={`pr-row-status ${item.draft ? 'draft' : section.group === 'merged' ? 'merged' : ''}`}>
-                                      {item.draft ? (
-                                        <FilePenLine size={17} />
-                                      ) : section.group === 'merged' ? (
-                                        <GitMerge size={17} />
-                                      ) : (
-                                        <GitPullRequest size={17} />
-                                      )}
-                                    </span>
-                                    <div class="flex-1 min-w-0">
-                                      <div class="pr-row-title">
-                                        {item.title}
-                                        {item.labels.slice(0, 1).map(label => (
-                                          <span key={label.name} class="pr-label">
-                                            {label.name}
-                                          </span>
-                                        ))}
-                                      </div>
-                                      <div class="pr-row-meta">
-                                        <span>{repository(item).split('/').at(-1)}</span>
-                                        <span>#{item.number}</span>
-                                        <span class="text-xs">·</span>
-                                        <span>{item.user.login === (props.info?.user.login || 'you') ? 'you' : item.user.login}</span>
-                                      </div>
-                                    </div>
-                                    <RowIndicators item={item} />
-                                    <span class="row-time">{timeAgo(item.updated_at)}</span>
-                                    <Avatar login={item.user.login} small />
-                                    <ChevronRight class="row-arrow" size={15} />
-                                  </motion.button>
+                                    item={item}
+                                    group={section.group}
+                                    viewerLogin={props.info.user.login}
+                                    onOpen={props.onOpen}
+                                  />
                                 ))}
                               </AnimatePresence>
                             ) : (
@@ -784,7 +653,7 @@ export default defineComponent(
                                 {query.value ? 'No loaded PRs match your search.' : 'Nothing here. You’re all caught up.'}
                               </div>
                             )}
-                            {result.items.length < Math.min(result.total_count, 1000) && (
+                            {result.items.length < Math.min(result.total_count, searchResultCap) && (
                               <button
                                 class="py-3 px-5 text-xs text-accent"
                                 title={`Load the next page of ${section.label.toLowerCase()}`}
@@ -798,7 +667,7 @@ export default defineComponent(
                                 )}
                               </button>
                             )}
-                            {(result.incomplete_results || result.total_count > 1000) && (
+                            {(result.incomplete_results || result.total_count > searchResultCap) && (
                               <p class="group-warning">GitHub search may be incomplete and caps results at 1,000. Narrow by repository.</p>
                             )}
                           </>
@@ -806,14 +675,7 @@ export default defineComponent(
                         {errors.value[section.group] && (
                           <div class="group-error" role="alert">
                             {errors.value[section.group]}
-                            <button
-                              class="text-button"
-                              title="Refresh the inbox to retry loading pull requests"
-                              onClick={() => {
-                                forceFresh = true;
-                                refresh.value++;
-                              }}
-                            >
+                            <button class="text-button" title="Refresh the inbox to retry loading pull requests" onClick={reload}>
                               Retry
                             </button>
                           </div>
@@ -826,7 +688,7 @@ export default defineComponent(
             </div>
             <div class="inbox-footnote">
               <span class="status-dot" />
-              {props.api ? 'Live GitHub data · Refresh to sync updates' : 'Sample data · No GitHub actions are sent'}
+              Live GitHub data · Refresh to sync updates
               <span>Built for a little more focus.</span>
             </div>
           </div>
@@ -834,52 +696,5 @@ export default defineComponent(
       </div>
     );
   },
-  { props: ['api', 'info', 'onOpen', 'onOpenDialog', 'onConnect'] },
+  { props: ['api', 'info', 'onOpen', 'onOpenDialog'] },
 );
-
-type Mark = { icon: typeof GitMerge; tone: 'green' | 'red' | 'amber' | 'muted'; label: string };
-const checkMarks: Record<'success' | 'failure' | 'pending', Mark> = {
-  success: { icon: checkIcons.success, tone: 'green', label: 'Checks passed' },
-  failure: { icon: checkIcons.failure, tone: 'red', label: 'Checks failed' },
-  pending: { icon: checkIcons.pending, tone: 'amber', label: 'Checks running' },
-};
-// Every cell keeps its width, even when empty, so the columns line up across rows.
-function MarkCell(props: { name: string; mark?: Mark }) {
-  const Icon = props.mark?.icon;
-  return (
-    <span class={`${styles.cell} ${styles[`cell-${props.name}`]}`}>
-      {Icon && props.mark && (
-        <span class={styles[`tone-${props.mark.tone}`]} role="img" aria-label={props.mark.label} title={props.mark.label}>
-          <Icon size={14} />
-        </span>
-      )}
-    </span>
-  );
-}
-function RowIndicators(props: { item: InboxItem }) {
-  const details = props.item.details;
-  const participants = details?.participants ?? [];
-  return (
-    <>
-      <span class={`${styles.cell} ${styles['cell-bubbles']}`} title={participants.map(user => user.login).join(', ')}>
-        {participants.slice(0, 4).map(user => (
-          <Avatar key={user.login} login={user.login} small src={user.avatarUrl} />
-        ))}
-        {!!details && details.participantCount > 4 && <span class={styles.more}>+{details.participantCount - 4}</span>}
-      </span>
-      <MarkCell name="checks" mark={details?.checks ? checkMarks[details.checks] : undefined} />
-      <span class={`${styles.cell} ${styles['cell-changes']}`}>
-        {!!details && (
-          <span class={styles.changes} aria-label={`${details.additions} lines added, ${details.deletions} removed`}>
-            <span class={styles['tone-green']}>+{details.additions}</span>
-            <span class={styles['tone-red']}>−{details.deletions}</span>
-          </span>
-        )}
-      </span>
-    </>
-  );
-}
-
-function repository(item: InboxItem) {
-  return item.repository_url.replace('https://api.github.com/repos/', '');
-}

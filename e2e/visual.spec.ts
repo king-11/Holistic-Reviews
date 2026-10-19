@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { demoMode, mockGitHub, openPR } from './fake-github.ts';
+import { mockGitHub, openPR } from './fake-github.ts';
 
 async function settle(page: Page) {
   await page.evaluate(() => document.fonts.ready);
@@ -93,12 +93,3 @@ for (const theme of ['paper', 'pierre-light', 'solarized-light'] as const) {
     });
   });
 }
-
-test('demo workspace', async ({ page }) => {
-  await demoMode(page);
-  await page.goto('/');
-  await page.getByRole('button', { name: /Add Coda MCP setup/ }).click();
-  await page.getByRole('heading', { level: 1 }).waitFor();
-  await settle(page);
-  await expect(page).toHaveScreenshot('demo-workspace.png');
-});

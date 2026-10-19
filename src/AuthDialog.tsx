@@ -1,6 +1,6 @@
 import { defineComponent, onUnmounted, ref } from 'vue';
 import { ArrowUpRight, Check, CheckCheck, Copy, KeyRound, LockKeyhole, ShieldCheck } from '@lucide/vue';
-import { GitHub, type TokenInfo } from './github';
+import { GitHub, errorMessage, type TokenInfo } from './github';
 import { Github, Modal, Spinner, inputValue } from './ui';
 import styles from './AuthDialog.module.css';
 
@@ -29,7 +29,7 @@ export default defineComponent(
         const info = await new GitHub(value).validate(controller.signal);
         if (!controller.signal.aborted) props.onConnect(value, info);
       } catch (failure) {
-        if (!controller.signal.aborted) error.value = failure instanceof Error ? failure.message : 'Unable to connect to GitHub.';
+        if (!controller.signal.aborted) error.value = errorMessage(failure, 'Unable to connect to GitHub.');
       } finally {
         busy.value = false;
       }

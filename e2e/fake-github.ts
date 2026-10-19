@@ -4,28 +4,32 @@ import type { ChangedFile, Comment, PullRequest, Review, ReviewThread } from '..
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Fixture payloads are untyped GitHub JSON.
 type Payload = Record<string, any>;
 
-export const NOW = new Date('2026-10-17T12:00:00Z');
+const NOW = new Date('2026-10-17T12:00:00Z');
 const at = '2026-10-17T11:00:00Z';
 const sha = (char: string) => char.repeat(40);
-export const BASE = sha('a'),
-  HEAD = sha('b'),
+const BASE = sha('a'),
   FIRST = sha('c');
+export const HEAD = sha('b');
 const repo = { id: 1, full_name: 'acme/app' };
+const repoPath = `/repos/${repo.full_name}`;
 const user = (id: number, login: string, type = 'User') => ({ id, login, type });
-export const viewer = user(700, 'reviewer');
+const viewer = user(700, 'reviewer');
 const alice = user(701, 'alice'),
   bob = user(702, 'bob'),
   carol = user(703, 'carol'),
-  bot = user(704, 'ci-helper[bot]', 'Bot');
+  bot = user(704, 'ci-helper[bot]', 'Bot'),
+  dave = user(705, 'dave');
 
-const numbered = (change: (line: number) => string) => Array.from({ length: 80 }, (_, i) => change(i + 1)).join('\n') + '\n';
+const workerLines = 80;
+const changedWorkerLines = [10, 60];
+const numbered = (change: (line: number) => string) => Array.from({ length: workerLines }, (_, i) => change(i + 1)).join('\n') + '\n';
 const oldWorker = numbered(line => `line ${line}`);
-const newWorker = numbered(line => (line === 10 || line === 60 ? `line ${line} changed` : `line ${line}`));
+const newWorker = numbered(line => (changedWorkerLines.includes(line) ? `line ${line} changed` : `line ${line}`));
 const hunk = (line: number) =>
   `@@ -${line - 3},7 +${line - 3},7 @@\n${[line - 3, line - 2, line - 1].map(n => ` line ${n}`).join('\n')}\n-line ${line}\n+line ${line} changed\n${[line + 1, line + 2, line + 3].map(n => ` line ${n}`).join('\n')}`;
 
-export const files: ChangedFile[] = [
-  { filename: 'src/worker.py', status: 'modified', additions: 2, deletions: 2, changes: 4, patch: `${hunk(10)}\n${hunk(60)}` },
+const files: ChangedFile[] = [
+  { filename: 'src/worker.py', status: 'modified', additions: 2, deletions: 2, changes: 4, patch: changedWorkerLines.map(hunk).join('\n') },
   {
     filename: 'src/api/Handler.java',
     status: 'added',
@@ -56,11 +60,11 @@ export const files: ChangedFile[] = [
 ];
 
 const branch = (ref: string, head: string) => ({ ref, sha: head, repo });
-export const pr: PullRequest = {
+const pr: PullRequest = {
   id: 9042,
   node_id: 'PR42',
   mergeable_state: 'clean',
-  requested_reviewers: [{ id: 703, login: 'carol' }],
+  requested_reviewers: [carol],
   requested_teams: [{ slug: 'backend', name: 'Backend' }],
   labels: [{ name: 'retry', color: '0e8a16' }],
   number: 42,
@@ -112,14 +116,18 @@ const inline = (id: number, author: typeof alice, path: string, line: number, bo
   html_url: `${pr.html_url}#discussion_r${id}`,
   ...extra,
 });
-const inbox = (number: number, title: string, options: { draft?: boolean; repository?: string; login?: string } = {}) => ({
+const inbox = (
+  number: number,
+  title: string,
+  { draft = false, repository = repo.full_name, author = alice }: { draft?: boolean; repository?: string; author?: typeof alice } = {},
+) => ({
   id: number,
   number,
   title,
-  user: user(options.login === 'reviewer' ? 700 : 701, options.login || 'alice'),
-  html_url: `https://github.com/${options.repository || 'acme/app'}/pull/${number}`,
-  repository_url: `https://api.github.com/repos/${options.repository || 'acme/app'}`,
-  draft: !!options.draft,
+  user: author,
+  html_url: `https://github.com/${repository}/pull/${number}`,
+  repository_url: `https://api.github.com/repos/${repository}`,
+  draft,
   state: 'open',
   updated_at: at,
   comments: 1,
@@ -130,30 +138,28 @@ const inboxGroups: [RegExp, ReturnType<typeof inbox>[]][] = [
     /review-requested:/,
     [inbox(42, pr.title), inbox(77, 'Tune cache eviction'), inbox(88, 'Rotate infra credentials', { repository: 'acme/infra' })],
   ],
-  [/author:\S+ draft:true/, [inbox(90, 'Sketch retry dashboard', { draft: true, login: 'reviewer' })]],
+  [/author:\S+ draft:true/, [inbox(90, 'Sketch retry dashboard', { draft: true, author: viewer })]],
   [
     /author:\S+ draft:false/,
     [
-      inbox(91, 'Speed up CI cache', { login: 'reviewer' }),
-      inbox(94, 'Retry the sync backoff', { login: 'reviewer' }),
-      inbox(95, 'Tighten cache keys', { login: 'reviewer' }),
+      inbox(91, 'Speed up CI cache', { author: viewer }),
+      inbox(94, 'Retry the sync backoff', { author: viewer }),
+      inbox(95, 'Tighten cache keys', { author: viewer }),
     ],
   ],
   [/reviewed-by:/, [inbox(92, 'Draft reviewed earlier', { draft: true })]],
 ];
 
 const reviewState = { APPROVE: 'APPROVED', REQUEST_CHANGES: 'CHANGES_REQUESTED', COMMENT: 'COMMENTED' } as Record<string, string>;
+const mergedByViewer = inbox(93, 'Ship metrics exporter', { author: viewer }),
+  mergedForReview = inbox(96, 'Tune retry jitter');
 // Review-requested is checked first because the reviewing query also contains -author:.
 const mergedResults = (q: string) =>
   q.includes('review-requested:')
-    ? [inbox(96, 'Tune retry jitter', { login: 'alice' })]
+    ? [mergedForReview]
     : q.includes('author:')
-      ? [inbox(93, 'Ship metrics exporter', { login: 'reviewer' })]
-      : [
-          inbox(93, 'Ship metrics exporter', { login: 'reviewer' }),
-          inbox(96, 'Tune retry jitter', { login: 'alice' }),
-          inbox(97, 'Clean up scheduler logs', { login: 'carol' }),
-        ];
+      ? [mergedByViewer]
+      : [mergedByViewer, mergedForReview, inbox(97, 'Clean up scheduler logs', { author: carol })];
 const reviewer = (login: string) => ({ __typename: 'User', login });
 const basePullRequest: Payload = {
   createdAt: at,
@@ -165,8 +171,7 @@ const basePullRequest: Payload = {
   latestReviews: { nodes: [] },
   reviewRequests: { nodes: [] },
 };
-// Keyed by PR number: #94 was commented on and not re-requested, with a 12/3 change and two participants;
-// #95 is approved; #91 has no reviews.
+// #94 was commented on without a re-request, so it lands in Returned to you; #95 lands in Approved.
 const reviewSummaries: Record<number, Payload> = {
   94: {
     additions: 12,
@@ -291,7 +296,8 @@ export async function mockGitHub(
             },
           },
         };
-      case 'PullRequestDraft': {
+      case 'ConvertPullRequestToDraft':
+      case 'MarkPullRequestReadyForReview': {
         const name = query.match(/\{ (\w+)\(input/)![1];
         return { [name]: { pullRequest: { isDraft: name === 'convertPullRequestToDraft' } } };
       }
@@ -303,7 +309,8 @@ export async function mockGitHub(
         };
       case 'CommentReactions':
         return { node: { viewerCanReact: true, reactionGroups: reactionGroups(variables.id) } };
-      case 'CommentReaction': {
+      case 'AddReaction':
+      case 'RemoveReaction': {
         const name = query.match(/\{ (\w+)\(input/)![1];
         const groups = state.reactions.get(input.subjectId) || new Map();
         const group = groups.get(input.content) || { count: 0, viewer: false };
@@ -312,13 +319,13 @@ export async function mockGitHub(
         state.reactions.set(input.subjectId, groups);
         return { [name]: { subject: { viewerCanReact: true, reactionGroups: reactionGroups(input.subjectId) } } };
       }
-      case 'EditPendingComment': {
+      case 'UpdatePullRequestReviewComment': {
         const comment = pendingComment(input.pullRequestReviewCommentId);
         if (!comment) return { updatePullRequestReviewComment: { pullRequestReviewComment: null } };
         comment.body = input.body;
         return { updatePullRequestReviewComment: { pullRequestReviewComment: { id: comment.node_id, body: comment.body } } };
       }
-      case 'DeletePendingComment': {
+      case 'DeletePullRequestReviewComment': {
         const comment = pendingComment(input.id)!;
         state.inline = state.inline.filter(other => other !== comment);
         const review = state.reviews.find(other => other.id === comment.pull_request_review_id)!;
@@ -326,11 +333,11 @@ export async function mockGitHub(
           state.reviews = state.reviews.filter(other => other !== review);
         return { deletePullRequestReviewComment: { clientMutationId: null } };
       }
-      case 'EnableAutoMerge':
+      case 'EnablePullRequestAutoMerge':
         if (options.autoMergeClean) return { errors: [{ message: 'Pull request is in clean status' }] };
         state.autoMerge = { merge_method: input.mergeMethod.toLowerCase(), enabled_by: viewer };
         return { enablePullRequestAutoMerge: { pullRequest: { autoMergeRequest: { mergeMethod: input.mergeMethod } } } };
-      case 'DisableAutoMerge':
+      case 'DisablePullRequestAutoMerge':
         state.autoMerge = null;
         return { disablePullRequestAutoMerge: { pullRequest: { autoMergeRequest: null } } };
       case 'InboxDetails':
@@ -339,7 +346,8 @@ export async function mockGitHub(
             .filter(key => key.startsWith('number'))
             .map(key => [`pr${key.slice('number'.length)}`, { pullRequest: { ...basePullRequest, ...reviewSummaries[variables[key]] } }]),
         );
-      case 'UpdateReviewThread': {
+      case 'ResolveReviewThread':
+      case 'UnresolveReviewThread': {
         const name = query.match(/\{ (\w+)\(input/)![1];
         const thread = state.threads.find(thread => thread.id === input.threadId)!;
         thread.resolved = name === 'resolveReviewThread';
@@ -349,7 +357,7 @@ export async function mockGitHub(
           },
         };
       }
-      case 'AddReviewThread': {
+      case 'AddPullRequestReviewThread': {
         const review = state.reviews.find(review => review.node_id === input.pullRequestReviewId)!;
         const comment = addInline({
           body: input.body,
@@ -362,7 +370,7 @@ export async function mockGitHub(
         });
         return { addPullRequestReviewThread: { thread: { id: `T${comment.id}` } } };
       }
-      case 'AddReviewReply': {
+      case 'AddPullRequestReviewThreadReply': {
         const review = state.reviews.find(review => review.node_id === input.pullRequestReviewId)!;
         const root = state.inline.find(comment => `T${comment.id}` === input.pullRequestReviewThreadId)!;
         const reply = addInline({
@@ -397,7 +405,7 @@ export async function mockGitHub(
     query: URLSearchParams,
     body: Payload | undefined,
   ): [number, unknown, Record<string, string>?] {
-    const prPath = '/repos/acme/app/pulls/42';
+    const prPath = `${repoPath}/pulls/42`;
     if (path === '/user') return [200, viewer, { 'access-control-expose-headers': 'X-OAuth-Scopes', 'x-oauth-scopes': 'repo, read:org' }];
     if (path === '/search/issues') {
       const q = query.get('q') || '';
@@ -448,14 +456,14 @@ export async function mockGitHub(
           },
         ],
       ];
-    if (path.startsWith('/repos/acme/app/compare/'))
+    if (path.startsWith(`${repoPath}/compare/`))
       return [200, { files: [files[0]], merge_base_commit: { sha: path.endsWith(`${FIRST}...${HEAD}`) ? FIRST : BASE } }];
-    if (path.startsWith('/repos/acme/app/contents/')) {
-      if (path !== '/repos/acme/app/contents/src/worker.py') return [404, { message: 'Not Found' }];
+    if (path.startsWith(`${repoPath}/contents/`)) {
+      if (path !== `${repoPath}/contents/src/worker.py`) return [404, { message: 'Not Found' }];
       const text = query.get('ref') === BASE ? oldWorker : newWorker;
       return [200, { type: 'file', encoding: 'base64', size: text.length, content: Buffer.from(text).toString('base64') }];
     }
-    if (path === '/repos/acme/app/issues/42/comments') {
+    if (path === `${repoPath}/issues/42/comments`) {
       if (method === 'GET') return [200, state.conversation];
       const comment = { id: state.nextId++, user: viewer, body: body!.body, created_at: NOW.toISOString() };
       state.conversation.push(comment);
@@ -522,8 +530,8 @@ export async function mockGitHub(
       Object.assign(review, { state: reviewState[body!.event], body: body!.body, submitted_at: NOW.toISOString() });
       return [200, review];
     }
-    if (path === '/repos/acme/app/pulls') return [200, [parent, pr, child]];
-    if (path === '/repos/acme/app')
+    if (path === `${repoPath}/pulls`) return [200, [parent, pr, child]];
+    if (path === repoPath)
       return [
         200,
         {
@@ -535,7 +543,7 @@ export async function mockGitHub(
         },
       ];
     if (path === `${prPath}/merge`) return [200, { merged: true, message: 'Merged' }];
-    if (path === '/repos/acme/app/labels')
+    if (path === `${repoPath}/labels`)
       return [
         200,
         [
@@ -543,9 +551,9 @@ export async function mockGitHub(
           { name: 'retry', color: '0e8a16' },
         ],
       ];
-    if (path === '/repos/acme/app/issues/42/labels') return [200, (body!.labels as string[]).map(name => ({ name, color: 'ededed' }))];
-    if (path === '/repos/acme/app/assignees') return [200, [pr.user, { id: 704, login: 'bob' }, { id: 705, login: 'dave' }]];
-    if (path === '/repos/acme/app/teams')
+    if (path === `${repoPath}/issues/42/labels`) return [200, (body!.labels as string[]).map(name => ({ name, color: 'ededed' }))];
+    if (path === `${repoPath}/assignees`) return [200, [pr.user, bob, dave]];
+    if (path === `${repoPath}/teams`)
       return [
         200,
         [
@@ -569,7 +577,7 @@ export async function mockGitHub(
         },
       ];
     if (/^\/repos\/acme\/app\/actions\/(runs\/\d+\/rerun(-failed-jobs)?|jobs\/\d+\/rerun)$/.test(path)) return [201, {}];
-    if (path === `/repos/acme/app/commits/${HEAD}/check-runs`)
+    if (path === `${repoPath}/commits/${HEAD}/check-runs`)
       return [
         200,
         {
@@ -593,7 +601,7 @@ export async function mockGitHub(
           ],
         },
       ];
-    if (path === `/repos/acme/app/commits/${HEAD}/status`)
+    if (path === `${repoPath}/commits/${HEAD}/status`)
       return [
         200,
         {
@@ -643,10 +651,6 @@ export async function mockGitHub(
     }
   });
   return Object.assign(state, { release });
-}
-
-export async function demoMode(page: Page) {
-  await page.clock.setFixedTime(NOW);
 }
 
 // Sections load after the header, so most tests wait for every request to settle before interacting.

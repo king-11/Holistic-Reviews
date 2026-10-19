@@ -11,7 +11,7 @@ import {
   toggleViewedFile,
   verifiedContextLines,
 } from './diff.ts';
-import { demoWorkspace } from './demo.ts';
+import { demoWorkspace } from './fixtures.ts';
 import type { ChangedFile, Comment } from './github.ts';
 
 const file: ChangedFile = {

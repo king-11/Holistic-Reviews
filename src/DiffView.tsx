@@ -11,7 +11,7 @@ const pierreVariants = {
 for (const [name, load] of Object.entries(pierreVariants))
   registerCustomTheme(name, () => load().then(module => module.default as unknown as ThemeRegistration));
 import type { DiffLineAnnotation, ExpansionDirections, FileDiffLoadedFiles, ThemeRegistration } from '@pierre/diffs';
-import type { ChangedFile, Comment, ReviewThread } from './github';
+import { errorMessage, type ChangedFile, type Comment, type ReviewThread } from './github';
 import {
   ArrowUpRight,
   ChevronRight,
@@ -71,7 +71,7 @@ type DiffViewProps = {
   onComment: (line: number, side: Side, start?: { line: number; side: Side }) => void;
   replies: ReplyActions;
   composer?: LineComposer;
-  loadContext?: ContextLoader;
+  loadContext: ContextLoader;
   commentingEnabled?: boolean;
 };
 
@@ -247,7 +247,7 @@ type RendererProps = {
   baseUrl: string;
   selectedThreadId: number | null;
   onThreadAnchor: ThreadAnchor;
-  loadContext?: ContextLoader;
+  loadContext: ContextLoader;
   commentingEnabled?: boolean;
   lineCounts?: LineCounts;
   onContextLoaded: (counts: LineCounts) => void;
@@ -308,8 +308,7 @@ const DiffRenderer = defineComponent(
               if (!disposed && instance.fileDiff)
                 expand(index, nearestContextDirection(index, instance.fileDiff.hunks.length, direction, count), count);
             } catch (failure) {
-              if (!disposed && !contextError.value)
-                contextError.value = failure instanceof Error ? failure.message : 'Context could not be expanded.';
+              if (!disposed && !contextError.value) contextError.value = errorMessage(failure, 'Context could not be expanded.');
             } finally {
               setExpansionBusy(false);
             }
@@ -330,31 +329,28 @@ const DiffRenderer = defineComponent(
             disableLineNumbers: !settings.lineNumbers,
             overflow: settings.wordWrap ? 'wrap' : 'scroll',
             diffIndicators: settings.indicators,
-            hunkSeparators: loadContext ? 'line-info' : 'metadata',
+            hunkSeparators: 'line-info',
             expansionLineCount: 20,
-            loadDiffFiles: loadContext
-              ? async () => {
-                  if (!disposed) {
-                    contextLoading.value = true;
-                    contextError.value = '';
-                  }
-                  try {
-                    const files = await loadContext(file);
-                    if (!disposed)
-                      onContextLoaded({
-                        LEFT: files.oldFile ? textLineCount(files.oldFile.contents) : 0,
-                        RIGHT: textLineCount(files.newFile.contents),
-                      });
-                    return files;
-                  } catch (failure) {
-                    if (!disposed)
-                      contextError.value = failure instanceof Error ? failure.message : 'Context could not be loaded. Try expanding again.';
-                    throw failure;
-                  } finally {
-                    if (!disposed) contextLoading.value = false;
-                  }
-                }
-              : undefined,
+            loadDiffFiles: async () => {
+              if (!disposed) {
+                contextLoading.value = true;
+                contextError.value = '';
+              }
+              try {
+                const files = await loadContext(file);
+                if (!disposed)
+                  onContextLoaded({
+                    LEFT: files.oldFile ? textLineCount(files.oldFile.contents) : 0,
+                    RIGHT: textLineCount(files.newFile.contents),
+                  });
+                return files;
+              } catch (failure) {
+                if (!disposed) contextError.value = errorMessage(failure, 'Context could not be loaded. Try expanding again.');
+                throw failure;
+              } finally {
+                if (!disposed) contextLoading.value = false;
+              }
+            },
             lineDiffType: 'word-alt',
             enableGutterUtility: commenting,
             enableLineSelection: true,

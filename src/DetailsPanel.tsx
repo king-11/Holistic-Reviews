@@ -24,6 +24,7 @@ import {
   X,
 } from '@lucide/vue';
 import {
+  errorMessage,
   mergeabilityPending,
   mergeReady,
   type GitHub,
@@ -39,6 +40,7 @@ import { checkIcons } from './Checks';
 import { pop } from './motion';
 import { Avatar, IconButton, Loader, SearchField, useWidth, Dismiss } from './ui';
 import styles from './DetailsPanel.module.css';
+import switchStyles from './switch.module.css';
 
 export type Run = <T>(
   label: string | ((result: T) => string),
@@ -117,7 +119,7 @@ const mergeHint = (pr: PullRequest, autoMerge: boolean) => {
     : 'GitHub is still checking mergeability; merging will be attempted.';
 };
 
-export const MergeMenu = defineComponent(
+const MergeMenu = defineComponent(
   (props: { pr: PullRequest; methods: MergeMethod[]; autoMerge: boolean; disabled: boolean; onMerge: (method: MergeMethod) => void }) => {
     const open = shallowRef(false);
     const confirming = shallowRef<MergeMethod | null>(null);
@@ -177,6 +179,70 @@ export const MergeMenu = defineComponent(
   { props: ['pr', 'methods', 'autoMerge', 'disabled', 'onMerge'] },
 );
 
+export const MergeControls = defineComponent(
+  (props: { pr: PullRequest; prRef: PRRef; methods: MergeMethod[]; autoMerge: boolean; disabled: boolean; onRun: Run }) => {
+    const autoMergeMethod = () => props.pr.auto_merge?.merge_method ?? props.methods[0];
+    const toggleAutoMerge = async (input: HTMLInputElement) => {
+      const enable = input.checked;
+      const method = autoMergeMethod();
+      const saved = await props.onRun(enable ? 'Auto-merge enabled' : 'Auto-merge turned off', async api => {
+        try {
+          await api.setAutoMerge(props.pr, enable && method ? method : null);
+          return true;
+        } catch (error) {
+          if (enable && error instanceof Error && /clean status/i.test(error.message))
+            throw new Error('This pull request is already mergeable. Use Merge.');
+          throw error;
+        }
+      });
+      // A failed write leaves the PR unchanged, so the switch must not keep the rejected position.
+      if (!saved) input.checked = !enable;
+    };
+    return () => {
+      const { pr } = props;
+      return (
+        <>
+          {props.autoMerge && pr.state === 'open' && !pr.draft && (
+            <label
+              class={styles['auto-merge']}
+              title={
+                pr.mergeable_state === 'dirty'
+                  ? 'Resolve merge conflicts first'
+                  : pr.auto_merge
+                    ? `Auto-merge (${pr.auto_merge.merge_method}) enabled by ${pr.auto_merge.enabled_by.login}. Turn off to cancel.`
+                    : 'Merge automatically once required checks and reviews pass.'
+              }
+            >
+              <span>Auto-merge</span>
+              <input
+                type="checkbox"
+                role="switch"
+                class={switchStyles.switch}
+                checked={!!pr.auto_merge}
+                disabled={props.disabled || pr.mergeable_state === 'dirty' || !autoMergeMethod()}
+                onChange={e => void toggleAutoMerge(e.target as HTMLInputElement)}
+              />
+            </label>
+          )}
+          <MergeMenu
+            pr={pr}
+            methods={props.methods}
+            autoMerge={props.autoMerge}
+            disabled={props.disabled}
+            onMerge={method =>
+              props.onRun(
+                result => (result === 'queued' ? 'Auto-merge enabled. GitHub will merge once requirements pass.' : 'Pull request merged'),
+                api => api.mergeOrAutoMerge(props.prRef, pr, method, props.autoMerge),
+              )
+            }
+          />
+        </>
+      );
+    };
+  },
+  { props: ['pr', 'prRef', 'methods', 'autoMerge', 'disabled', 'onRun'] },
+);
+
 export const MoreMenu = defineComponent(
   (props: { details: Details }) => {
     const open = shallowRef(false);
@@ -215,7 +281,6 @@ export const MoreMenu = defineComponent(
                     role="menuitem"
                     class={styles.option}
                     disabled={details.disabled()}
-                    title={details.hint()}
                     onClick={() => {
                       open.value = false;
                       action();
@@ -248,7 +313,7 @@ const Picker = defineComponent(
       if (open.value && !options.value)
         void props.load().then(
           value => (options.value = value),
-          error => (failure.value = error instanceof Error ? error.message : 'Could not load options.'),
+          error => (failure.value = errorMessage(error, 'Could not load options.')),
         );
     };
     return () => (
@@ -305,7 +370,7 @@ export interface DetailsSource {
   issues?: LinkedIssue[];
   codeOwners?: string[];
   onBehalfOf?: Record<string, string[]>;
-  api: GitHub | null;
+  api: GitHub;
   prRef: PRRef;
   busy: boolean;
   onChecks: () => void;
@@ -345,8 +410,7 @@ export function useDetails(source: () => DetailsSource) {
     labels,
     setLabels,
     request,
-    disabled: () => source().busy || !source().api,
-    hint: () => (source().api ? undefined : 'Connect GitHub to change this pull request'),
+    disabled: () => source().busy,
     rerequestable: () => reviewers.value.map(([login]) => login).filter(login => requestable(pr(), login)),
   };
 }
@@ -422,7 +486,7 @@ function ReviewerPicker(props: { details: Details }) {
       load={async () => {
         const { api, prRef } = details.source();
         // Personal repos have no teams, and listing them needs org read access.
-        const [users, teams] = await Promise.all([api!.assignableUsers(prRef), api!.repoTeams(prRef).catch(() => [])]);
+        const [users, teams] = await Promise.all([api.assignableUsers(prRef), api.repoTeams(prRef).catch(() => [])]);
         return [
           ...users.map(user => user.login).filter(login => requestable(details.pr(), login)),
           ...teams.map(team => teamKey(details.pr(), team.slug)),
@@ -442,7 +506,7 @@ function LabelPicker(props: { details: Details }) {
       disabled={details.disabled()}
       selected={names()}
       load={async () =>
-        (await details.source().api!.repoLabels(details.source().prRef)).map(label => ({
+        (await details.source().api.repoLabels(details.source().prRef)).map(label => ({
           key: label.name,
           text: label.name,
           color: label.color,

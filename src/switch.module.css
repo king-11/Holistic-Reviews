@@ -1,0 +1,27 @@
+.switch {
+  appearance: none;
+  width: 28px;
+  height: 16px;
+  background: var(--color-border-strong);
+  border-radius: var(--radius-3xl);
+  position: relative;
+  margin: 0;
+}
+.switch::after {
+  content: '';
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: var(--color-white);
+  border-radius: 50%;
+  top: 2px;
+  left: 2px;
+  box-shadow: var(--shadow-xs);
+  transition: transform 0.15s;
+}
+.switch:checked {
+  background: var(--color-indigo);
+}
+.switch:checked::after {
+  transform: translateX(11px);
+}

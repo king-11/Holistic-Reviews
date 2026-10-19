@@ -38,27 +38,6 @@
 .review-code-comment > :global(.comment-reactions) {
   margin-top: 12px;
 }
-.inline-comment-actions {
-  flex-wrap: wrap;
-}
-.inline-comment-actions > :first-child {
-  margin-right: auto;
-}
-.inline-composer-heading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: var(--color-subtle);
-  border-bottom: 1px solid var(--color-border);
-}
-.inline-composer-heading > span {
-  color: var(--color-muted);
-  font-size: var(--text-xs);
-}
-.inline-composer-heading > :last-child {
-  margin-left: auto;
-}
 .comments-toggle > span {
   font-size: var(--text-xs);
 }
@@ -75,11 +54,9 @@
   opacity: 1 !important;
 }
 .pr-description {
+  padding: 16px 0 4px;
   color: var(--color-secondary);
   overflow-wrap: anywhere;
-}
-.pr-description {
-  padding: 16px 0 4px;
 }
 .settings-popover {
   width: 244px;
@@ -92,38 +69,6 @@
   padding: 12px 8px;
   font-size: var(--text-xs);
   cursor: pointer;
-}
-.auto-merge {
-  gap: 8px;
-  padding: 0;
-  cursor: default;
-}
-.setting-row input[role='switch'] {
-  appearance: none;
-  width: 28px;
-  height: 16px;
-  background: var(--color-border-strong);
-  border-radius: var(--radius-3xl);
-  position: relative;
-  margin: 0;
-}
-.setting-row input[role='switch']::after {
-  content: '';
-  position: absolute;
-  width: 12px;
-  height: 12px;
-  background: var(--color-white);
-  border-radius: 50%;
-  top: 2px;
-  left: 2px;
-  box-shadow: var(--shadow-xs);
-  transition: transform 0.15s;
-}
-.setting-row input[role='switch']:checked {
-  background: var(--color-indigo);
-}
-.setting-row input[role='switch']:checked::after {
-  transform: translateX(11px);
 }
 .setting-row select {
   font-size: var(--text-xs);

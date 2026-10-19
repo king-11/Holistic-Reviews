@@ -6,6 +6,7 @@ import {
   classifyReview,
   inboxQuery,
   parsePRUrl,
+  searchPageSize,
   workspaceSections,
   type Comment,
   type PullRequest,
@@ -13,7 +14,7 @@ import {
   type ReviewSummary,
   type StatusCheck,
 } from './github.ts';
-import { demoInbox, demoPR } from './demo.ts';
+import { demoInbox, demoPR } from './fixtures.ts';
 
 const ref = { owner: 'acme', repo: 'app', number: 42 };
 const sha = demoPR.head.sha;
@@ -278,13 +279,12 @@ describe('PR references and inbox queries', () => {
       assert.throws(() => parsePRUrl(url));
     }
   });
-  it('creates distinct review, authored, draft, reviewed and merged queries', () => {
+  it('creates distinct review, authored, draft and reviewed queries', () => {
     assert.match(inboxQuery('requested', 'me'), /is:open review-requested:me draft:false/);
     assert.match(inboxQuery('authored', 'me'), /author:me draft:false/);
     assert.match(inboxQuery('drafts', 'me'), /author:me draft:true/);
     assert.match(inboxQuery('reviewed', 'me'), /reviewed-by:me -author:me/);
     assert.doesNotMatch(inboxQuery('reviewed', 'me'), /\bdraft:/);
-    assert.match(inboxQuery('merged', 'me'), /is:merged author:me/);
     assert.match(inboxQuery('requested', 'me', ['acme/app', 'acme/other']), /repo:acme\/app repo:acme\/other/);
   });
   for (const [name, repos, merged, expected] of [
@@ -308,7 +308,7 @@ describe('PR references and inbox queries', () => {
   ] as const)
     it(`requests advanced search only for the ${merged} merged filter`, async () => {
       const calls = fake([{ data: { items: [], total_count: 0, incomplete_results: false } }]);
-      await new GitHub('test-only-token').inbox('merged', 'me', ['acme/app'], 1, undefined, merged);
+      await new GitHub('test-only-token').inbox('merged', { login: 'me', repos: ['acme/app'], merged });
       assert.equal(new URL(calls[0].url).searchParams.has('advanced_search'), advanced);
     });
   it('links only branch matches in the correct repository, excluding itself', () => {
@@ -372,40 +372,13 @@ describe('review state, auto-merge and merge settings', () => {
       assert.equal(classifyReview(input, 'me'), expected);
     });
 
-  it('attaches review state to authored items from one batched GraphQL query', async () => {
-    const calls = fake([
-      { data: { items: [authoredItem(1), authoredItem(2, 'acme/other')], total_count: 2, incomplete_results: false } },
-      {
-        data: {
-          data: {
-            pr0: { pullRequest: reviewData('APPROVED') },
-            pr1: { pullRequest: reviewData('REVIEW_REQUIRED', [review('COMMENTED', 'bob')]) },
-          },
-        },
-      },
-    ]);
-    const result = await new GitHub('test-only-token').inbox('authored', 'me');
-    assert.deepEqual(
-      result.items.map(item => item.review),
-      ['approved', 'returned'],
-    );
-    assert.equal(calls.length, 2);
-    assert.deepEqual(calls[1].body?.variables, {
-      owner0: 'acme',
-      name0: 'app',
-      number0: 1,
-      owner1: 'acme',
-      name1: 'other',
-      number1: 2,
-    });
-  });
   for (const group of ['authored', 'requested'] as const)
     it(`leaves ${group} items unenriched when the detail batch fails so the section still loads`, async () => {
       fake([
         { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
         { data: { errors: [{ message: 'Something went wrong' }] } },
       ]);
-      const result = await new GitHub('test-only-token').inbox(group, 'me');
+      const result = await new GitHub('test-only-token').inbox(group, { login: 'me' });
       assert.equal(result.items.length, 1);
       assert.equal(result.items[0].review, undefined);
       assert.equal(result.items[0].details, undefined);
@@ -434,16 +407,16 @@ describe('review state, auto-merge and merge settings', () => {
           },
         },
       ]);
-      const [item] = (await new GitHub('test-only-token').inbox('requested', 'me')).items;
+      const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
       assert.equal(item.details?.checks, checks);
     });
-  for (const [group, review] of [
-    ['reviewed', undefined],
-    ['authored', 'approved'],
+  for (const [group, reviews] of [
+    ['reviewed', [undefined, undefined]],
+    ['authored', ['approved', 'returned']],
   ] as const)
-    it(`attaches details to ${group} items${review ? ' and classifies their review' : ' without review state'}`, async () => {
-      fake([
-        { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
+    it(`attaches details to ${group} items from one batched GraphQL query${reviews[0] ? ' and classifies their review' : ' without review state'}`, async () => {
+      const calls = fake([
+        { data: { items: [authoredItem(1), authoredItem(2, 'acme/other')], total_count: 2, incomplete_results: false } },
         {
           data: {
             data: {
@@ -461,24 +434,34 @@ describe('review state, auto-merge and merge settings', () => {
                   },
                 },
               },
+              pr1: { pullRequest: reviewData('REVIEW_REQUIRED', [review('COMMENTED', 'bob')]) },
             },
           },
         },
       ]);
-      const [item] = (await new GitHub('test-only-token').inbox(group, 'me')).items;
-      assert.equal(item.review, review);
+      const { items } = await new GitHub('test-only-token').inbox(group, { login: 'me' });
+      assert.deepEqual(
+        items.map(item => item.review),
+        reviews,
+      );
+      assert.equal(calls.length, 2);
+      assert.deepEqual(calls[1].body?.variables, { owner0: 'acme', name0: 'app', number0: 1, owner1: 'acme', name1: 'other', number1: 2 });
+      const [item] = items;
       assert.deepEqual(item.details?.participants, [{ login: 'bob', avatarUrl: 'https://example.test/bob' }]);
       assert.equal(item.details?.participantCount, 2);
       assert.deepEqual([item.details?.additions, item.details?.deletions], [7, 2]);
     });
-  for (const [order, sort, direction] of [
-    [{ sort: 'created', order: 'asc' }, 'created', 'asc'],
-    [undefined, 'updated', 'desc'],
+  for (const [order, page, sort, direction] of [
+    [{ sort: 'created', order: 'asc' }, 2, 'created', 'asc'],
+    [undefined, 1, 'updated', 'desc'],
   ] as const)
-    it(`requests ${sort} ${direction} search results${order ? '' : ' by default'}`, async () => {
+    it(`encodes page ${page} of ${sort} ${direction} search results${order ? '' : ' by default'}`, async () => {
       const calls = fake([{ data: { items: [], total_count: 0, incomplete_results: false } }]);
-      await new GitHub('test-only-token').inbox('requested', 'me', [], 1, undefined, 'mine', order);
+      await new GitHub('test-only-token').inbox('requested', { login: 'me', repos: ['acme/app'], page, merged: 'mine', order });
       const url = new URL(calls[0].url);
+      assert.equal(url.searchParams.get('q'), inboxQuery('requested', 'me', ['acme/app']));
+      assert.equal(url.searchParams.get('per_page'), String(searchPageSize));
+      assert.equal(url.searchParams.get('page'), String(page));
       assert.equal(url.searchParams.get('sort'), sort);
       assert.equal(url.searchParams.get('order'), direction);
     });
@@ -509,18 +492,28 @@ describe('review state, auto-merge and merge settings', () => {
       );
     });
 
-  it('enables auto-merge with the chosen method pinned to the head commit', async () => {
-    const calls = fake([enabled]);
-    await new GitHub('test-only-token').mergeOrAutoMerge(ref, pullRequest('unknown'), 'squash', true);
-    assert.match(String(calls[0].body?.query), /EnableAutoMerge/);
-    assert.deepEqual(calls[0].body?.variables, { input: { pullRequestId: 'demo-pr', mergeMethod: 'SQUASH', expectedHeadOid: sha } });
-  });
-  it('disables auto-merge and requires GitHub to confirm it was cleared', async () => {
-    const calls = fake([{ data: { data: { disablePullRequestAutoMerge: { pullRequest: { autoMergeRequest: null } } } } }]);
-    await new GitHub('test-only-token').setAutoMerge(pullRequest('clean'), null);
-    assert.match(String(calls[0].body?.query), /DisableAutoMerge/);
-    assert.deepEqual(calls[0].body?.variables, { input: { pullRequestId: 'demo-pr' } });
-  });
+  for (const [name, method, response, mutation, input] of [
+    [
+      'enables auto-merge with the chosen method pinned to the head commit',
+      'squash',
+      enabled,
+      'enablePullRequestAutoMerge',
+      { pullRequestId: 'demo-pr', mergeMethod: 'SQUASH', expectedHeadOid: sha },
+    ],
+    [
+      'disables auto-merge and requires GitHub to confirm it was cleared',
+      null,
+      { data: { data: { disablePullRequestAutoMerge: { pullRequest: { autoMergeRequest: null } } } } },
+      'disablePullRequestAutoMerge',
+      { pullRequestId: 'demo-pr' },
+    ],
+  ] as const)
+    it(name, async () => {
+      const calls = fake([response]);
+      await new GitHub('test-only-token').setAutoMerge(pullRequest('unknown'), method);
+      assert.match(String(calls[0].body?.query), new RegExp(`${mutation}\\(input`));
+      assert.deepEqual(calls[0].body?.variables, { input });
+    });
   for (const [allowed, autoMerge] of [
     [true, true],
     [undefined, false],
@@ -559,13 +552,6 @@ describe('GitHub authentication and safe requests', () => {
     assert.equal(client.fresh(), client.fresh());
     assert.notEqual(client.fresh(), client);
     assert.equal(client.fresh().fresh(), client.fresh());
-  });
-  it('reads the PR head fresh before a write that depends on it', async () => {
-    const calls = fake([{ data: demoPR }, { data: pending }]);
-    await new GitHub('test-only-token').startReview(ref, sha);
-    assert.equal(calls[0].init.method, undefined);
-    assert.equal(calls[0].init.cache, 'no-cache');
-    assert.equal(new URL(calls[0].url).pathname, '/repos/acme/app/pulls/42');
   });
   it('rejects URL paths that could escape the API origin', async () => {
     const calls = fake([]);
@@ -626,18 +612,10 @@ describe('GitHub data loading', () => {
     assert.deepEqual(await new GitHub('test-only-token').pages('/items?state=open', undefined, 1), { items: [1], truncated: true });
     assert.match(calls[0].url, /\?state=open&per_page/);
   });
-  it('encodes inbox searches and pages', async () => {
-    const calls = fake([{ data: { items: [], total_count: 0, incomplete_results: false } }]);
-    await new GitHub('test-only-token').inbox('requested', 'me', ['acme/app'], 2);
-    const url = new URL(calls[0].url);
-    assert.match(url.searchParams.get('q')!, /review-requested:me/);
-    assert.match(url.searchParams.get('q')!, /\bdraft:false\b/);
-    assert.equal(url.searchParams.get('page'), '2');
-  });
   it('keeps draft PRs eligible for Reviewed by you', async () => {
     const draft = { ...demoInbox.requested[0], draft: true };
     const calls = fake([{ data: { items: [draft], total_count: 1, incomplete_results: false } }]);
-    const result = await new GitHub('test-only-token').inbox('reviewed', 'me');
+    const result = await new GitHub('test-only-token').inbox('reviewed', { login: 'me' });
     assert.deepEqual(result.items, [draft]);
     assert.equal(result.total_count, 1);
     const query = new URL(calls[0].url).searchParams.get('q')!;
@@ -928,51 +906,49 @@ describe('GitHub review actions (mocked; no real writes)', () => {
     await assert.rejects(api.setThreadResolved('thread-1', true), /did not confirm/);
     assert.equal(calls.length, 3);
   });
-  it('creates a pending review without an event', async () => {
-    const calls = fake([{ data: demoPR }, { data: pending }]);
-    assert.equal((await new GitHub('test-only-token').startReview(ref, sha)).id, 7);
-    assert.deepEqual(calls[1].body, { commit_id: sha });
-    assert.equal(calls[1].init.method, 'POST');
-  });
-  it('blocks writes when the diff head is stale', async () => {
-    const calls = fake([{ data: { ...demoPR, head: { ...demoPR.head, sha: 'new-sha' } } }]);
-    await assert.rejects(new GitHub('test-only-token').inlineComment(ref, sha, 'body', 'a.ts', 2, 'RIGHT'), /new commits/);
-    assert.equal(calls.length, 1);
-  });
-  it('starts a review and saves its first inline comment atomically without publishing', async () => {
-    const calls = fake([{ data: demoPR }, { data: pending }]);
-    const input = { body: 'Please cover this case', path: 'src/a.ts', line: 11, side: 'LEFT' as const };
-    const result = await new GitHub('test-only-token').startReview(ref, sha, input);
-    assert.equal(result.state, 'PENDING');
-    assert.equal(calls.length, 2);
-    assert.deepEqual(calls[1].body, { commit_id: sha, comments: [input] });
-    assert.equal(Object.hasOwn(calls[1].body || {}, 'event'), false);
-  });
-  it('does not create a line-started review on an outdated diff or retry failed writes', async () => {
-    const calls = fake([
-      { data: { ...demoPR, head: { ...demoPR.head, sha: 'new-sha' } } },
-      { data: demoPR },
-      { status: 422, data: { message: 'A pending review already exists' } },
-    ]);
-    const api = new GitHub('test-only-token');
-    const input = { body: 'Feedback', path: 'a.ts', line: 2, side: 'RIGHT' as const };
-    await assert.rejects(api.startReview(ref, sha, input), /new commits/);
-    assert.equal(calls.length, 1);
-    await assert.rejects(api.startReview(ref, sha, input), /pending review already exists/);
-    assert.equal(calls.length, 3);
-  });
-  it('adds pending inline comments with GraphQL rather than publishing them', async () => {
-    const calls = fake([{ data: demoPR }, { data: { data: { addPullRequestReviewThread: { thread: { id: 'thread' } } } } }]);
-    await new GitHub('test-only-token').inlineComment(ref, sha, 'feedback', 'a.ts', 9, 'LEFT', pending);
-    assert.equal(calls[1].url, 'https://api.github.com/graphql');
-    assert.deepEqual(calls[1].body?.variables, {
-      input: { pullRequestReviewId: 'review-node', body: 'feedback', path: 'a.ts', line: 9, side: 'LEFT' },
+  const lineComment = { body: 'Please cover this case', path: 'src/a.ts', line: 11, side: 'LEFT' as const };
+  for (const [name, comment] of [
+    ['creates a pending review without an event', undefined],
+    ['starts a review and saves its first inline comment atomically without publishing', lineComment],
+  ] as const)
+    it(`${name}, after reading the PR head fresh`, async () => {
+      const calls = fake([{ data: demoPR }, { data: pending }]);
+      const result = await new GitHub('test-only-token').startReview(ref, sha, comment);
+      assert.deepEqual([result.id, result.state], [7, 'PENDING']);
+      assert.deepEqual(
+        calls.map(call => [call.init.method ?? 'GET', call.init.cache, new URL(call.url).pathname]),
+        [
+          ['GET', 'no-cache', '/repos/acme/app/pulls/42'],
+          ['POST', 'default', '/repos/acme/app/pulls/42/reviews'],
+        ],
+      );
+      assert.deepEqual(calls[1].body, { commit_id: sha, ...(comment ? { comments: [comment] } : {}) });
     });
+  for (const [name, write] of [
+    ['a direct inline comment', (api: GitHub) => api.inlineComment(ref, sha, { body: 'body', path: 'a.ts', line: 2, side: 'RIGHT' })],
+    ['a line-started review', (api: GitHub) => api.startReview(ref, sha, lineComment)],
+    ['a pending reply', (api: GitHub) => api.reply(ref, 8, 'Reply', pending, 'thread')],
+    ['a review submission', (api: GitHub) => api.submitReview(ref, sha, 'APPROVE', '')],
+  ] as const)
+    it(`blocks ${name} when the diff head is stale`, async () => {
+      const calls = fake([{ data: { ...demoPR, head: { ...demoPR.head, sha: 'new-sha' } } }]);
+      await assert.rejects(write(new GitHub('test-only-token')), /new commits/);
+      assert.equal(calls.length, 1);
+    });
+  it('does not retry a failed line-started review', async () => {
+    const calls = fake([{ data: demoPR }, { status: 422, data: { message: 'A pending review already exists' } }]);
+    await assert.rejects(new GitHub('test-only-token').startReview(ref, sha, lineComment), /pending review already exists/);
+    assert.equal(calls.length, 2);
   });
   it('blocks inline comments on a stale pending review', async () => {
     const calls = fake([{ data: demoPR }]);
     await assert.rejects(
-      new GitHub('test-only-token').inlineComment(ref, sha, 'feedback', 'a.ts', 9, 'RIGHT', { ...pending, commit_id: 'old' }),
+      new GitHub('test-only-token').inlineComment(
+        ref,
+        sha,
+        { body: 'feedback', path: 'a.ts', line: 9, side: 'RIGHT' },
+        { ...pending, commit_id: 'old' },
+      ),
       /older commit/,
     );
     assert.equal(calls.length, 1);
@@ -980,39 +956,53 @@ describe('GitHub review actions (mocked; no real writes)', () => {
   it('surfaces GraphQL mutation errors even with HTTP 200', async () => {
     fake([{ data: demoPR }, { data: { errors: [{ message: 'Insufficient permissions' }] } }]);
     await assert.rejects(
-      new GitHub('test-only-token').inlineComment(ref, sha, 'body', 'a.ts', 2, 'RIGHT', pending),
+      new GitHub('test-only-token').inlineComment(ref, sha, { body: 'body', path: 'a.ts', line: 2, side: 'RIGHT' }, pending),
       /Insufficient permissions/,
     );
   });
-  it('publishes direct inline comments with commit, path, line and side', async () => {
-    const calls = fake([{ data: demoPR }, { data: {} }]);
-    await new GitHub('test-only-token').inlineComment(ref, sha, 'feedback', 'a.ts', 2, 'RIGHT');
-    assert.deepEqual(calls[1].body, { body: 'feedback', path: 'a.ts', line: 2, side: 'RIGHT', commit_id: sha });
-    assert.match(calls[1].url, /\/pulls\/42\/comments$/);
-  });
-  it('sends multi-line ranges to both direct and pending comment APIs', async () => {
-    const calls = fake([
-      { data: demoPR },
+  const comment = { body: 'feedback', path: 'a.ts', line: 5, side: 'RIGHT' } as const;
+  const range = { start_line: 2, start_side: 'LEFT' } as const;
+  const thread = { data: { data: { addPullRequestReviewThread: { thread: { id: 'thread' } } } } };
+  for (const [name, review, start, response, path, sent] of [
+    [
+      'publishes a direct comment with commit, path, line and side',
+      undefined,
+      undefined,
       { data: {} },
-      { data: demoPR },
-      { data: { data: { addPullRequestReviewThread: { thread: { id: 'thread' } } } } },
-    ]);
-    const api = new GitHub('test-only-token');
-    await api.inlineComment(ref, sha, 'range', 'a.ts', 5, 'RIGHT', undefined, { line: 2, side: 'LEFT' });
-    assert.deepEqual(calls[1].body, {
-      body: 'range',
-      path: 'a.ts',
-      line: 5,
-      side: 'RIGHT',
-      start_line: 2,
-      start_side: 'LEFT',
-      commit_id: sha,
+      '/repos/acme/app/pulls/42/comments',
+      { ...comment, commit_id: sha },
+    ],
+    [
+      'publishes a direct multi-line range',
+      undefined,
+      range,
+      { data: {} },
+      '/repos/acme/app/pulls/42/comments',
+      { ...comment, start_line: 2, start_side: 'LEFT', commit_id: sha },
+    ],
+    [
+      'adds a pending comment with GraphQL rather than publishing it',
+      pending,
+      undefined,
+      thread,
+      '/graphql',
+      { input: { pullRequestReviewId: 'review-node', ...comment } },
+    ],
+    [
+      'adds a pending multi-line range with GraphQL',
+      pending,
+      range,
+      thread,
+      '/graphql',
+      { input: { pullRequestReviewId: 'review-node', ...comment, startLine: 2, startSide: 'LEFT' } },
+    ],
+  ] as const)
+    it(name, async () => {
+      const calls = fake([{ data: demoPR }, response]);
+      await new GitHub('test-only-token').inlineComment(ref, sha, { ...comment, ...start }, review);
+      assert.equal(new URL(calls[1].url).pathname, path);
+      assert.deepEqual(review ? calls[1].body?.variables : calls[1].body, sent);
     });
-    await api.inlineComment(ref, sha, 'range', 'a.ts', 5, 'RIGHT', pending, { line: 3, side: 'RIGHT' });
-    assert.deepEqual(calls[3].body?.variables, {
-      input: { pullRequestReviewId: 'review-node', body: 'range', path: 'a.ts', line: 5, side: 'RIGHT', startLine: 3, startSide: 'RIGHT' },
-    });
-  });
   it('posts PR conversation comments and thread replies to distinct endpoints', async () => {
     const calls = fake([{ data: {} }, { data: {} }]);
     const api = new GitHub('test-only-token');
@@ -1062,13 +1052,10 @@ describe('GitHub review actions (mocked; no real writes)', () => {
     assert.equal(calls.length, 6);
     assert.ok(calls.filter(call => call.init.method === 'POST').every(call => call.url.endsWith('/graphql')));
   });
-  it('blocks pending replies without thread metadata or when the PR head changed', async () => {
-    const calls = fake([{ data: { ...demoPR, head: { ...demoPR.head, sha: 'new-head' } } }]);
-    const api = new GitHub('test-only-token');
-    await assert.rejects(api.reply(ref, 8, 'Reply', pending), /Thread metadata/);
+  it('blocks pending replies without thread metadata', async () => {
+    const calls = fake([]);
+    await assert.rejects(new GitHub('test-only-token').reply(ref, 8, 'Reply', pending), /Thread metadata/);
     assert.equal(calls.length, 0);
-    await assert.rejects(api.reply(ref, 8, 'Reply', pending, 'thread'), /new commits/);
-    assert.equal(calls.length, 1);
   });
   it('keeps a reply-started review, subsequent line comments, and submission in the same review', async () => {
     const reply = {
@@ -1094,7 +1081,7 @@ describe('GitHub review actions (mocked; no real writes)', () => {
     const api = new GitHub('test-only-token');
     const review = await api.startReview(ref, sha);
     await api.reply(ref, 8, 'Reply', review, 'thread');
-    await api.inlineComment(ref, sha, 'Another comment', 'src/b.ts', 12, 'LEFT', review);
+    await api.inlineComment(ref, sha, { body: 'Another comment', path: 'src/b.ts', line: 12, side: 'LEFT' }, review);
     await api.submitReview(ref, sha, 'COMMENT', 'Summary', review);
     assert.equal(
       (calls[3].body as { variables: { input: { pullRequestReviewId: string } } }).variables.input.pullRequestReviewId,

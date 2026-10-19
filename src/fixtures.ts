@@ -1,6 +1,6 @@
+// Test-only sample data.
 import type { ChangedFile, InboxGroup, InboxItem, PullRequest, PullRequestDetails, ReviewState, Workspace } from './github';
 
-export const demoUser = { id: 101, login: 'you' };
 const author = { id: 202, login: 'alexchen' };
 const repo = { id: 1, full_name: 'askscio/scio', private: true };
 const now = new Date().toISOString();
@@ -312,7 +312,7 @@ function inboxItem(
   };
 }
 
-// Varies every indicator across the demo PRs, so each state appears somewhere in demo mode.
+// Varies every indicator across the sample PRs so tests can rely on each state appearing.
 function demoDetails(number: number, login: string): PullRequestDetails {
   const people = ['alexchen', 'sarahkim', 'davidpark', 'maya', 'jordan'].filter(name => name !== login);
   const participants = people.slice(0, (number % people.length) + 1).map(name => ({ login: name, avatarUrl: '' }));
