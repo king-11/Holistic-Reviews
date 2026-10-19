@@ -49,6 +49,9 @@
 .row[data-state='failure'] .icon {
   color: var(--color-red);
 }
+.row[data-state='cancelled'] .icon {
+  color: var(--color-secondary);
+}
 .row[data-state='pending'] .icon {
   color: var(--color-amber);
 }

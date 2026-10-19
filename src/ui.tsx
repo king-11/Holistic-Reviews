@@ -219,7 +219,8 @@ export function Spinner(props: { text?: string }) {
   );
 }
 
-export function Avatar(props: { login: string; small?: boolean }) {
+export function Avatar(props: { login: string; small?: boolean; src?: string }) {
+  if (props.src) return <img class={`avatar ${props.small ? 'small' : ''}`} src={props.src} alt={props.login} title={props.login} />;
   return (
     <span
       title={props.login}
@@ -229,6 +230,15 @@ export function Avatar(props: { login: string; small?: boolean }) {
       {props.login.slice(0, props.small ? 1 : 2).toUpperCase()}
     </span>
   );
+}
+
+// Storage can be unavailable (private mode, quota); preferences must never break the app.
+export function tryStorage<T>(action: () => T) {
+  try {
+    return action();
+  } catch {
+    return undefined;
+  }
 }
 
 export const fullDate = (date: string) => new Date(date).toLocaleString(undefined, { dateStyle: 'long', timeStyle: 'long' });

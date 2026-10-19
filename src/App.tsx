@@ -14,14 +14,14 @@ import {
   ShieldCheck,
   X,
 } from '@lucide/vue';
-import { GitHub, parsePRUrl, type InboxItem, type TokenInfo, type Workspace } from './github';
+import { GitHub, mergeabilityPending, parsePRUrl, type InboxItem, type PRRef, type TokenInfo, type Workspace } from './github';
 import { demoPR, demoWorkspace } from './demo';
 import AuthDialog from './AuthDialog';
 import { comboKeys, eventCombo, modalOpen, shortcutGroups } from './shortcuts';
 import Inbox from './Inbox';
 import ReviewWorkspace from './ReviewWorkspace';
 import { type DiffSettings } from './DiffView';
-import { Avatar, Github, IconButton, Loader, Modal, Spinner, inputValue, useTheme, Dismiss } from './ui';
+import { Avatar, Github, IconButton, Loader, Modal, Spinner, inputValue, tryStorage, useTheme, Dismiss } from './ui';
 import { isTheme, themes } from './themes';
 import '@fontsource-variable/geist';
 import '@fontsource-variable/geist-mono';
@@ -40,14 +40,6 @@ const defaults: DiffSettings = {
   hideBotComments: false,
 };
 // Blocked browser storage must not break the app; state then stays in memory.
-function tryStorage<T>(action: () => T) {
-  try {
-    return action();
-  } catch {
-    return undefined;
-  }
-}
-
 function readSettings(): DiffSettings {
   try {
     const saved = JSON.parse(localStorage.getItem('review.preferences') || '{}');
@@ -87,6 +79,26 @@ export default defineComponent(() => {
   const api = computed(() => (token.value ? new GitHub(token.value) : null));
   let controller: AbortController | undefined;
   let loadVersion = 0;
+  let mergeTimer: ReturnType<typeof setTimeout> | undefined;
+  const mergeRecheckDelays = [2000, 4000, 8000, 16000, 30000];
+  // Only the PR is refetched; GitHub finishes computing mergeability in the background.
+  function recheckMergeability(ref: PRRef, version: number, attempt = 0) {
+    clearTimeout(mergeTimer);
+    const delay = mergeRecheckDelays[attempt];
+    if (delay === undefined || !workspace.value || !mergeabilityPending(workspace.value.pr)) return;
+    mergeTimer = setTimeout(async () => {
+      const client = api.value;
+      if (!client || version !== loadVersion) return;
+      try {
+        const pr = await client.fresh().pullRequest(ref);
+        if (version !== loadVersion || !workspace.value) return;
+        workspace.value = { ...workspace.value, pr };
+        recheckMergeability(ref, version, attempt + 1);
+      } catch {
+        return;
+      }
+    }, delay);
+  }
   useTheme(() => settings.value.theme);
   const changeSettings = (value: DiffSettings) => {
     settings.value = value;
@@ -95,6 +107,7 @@ export default defineComponent(() => {
   function back() {
     if (mutationBusy.value) return;
     controller?.abort();
+    clearTimeout(mergeTimer);
     loadVersion++;
     page.value = 'inbox';
     workspace.value = null;
@@ -122,7 +135,8 @@ export default defineComponent(() => {
       workspace.value = null;
       loading.value = true;
     }
-    const client = api.value;
+    // A refresh follows a write or a manual click, so it must not reuse a cached read.
+    const client = refresh ? (api.value?.fresh() ?? null) : api.value;
     try {
       const result = client
         ? await client.workspace(ref, controller.signal, value => {
@@ -146,6 +160,7 @@ export default defineComponent(() => {
           );
       if (version !== loadVersion) return;
       workspace.value = result;
+      recheckMergeability(ref, version);
       window.history.replaceState(
         null,
         '',
@@ -232,6 +247,7 @@ export default defineComponent(() => {
     document.addEventListener('keydown', keyHandler);
     onUnmounted(() => {
       controller?.abort();
+      clearTimeout(mergeTimer);
       document.removeEventListener('keydown', keyHandler);
     });
   });

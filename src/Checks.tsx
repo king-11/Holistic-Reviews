@@ -1,16 +1,17 @@
 import { defineComponent } from 'vue';
-import { ArrowUpRight, CircleCheck, CircleDashed, CircleMinus, CircleX, RefreshCw } from '@lucide/vue';
-import type { CheckState, PRRef, StatusCheck } from './github';
+import { ArrowUpRight, CircleCheck, CircleDashed, CircleMinus, CircleSlash, CircleStop, CircleX, RefreshCw } from '@lucide/vue';
+import { blockingStates, type CheckState, type PRRef, type StatusCheck } from './github';
 import type { Run } from './DetailsPanel';
 import { IconButton, Loader } from './ui';
 import styles from './Checks.module.css';
 
-const icons: Record<CheckState, typeof CircleCheck> = {
+export const checkIcons: Record<CheckState, typeof CircleCheck> = {
   success: CircleCheck,
   failure: CircleX,
+  cancelled: CircleStop,
   pending: CircleDashed,
+  skipped: CircleSlash,
   neutral: CircleMinus,
-  skipped: CircleMinus,
 };
 
 export default defineComponent(
@@ -19,7 +20,7 @@ export default defineComponent(
       props.onRun(failedOnly ? 'Re-running failed checks' : 'Re-running all checks', api =>
         api.rerunChecks(props.prRef, props.checks!, failedOnly),
       );
-    const jobs = (failedOnly: boolean) => props.checks!.some(check => check.job && (!failedOnly || check.state === 'failure'));
+    const jobs = (failedOnly: boolean) => props.checks!.some(check => check.job && (!failedOnly || blockingStates.includes(check.state)));
     return () =>
       props.loading ? (
         <Loader label="Loading checks…" />
@@ -42,7 +43,7 @@ export default defineComponent(
           </div>
           <ul class={styles.list} aria-label="Status checks">
             {props.checks.map(check => {
-              const Icon = icons[check.state];
+              const Icon = checkIcons[check.state];
               return (
                 <li key={check.id}>
                   <a

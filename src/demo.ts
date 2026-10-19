@@ -1,4 +1,4 @@
-import type { ChangedFile, InboxGroup, InboxItem, PullRequest, Workspace } from './github';
+import type { ChangedFile, InboxGroup, InboxItem, PullRequest, PullRequestDetails, ReviewState, Workspace } from './github';
 
 export const demoUser = { id: 101, login: 'you' };
 const author = { id: 202, login: 'alexchen' };
@@ -291,7 +291,7 @@ function inboxItem(
   number: number,
   title: string,
   login: string,
-  options: { draft?: boolean; repo?: string; label?: string } = {},
+  options: { draft?: boolean; repo?: string; label?: string; review?: ReviewState } = {},
 ): InboxItem {
   const repository = options.repo || 'askscio/scio';
   return {
@@ -303,9 +303,26 @@ function inboxItem(
     repository_url: `https://api.github.com/repos/${repository}`,
     draft: !!options.draft,
     state: 'open',
+    created_at: now,
     updated_at: now,
     comments: number % 5,
     labels: options.label ? [{ name: options.label, color: '5b7cfa' }] : [],
+    ...(options.review ? { review: options.review } : {}),
+    details: demoDetails(number, login),
+  };
+}
+
+// Varies every indicator across the demo PRs, so each state appears somewhere in demo mode.
+function demoDetails(number: number, login: string): PullRequestDetails {
+  const people = ['alexchen', 'sarahkim', 'davidpark', 'maya', 'jordan'].filter(name => name !== login);
+  const participants = people.slice(0, (number % people.length) + 1).map(name => ({ login: name, avatarUrl: '' }));
+  return {
+    additions: 14 + (number % 180),
+    deletions: number % 45,
+    createdAt: now,
+    checks: ['success', 'pending', 'failure', null][number % 4] as PullRequestDetails['checks'],
+    participants,
+    participantCount: participants.length + (number % 3 === 0 ? 2 : 0),
   };
 }
 
@@ -316,13 +333,18 @@ export const demoInbox: Record<InboxGroup, InboxItem[]> = {
     inboxItem(298463, 'Add workspace-level connection health checks', 'davidpark'),
   ],
   authored: [
-    inboxItem(298611, 'Simplify the agent configuration experience', 'you', { label: 'frontend' }),
-    inboxItem(298502, 'Cache repository metadata between allocations', 'you', { repo: 'askscio/devdock' }),
+    inboxItem(298611, 'Simplify the agent configuration experience', 'you', { label: 'frontend', review: 'approved' }),
+    inboxItem(298502, 'Cache repository metadata between allocations', 'you', { repo: 'askscio/devdock', review: 'returned' }),
+    inboxItem(298520, 'Add retry budget to the sync worker', 'you', { review: 'waiting' }),
   ],
   drafts: [
     inboxItem(298630, 'Introduce keyboard navigation for command menus', 'you', { draft: true }),
     inboxItem(298599, 'Explore incremental sync for connected sources', 'you', { draft: true }),
   ],
   reviewed: [inboxItem(298401, parent.title, 'alexchen')],
-  merged: [inboxItem(298350, 'Update connection status indicators', 'you')],
+  merged: [
+    inboxItem(298350, 'Update connection status indicators', 'you'),
+    inboxItem(298344, 'Tighten the connector retry budget', 'alexchen'),
+    inboxItem(298341, 'Refresh onboarding copy for setup', 'sarahkim', { repo: 'askscio/devdock' }),
+  ],
 };

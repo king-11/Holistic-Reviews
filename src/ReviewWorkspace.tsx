@@ -32,7 +32,9 @@ import {
   X,
 } from '@lucide/vue';
 import {
+  blockingStates,
   branchRelations,
+  mergeReady,
   type Comment,
   type Commit,
   type Comparison,
@@ -46,16 +48,7 @@ import {
 import { demoUser } from './demo';
 import FileTree from './FileTree';
 import Checks from './Checks';
-import DetailsPanel, {
-  Information,
-  MergeMenu,
-  MoreMenu,
-  ReviewIcon,
-  mergeReady,
-  reviewerStates,
-  useDetails,
-  type Run,
-} from './DetailsPanel';
+import DetailsPanel, { Information, MergeMenu, MoreMenu, ReviewIcon, reviewerStates, useDetails, type Run } from './DetailsPanel';
 import DiffView, { type ContextLoader, type DiffSettings } from './DiffView';
 import {
   Avatar,
@@ -159,6 +152,7 @@ export default defineComponent(
     const ownPR = () => pr().user.id === viewer().id;
     const canReview = () => props.workspace.reviewsLoaded && pr().state === 'open';
     const stalePending = () => !!pending.value && pending.value?.commit_id !== pr().head.sha;
+    const canReply = () => props.workspace.reviewsLoaded && !stalePending();
     const reactions = createReactionActions(
       () => props.api,
       ref,
@@ -208,6 +202,7 @@ export default defineComponent(
           () => {},
         ),
     );
+    const inPendingReview = (item: Editable) => !isReview(item) && !!pending.value && item.pull_request_review_id === pending.value.id;
     const edits: EditActions = {
       can: item =>
         (moderator.value || item.user.id === viewer().id) && (!isReview(item) || (item.state !== 'PENDING' && !!item.body?.trim())),
@@ -215,15 +210,31 @@ export default defineComponent(
       save: (item, text) =>
         action(async () => {
           const body = text.trim();
-          if (props.api) await (isReview(item) ? props.api.editReview(ref(), item.id, body) : props.api.editComment(ref(), item, body));
+          if (props.api)
+            await (isReview(item)
+              ? props.api.editReview(ref(), item.id, body)
+              : props.api.editComment(ref(), item, body, inPendingReview(item)));
           changeComment(item, body);
           notice.value = props.api ? 'Comment updated on GitHub.' : 'Demo comment updated locally. Nothing was sent to GitHub.';
         }),
       remove: item =>
         action(async () => {
-          await props.api?.deleteComment(ref(), item);
+          const review = inPendingReview(item) ? pending.value : undefined;
+          await props.api?.deleteComment(ref(), item, !!review);
           changeComment(item);
           notice.value = props.api ? 'Comment deleted from GitHub.' : 'Demo comment deleted locally. Nothing was sent to GitHub.';
+          if (!review || !props.api) return;
+          const removedByGitHub = await props.api
+            .fresh()
+            .reviewExists(ref(), review.id)
+            .then(
+              exists => !exists,
+              () => false,
+            );
+          if (!removedByGitHub) return;
+          update(reviews, prev => prev.filter(other => other.id !== review.id));
+          draftComments.value = [];
+          notice.value = 'Comment deleted. GitHub removed the now-empty pending review.';
         }),
     };
     const replyActions: ReplyActions = {
@@ -233,7 +244,10 @@ export default defineComponent(
         return pending.value?.id;
       },
       get disabled() {
-        return busy.value || !canReview() || stalePending();
+        return busy.value || !canReply();
+      },
+      get canStartReview() {
+        return canReview();
       },
       draft: id => replyDrafts.value[id] || { body: '' },
       onChange: (id, body) => update(replyDrafts, prev => ({ ...prev, [id]: { body } })),
@@ -386,7 +400,7 @@ export default defineComponent(
       acting.value = true;
       try {
         const result = await work(props.api);
-        showToast(label);
+        showToast(typeof label === 'function' ? label(result) : label);
         if (refresh) props.onRefresh();
         return result;
       } catch (failure) {
@@ -394,6 +408,22 @@ export default defineComponent(
       } finally {
         acting.value = false;
       }
+    };
+    const toggleAutoMerge = async (input: HTMLInputElement) => {
+      const enable = input.checked;
+      const method = pr().auto_merge?.merge_method ?? props.workspace.mergeMethods?.[0];
+      const saved = await run(enable ? 'Auto-merge enabled' : 'Auto-merge turned off', async api => {
+        try {
+          await api.setAutoMerge(pr(), enable && method ? method : null);
+          return true;
+        } catch (error) {
+          if (enable && error instanceof Error && /clean status/i.test(error.message))
+            throw new Error('This pull request is already mergeable. Use Merge.');
+          throw error;
+        }
+      });
+      // A failed write leaves the PR unchanged, so the switch must not keep the rejected position.
+      if (!saved) input.checked = !enable;
     };
     const focused = new WeakSet<Element>();
     // Function refs rerun on every patch; focus each editor only when it first mounts.
@@ -410,7 +440,7 @@ export default defineComponent(
       if (current.merged) return ['Merged', GitMerge, 'merged'] as const;
       if (current.state === 'closed') return ['Closed', GitPullRequestClosed, 'blocked'] as const;
       if (current.draft) return ['Draft', CircleX, 'blocked'] as const;
-      if (checks.some(check => check.state === 'failure')) return ['Checks failed', CircleX, 'blocked'] as const;
+      if (checks.some(check => blockingStates.includes(check.state))) return ['Checks failed', CircleX, 'blocked'] as const;
       if (
         mergeReady(current) &&
         !checks.some(check => check.state === 'pending') &&
@@ -681,9 +711,10 @@ export default defineComponent(
       body: reviewBody.value,
       commit_id: pr().head.sha,
     });
-    async function loadPendingComments(review: Review) {
+    async function loadPendingComments(review: Review, fresh = false) {
       const version = ++draftLoadVersion;
-      const result = await props.api!.reviewComments(ref(), review.id);
+      const api = props.api!;
+      const result = await (fresh ? api.fresh() : api).reviewComments(ref(), review.id);
       if (active && version === draftLoadVersion && pending.value?.id === review.id) draftComments.value = result;
     }
     async function postComment(e: SubmitEvent) {
@@ -758,10 +789,10 @@ export default defineComponent(
           if (!starting)
             await props.api.inlineComment(ref(), pr().head.sha, text, location.path, location.line, location.side, current, rangeStart);
           try {
-            if (current) await loadPendingComments(current);
+            if (current) await loadPendingComments(current, true);
             else
               inlineComments.value = (
-                await props.api.pages<Comment>(`/repos/${ref().owner}/${ref().repo}/pulls/${ref().number}/comments`)
+                await props.api.fresh().pages<Comment>(`/repos/${ref().owner}/${ref().repo}/pulls/${ref().number}/comments`)
               ).items;
           } catch {
             refreshWarning = ' Comment saved, but comments could not be refreshed. Refresh the PR to see it; do not post it again.';
@@ -802,7 +833,7 @@ export default defineComponent(
       });
     }
     async function refreshThreads() {
-      const api = props.api;
+      const api = props.api?.fresh();
       if (!api) return '';
       try {
         const result = await api.reviewThreads(ref());
@@ -814,13 +845,14 @@ export default defineComponent(
     }
     async function replyToComment(id: number, body: string, startReview = false) {
       const saved = await action(async () => {
-        if (!canReview() || stalePending()) throw new Error('Refresh this PR and its active review before replying.');
+        if (!canReply()) throw new Error('Refresh this PR and its active review before replying.');
+        if (startReview && !canReview()) throw new Error('Reviews can only be started on open pull requests.');
         const root = allComments.value.find(comment => comment.id === id);
         if (!root) throw new Error('This comment is no longer loaded. Refresh before replying.');
         let current = pending.value;
         let thread = threads.value.find(thread => thread.rootCommentId === id);
         if ((current || startReview) && props.api && !thread) {
-          const result = await props.api.reviewThreads(ref());
+          const result = await props.api.fresh().reviewThreads(ref());
           threads.value = result.items;
           thread = result.items.find(thread => thread.rootCommentId === id);
           if (!thread) throw new Error('Thread metadata is unavailable. Open this thread on GitHub or refresh before starting a review.');
@@ -1160,11 +1192,43 @@ export default defineComponent(
               >
                 Review changes
               </button>
+              {!!props.api && props.workspace.autoMerge && pr().state === 'open' && !pr().draft && (
+                <label
+                  class={`${styles['setting-row']} ${styles['auto-merge']}`}
+                  title={
+                    pr().mergeable_state === 'dirty'
+                      ? 'Resolve merge conflicts first'
+                      : pr().auto_merge
+                        ? `Auto-merge (${pr().auto_merge!.merge_method}) enabled by ${pr().auto_merge!.enabled_by.login}. Turn off to cancel.`
+                        : 'Merge automatically once required checks and reviews pass.'
+                  }
+                >
+                  <span>Auto-merge</span>
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    checked={!!pr().auto_merge}
+                    disabled={
+                      acting.value ||
+                      pr().mergeable_state === 'dirty' ||
+                      !(pr().auto_merge?.merge_method ?? props.workspace.mergeMethods?.[0])
+                    }
+                    onChange={e => void toggleAutoMerge(e.target as HTMLInputElement)}
+                  />
+                </label>
+              )}
               <MergeMenu
                 pr={pr()}
                 methods={props.workspace.mergeMethods ?? []}
+                autoMerge={!!props.workspace.autoMerge}
                 disabled={acting.value || !props.api}
-                onMerge={method => run('Pull request merged', api => api.merge(ref(), pr().head.sha, method))}
+                onMerge={method =>
+                  run(
+                    result =>
+                      result === 'queued' ? 'Auto-merge enabled. GitHub will merge once requirements pass.' : 'Pull request merged',
+                    api => api.mergeOrAutoMerge(ref(), pr(), method, !!props.workspace.autoMerge),
+                  )
+                }
               />
               <MoreMenu details={details} />
               <span class="header-divider" />
@@ -1232,7 +1296,10 @@ export default defineComponent(
                   <div class="pr-details">
                     <Avatar login={pr().user.login} small />
                     <strong>{pr().user.login}</strong>
-                    <span>wants to merge {pr().commits} commits into</span>
+                    <span>
+                      {pr().merged ? 'merged' : pr().state === 'closed' ? 'wanted to merge' : 'wants to merge'} {pr().commits}{' '}
+                      {pr().commits === 1 ? 'commit' : 'commits'} into
+                    </span>
                     {[pr().base.ref, null, pr().head.ref].map(branch =>
                       branch === null ? (
                         <ArrowLeft key="arrow" size={12} />
@@ -2048,11 +2115,13 @@ export default defineComponent(
                     void action(async () => {
                       const current = pending.value;
                       if (!current) return;
-                      if (props.api) await props.api.discardReview(ref(), current.id);
+                      const deleted = props.api ? await props.api.discardReview(ref(), current.id) : true;
                       update(reviews, prev => prev.filter(review => review.id !== current.id));
                       draftComments.value = [];
                       dialog.value = null;
-                      notice.value = 'Pending review discarded.';
+                      notice.value = deleted
+                        ? 'Pending review discarded.'
+                        : 'This pending review was already gone on GitHub; cleared it here.';
                     })
                   }
                 >

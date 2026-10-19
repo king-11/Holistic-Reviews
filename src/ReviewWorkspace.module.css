@@ -93,6 +93,11 @@
   font-size: var(--text-xs);
   cursor: pointer;
 }
+.auto-merge {
+  gap: 8px;
+  padding: 0;
+  cursor: default;
+}
 .setting-row input[role='switch'] {
   appearance: none;
   width: 28px;

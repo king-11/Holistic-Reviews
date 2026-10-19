@@ -46,7 +46,9 @@ export interface PullRequest {
   requested_teams?: Team[];
   assignees?: User[];
   labels?: Label[];
+  mergeable?: boolean | null;
   mergeable_state?: 'clean' | 'blocked' | 'behind' | 'dirty' | 'unstable' | 'draft' | 'has_hooks' | 'unknown';
+  auto_merge?: { merge_method: MergeMethod; enabled_by: User } | null;
 }
 
 export interface ChangedFile {
@@ -160,6 +162,15 @@ export interface PRRef {
   number: number;
 }
 
+export interface PullRequestDetails {
+  additions: number;
+  deletions: number;
+  createdAt: string;
+  checks: 'success' | 'failure' | 'pending' | null;
+  participants: { login: string; avatarUrl: string }[];
+  participantCount: number;
+}
+
 export interface InboxItem {
   id: number;
   number: number;
@@ -169,11 +180,33 @@ export interface InboxItem {
   user: User;
   draft: boolean;
   state: string;
+  created_at: string;
   updated_at: string;
   comments: number;
   labels: { name: string; color: string }[];
+  review?: ReviewState;
+  details?: PullRequestDetails;
 }
 
+export interface SearchOrder {
+  sort: 'updated' | 'created';
+  order: 'asc' | 'desc';
+}
+const defaultSearchOrder: SearchOrder = { sort: 'updated', order: 'desc' };
+// Review fields feed the authored classification; they are fetched for every page so one query serves all groups.
+const pullRequestDetailFields =
+  'createdAt additions deletions commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } participants(first: 10) { totalCount nodes { login avatarUrl(size: 40) } } reviewDecision latestReviews(first: 50) { nodes { state author { __typename login } } } reviewRequests(first: 50) { nodes { requestedReviewer { ... on User { login } } } }';
+// Pending and expected checks both mean the outcome is still open; absent rollups mean there are no checks.
+const rollupChecks: Record<string, 'success' | 'failure' | 'pending'> = {
+  SUCCESS: 'success',
+  FAILURE: 'failure',
+  ERROR: 'failure',
+  PENDING: 'pending',
+  EXPECTED: 'pending',
+};
+
+// Derived from GraphQL review data; GitHub search cannot tell comment-only reviews from none.
+export type ReviewState = 'approved' | 'returned' | 'waiting';
 export type InboxGroup = 'requested' | 'authored' | 'drafts' | 'reviewed' | 'merged';
 export interface InboxResult {
   items: InboxItem[];
@@ -197,6 +230,7 @@ export interface Workspace {
   codeOwners?: string[];
   onBehalfOf?: Record<string, string[]>;
   mergeMethods?: MergeMethod[];
+  autoMerge?: boolean;
   pending: WorkspaceSection[];
 }
 
@@ -215,7 +249,7 @@ export const workspaceSections = [
 export type WorkspaceSection = (typeof workspaceSections)[number];
 
 export type MergeMethod = 'merge' | 'squash' | 'rebase';
-export type CheckState = 'success' | 'failure' | 'pending' | 'neutral' | 'skipped';
+export type CheckState = 'success' | 'failure' | 'cancelled' | 'pending' | 'neutral' | 'skipped';
 export interface StatusCheck {
   id: string;
   name: string;
@@ -227,12 +261,14 @@ export interface StatusCheck {
 }
 export type Label = { name: string; color: string };
 export type LinkedIssue = { number: number; title: string; url: string; state: string };
-const failedConclusions = ['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure'];
+const failedConclusions = ['failure', 'timed_out', 'action_required', 'startup_failure'];
 const actionsJob = (url: string | null) => {
   const [, run, id] = url?.match(/\/actions\/runs\/(\d+)\/job\/(\d+)/) ?? [];
   return run ? { id: Number(id), run: Number(run) } : undefined;
 };
-const checkOrder: CheckState[] = ['failure', 'pending', 'neutral', 'success', 'skipped'];
+const checkOrder: CheckState[] = ['failure', 'cancelled', 'pending', 'neutral', 'success', 'skipped'];
+// GitHub re-runs cancelled jobs with failed ones and treats them as blocking.
+export const blockingStates: CheckState[] = ['failure', 'cancelled'];
 
 export interface NativeStack {
   number: number;
@@ -264,6 +300,10 @@ export function parsePRUrl(value: string): PRRef {
 
 export const repoPath = (ref: Pick<PRRef, 'owner' | 'repo'>) => `/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}`;
 export const refPath = (ref: PRRef) => `${repoPath(ref)}/pulls/${ref.number}`;
+export const mergeReady = (pr: PullRequest) =>
+  pr.state === 'open' && !pr.draft && ['clean', 'has_hooks', 'unstable'].includes(pr.mergeable_state ?? '');
+// GitHub computes mergeability lazily, so a freshly fetched PR can report unknown for a moment.
+export const mergeabilityPending = (pr: PullRequest) => pr.state === 'open' && (pr.mergeable === null || pr.mergeable_state === 'unknown');
 
 export function branchRelations(pr: PullRequest, candidates: PullRequest[]) {
   return {
@@ -277,24 +317,68 @@ export function branchRelations(pr: PullRequest, candidates: PullRequest[]) {
   };
 }
 
-export function inboxQuery(group: InboxGroup, login: string, repos: string[] = []): string {
-  const base = `is:pr archived:false ${repos.map(repo => `repo:${repo}`).join(' ')}`;
+export type ReviewSummary = {
+  reviewDecision: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null;
+  latestReviews: { state: string; author: { __typename: string; login: string } | null }[];
+  requested: string[];
+};
+// Bots and the author's own comments never count as reviewer feedback.
+export function classifyReview(summary: ReviewSummary, author: string): ReviewState {
+  const humans = summary.latestReviews.flatMap(review =>
+    review.author?.__typename === 'User' && review.author.login !== author ? [{ state: review.state, login: review.author.login }] : [],
+  );
+  if (summary.reviewDecision === 'CHANGES_REQUESTED') return 'returned';
+  if (summary.reviewDecision === 'APPROVED' || (summary.reviewDecision === null && humans.some(review => review.state === 'APPROVED')))
+    return 'approved';
+  // Re-requesting a reviewer hands the PR back to them, so it is waiting again.
+  if (humans.some(review => ['COMMENTED', 'CHANGES_REQUESTED'].includes(review.state) && !summary.requested.includes(review.login)))
+    return 'returned';
+  return 'waiting';
+}
+
+export type MergedFilter = 'all' | 'mine' | 'reviewing';
+export function inboxQuery(group: InboxGroup, login: string, repos: string[] = [], merged: MergedFilter = 'mine'): string {
+  const base = ['is:pr archived:false', ...repos.map(repo => `repo:${repo}`)].join(' ');
+  // Every merged PR is only meaningful within selected repositories; without them, "all" stays limited to the viewer.
+  const mergedQueries: Record<MergedFilter, string> = {
+    all: repos.length ? 'is:merged' : `is:merged author:${login}`,
+    mine: `is:merged author:${login}`,
+    reviewing: `is:merged (review-requested:${login} OR reviewed-by:${login}) -author:${login}`,
+  };
   const queries: Record<InboxGroup, string> = {
     requested: `is:open review-requested:${login} draft:false`,
     authored: `is:open author:${login} draft:false`,
     drafts: `is:open author:${login} draft:true`,
     reviewed: `is:open reviewed-by:${login} -author:${login}`,
-    merged: `is:merged author:${login}`,
+    merged: mergedQueries[merged],
   };
   return `${base} ${queries[group]}`.trim();
 }
 
+export class GitHubError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
 export class GitHub {
   private readonly token: string;
-  constructor(token: string) {
+  private readonly cacheMode: RequestCache;
+  private freshClient?: GitHub;
+  constructor(token: string, cacheMode: RequestCache = 'default') {
     this.token = token;
+    this.cacheMode = cacheMode;
   }
   private readonly contentCache = new Map<string, Promise<string>>();
+
+  // Fresh reads only serve manual refreshes and reads that must observe our own writes.
+  fresh(): GitHub {
+    if (this.cacheMode === 'no-cache') return this;
+    this.freshClient ??= new GitHub(this.token, 'no-cache');
+    return this.freshClient;
+  }
 
   private async graphql<T>(query: string, variables: object, signal?: AbortSignal) {
     const { data } = await this.request<{ data?: T; errors?: { message: string }[] }>('/graphql', {
@@ -318,6 +402,7 @@ export class GitHub {
       },
       credentials: 'omit',
       redirect: 'error',
+      cache: this.cacheMode,
     });
     if (!response.ok) {
       const error = (await response.json().catch(() => ({}))) as {
@@ -340,10 +425,21 @@ export class GitHub {
         ?.map(item => (typeof item === 'string' ? item : item.message || [item.field, item.code].filter(Boolean).join(': ')))
         .filter(Boolean)
         .join(' ');
-      throw new Error(`${message}${detail ? ` ${detail}` : ''}`);
+      throw new GitHubError(`${message}${detail ? ` ${detail}` : ''}`, response.status);
     }
     if (response.status === 204) return { data: undefined as T, headers: response.headers };
     return { data: (await response.json()) as T, headers: response.headers };
+  }
+
+  // A 404 means the target is already gone, which callers treat as done rather than as a failure.
+  private async requestIfPresent(path: string, options?: RequestInit): Promise<boolean> {
+    try {
+      await this.request(path, options);
+      return true;
+    } catch (error) {
+      if (error instanceof GitHubError && error.status === 404) return false;
+      throw error;
+    }
   }
 
   async validate(signal?: AbortSignal): Promise<TokenInfo> {
@@ -361,12 +457,18 @@ export class GitHub {
     return { user, scopes, fineGrained };
   }
 
-  async pages<T>(path: string, signal?: AbortSignal, maxPages = 30): Promise<{ items: T[]; truncated: boolean }> {
+  async pages<T, B = T[]>(
+    path: string,
+    signal?: AbortSignal,
+    maxPages = 30,
+    pick: (body: B) => T[] = body => body as unknown as T[],
+  ): Promise<{ items: T[]; truncated: boolean }> {
     const items: T[] = [];
     for (let page = 1; page <= maxPages; page++) {
-      const { data, headers } = await this.request<T[]>(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`, { signal });
-      items.push(...data);
-      const more = headers.get('link')?.includes('rel="next"') ?? data.length === 100;
+      const { data, headers } = await this.request<B>(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`, { signal });
+      const batch = pick(data);
+      items.push(...batch);
+      const more = headers.get('link')?.includes('rel="next"') ?? batch.length === 100;
       if (!more) return { items, truncated: false };
     }
     return { items, truncated: true };
@@ -461,9 +563,9 @@ export class GitHub {
         development => settle('linkedIssues', development),
         () => settle('linkedIssues', { linkedIssues: [], codeOwners: [], onBehalfOf: {} }),
       ),
-      this.mergeMethods(ref, signal).then(
-        mergeMethods => settle('mergeMethods', { mergeMethods }),
-        () => settle('mergeMethods', { mergeMethods: [] }),
+      this.mergeSettings(ref, signal).then(
+        ({ methods, autoMerge }) => settle('mergeMethods', { mergeMethods: methods, autoMerge }),
+        () => settle('mergeMethods', { mergeMethods: [], autoMerge: false }),
       ),
       this.stack(ref, signal).then(
         nativeStack => settle('nativeStack', { nativeStack }),
@@ -484,18 +586,39 @@ export class GitHub {
       status: string;
       conclusion: string | null;
       html_url: string | null;
+      check_suite?: { id: number } | null;
+      app?: { id: number } | null;
       output?: { title?: string | null };
     };
+    type WorkflowRun = { name: string | null; workflow_id: number; check_suite_id: number };
     type Status = { id: number; context: string; state: string; target_url: string | null; description: string | null };
-    const [{ data: runs }, { data: combined }] = await Promise.all([
-      this.request<{ check_runs: Run[] }>(`${base}/check-runs?per_page=100`, { signal }),
+    const [runs, { data: combined }, workflows] = await Promise.all([
+      this.pages<Run, { check_runs: Run[] }>(`${base}/check-runs`, signal, 30, body => body.check_runs),
       this.request<{ statuses: Status[] }>(`${base}/status`, { signal }),
+      // Best-effort: without Actions read access, checks still list with plain job names.
+      this.pages<WorkflowRun, { workflow_runs: WorkflowRun[] }>(
+        `${repoPath(ref)}/actions/runs?head_sha=${sha}`,
+        signal,
+        10,
+        body => body.workflow_runs,
+      ).then(
+        result => result.items,
+        () => [],
+      ),
     ]);
+    // Each re-triggered workflow run and re-run attempt reports its jobs again; IDs increase with every run, so the newest ID wins.
+    const workflowBySuite = new Map(workflows.map(workflow => [workflow.check_suite_id, workflow]));
+    const latest = new Map<string, { run: Run; workflow?: WorkflowRun }>();
+    for (const run of runs.items) {
+      const workflow = run.check_suite ? workflowBySuite.get(run.check_suite.id) : undefined;
+      const key = workflow ? `workflow:${workflow.workflow_id}:${run.name}` : `app:${run.app?.id}:${run.name}`;
+      if (!latest.has(key) || run.id > latest.get(key)!.run.id) latest.set(key, { run, workflow });
+    }
     const checks: StatusCheck[] = [
-      ...runs.check_runs.map(run => ({
+      ...[...latest.values()].map(({ run, workflow }) => ({
         id: `run-${run.id}`,
         job: actionsJob(run.html_url),
-        name: run.name,
+        name: workflow?.name ? `${workflow.name} / ${run.name}` : run.name,
         url: run.html_url || fallback,
         detail: run.output?.title || undefined,
         state: (run.status !== 'completed'
@@ -504,9 +627,11 @@ export class GitHub {
             ? 'success'
             : failedConclusions.includes(run.conclusion ?? '')
               ? 'failure'
-              : run.conclusion === 'skipped'
-                ? 'skipped'
-                : 'neutral') as CheckState,
+              : run.conclusion === 'cancelled'
+                ? 'cancelled'
+                : run.conclusion === 'skipped'
+                  ? 'skipped'
+                  : 'neutral') as CheckState,
       })),
       ...combined.statuses.map(status => ({
         id: `status-${status.id}`,
@@ -632,9 +757,9 @@ export class GitHub {
     else {
       const id = current.mine?.[content];
       if (!id) throw new Error('Your reaction ID is unavailable. Refresh reactions before trying again.');
-      await this.request(`${path}/${id}`, { method: 'DELETE' });
+      await this.requestIfPresent(`${path}/${id}`, { method: 'DELETE' });
     }
-    return this.reactions(ref, subject, viewerId);
+    return this.fresh().reactions(ref, subject, viewerId);
   }
 
   async stack(ref: PRRef, signal?: AbortSignal): Promise<NativeStack | undefined> {
@@ -673,13 +798,76 @@ export class GitHub {
     };
   }
 
-  async inbox(group: InboxGroup, login: string, repos: string[] = [], page = 1, signal?: AbortSignal) {
-    const query = inboxQuery(group, login, repos);
-    return (
-      await this.request<InboxResult>(`/search/issues?q=${encodeURIComponent(query)}&sort=updated&order=desc&per_page=30&page=${page}`, {
-        signal,
-      })
+  async inbox(
+    group: InboxGroup,
+    login: string,
+    repos: string[] = [],
+    page = 1,
+    signal?: AbortSignal,
+    merged: MergedFilter = 'mine',
+    order: SearchOrder = defaultSearchOrder,
+  ) {
+    const query = inboxQuery(group, login, repos, merged);
+    // Only the OR of review-requested and reviewed-by needs advanced search; plain search rejects it with 422.
+    const advanced = group === 'merged' && merged === 'reviewing' ? '&advanced_search=true' : '';
+    const result = (
+      await this.request<InboxResult>(
+        `/search/issues?q=${encodeURIComponent(query)}&sort=${order.sort}&order=${order.order}&per_page=30&page=${page}${advanced}`,
+        { signal },
+      )
     ).data;
+    if (!result.items.length) return result;
+    try {
+      return { ...result, items: await this.withPullRequestDetails(group, result.items, signal) };
+    } catch {
+      return result;
+    }
+  }
+
+  // One aliased query per page enriches every group; items the batch misses stay as search returned them.
+  private async withPullRequestDetails(group: InboxGroup, items: InboxItem[], signal?: AbortSignal): Promise<InboxItem[]> {
+    type PullRequestData = {
+      createdAt: string;
+      additions: number;
+      deletions: number;
+      reviewDecision: ReviewSummary['reviewDecision'];
+      commits: { nodes: { commit: { statusCheckRollup: { state: string } | null } }[] };
+      participants: { totalCount: number; nodes: { login: string; avatarUrl: string }[] };
+      latestReviews: { nodes: ReviewSummary['latestReviews'] };
+      reviewRequests: { nodes: { requestedReviewer: { login?: string } | null }[] };
+    };
+    const variables: Record<string, string | number> = {};
+    const declarations: string[] = [];
+    const selections = items.map((item, index) => {
+      const [owner, name] = item.repository_url.split('/repos/')[1].split('/');
+      variables[`owner${index}`] = owner;
+      variables[`name${index}`] = name;
+      variables[`number${index}`] = item.number;
+      declarations.push(`$owner${index}: String!, $name${index}: String!, $number${index}: Int!`);
+      return `pr${index}: repository(owner: $owner${index}, name: $name${index}) { pullRequest(number: $number${index}) { ${pullRequestDetailFields} } }`;
+    });
+    const data = await this.graphql<Record<string, { pullRequest: PullRequestData | null } | null>>(
+      `query InboxDetails(${declarations.join(', ')}) { ${selections.join(' ')} }`,
+      variables,
+      signal,
+    );
+    return items.map((item, index) => {
+      const pr = data?.[`pr${index}`]?.pullRequest;
+      if (!pr) return item;
+      const requested = pr.reviewRequests.nodes.flatMap(node => (node.requestedReviewer?.login ? [node.requestedReviewer.login] : []));
+      const participants = pr.participants.nodes.filter(user => user.login !== item.user.login);
+      const details: PullRequestDetails = {
+        additions: pr.additions,
+        deletions: pr.deletions,
+        createdAt: pr.createdAt,
+        checks: rollupChecks[pr.commits.nodes[0]?.commit.statusCheckRollup?.state ?? ''] ?? null,
+        participants,
+        participantCount: pr.participants.totalCount - (participants.length < pr.participants.nodes.length ? 1 : 0),
+      };
+      const review =
+        group === 'authored' ? classifyReview({ ...pr, latestReviews: pr.latestReviews.nodes, requested }, item.user.login) : undefined;
+      return { ...item, details, ...(review ? { review } : {}) };
+    });
   }
 
   async reviewThreads(ref: PRRef, signal?: AbortSignal): Promise<{ items: ReviewThread[]; truncated: boolean }> {
@@ -747,7 +935,7 @@ export class GitHub {
   }
 
   async ensureHead(ref: PRRef, sha: string) {
-    const { data } = await this.request<PullRequest>(refPath(ref));
+    const { data } = await this.fresh().request<PullRequest>(refPath(ref));
     if (data.head.sha !== sha) throw new Error('This PR has new commits. Refresh the diff before submitting a review or inline comment.');
     return data;
   }
@@ -864,12 +1052,28 @@ export class GitHub {
     ).data;
   }
 
-  async editComment(ref: PRRef, comment: Comment, body: string) {
-    return (await this.request<Comment>(commentPath(ref, comment), { method: 'PATCH', body: JSON.stringify({ body }) })).data;
+  async editComment(ref: PRRef, comment: Comment, body: string, pending = false) {
+    if (!pending) return (await this.request<Comment>(commentPath(ref, comment), { method: 'PATCH', body: JSON.stringify({ body }) })).data;
+    if (!comment.node_id) throw new Error('Refresh this PR to load the GitHub comment ID.');
+    const data: { updatePullRequestReviewComment?: { pullRequestReviewComment: { body: string } | null } } | undefined = await this.graphql(
+      'mutation EditPendingComment($input: UpdatePullRequestReviewCommentInput!) { updatePullRequestReviewComment(input: $input) { pullRequestReviewComment { id body } } }',
+      { input: { pullRequestReviewCommentId: comment.node_id, body } },
+    );
+    const confirmed = data?.updatePullRequestReviewComment?.pullRequestReviewComment;
+    if (!confirmed) throw new Error('GitHub did not confirm the comment update. Refresh before trying again.');
+    return { ...comment, body: confirmed.body };
   }
 
-  async deleteComment(ref: PRRef, comment: Comment) {
-    await this.request(commentPath(ref, comment), { method: 'DELETE' });
+  async deleteComment(ref: PRRef, comment: Comment, pending = false) {
+    if (!pending) {
+      await this.request(commentPath(ref, comment), { method: 'DELETE' });
+      return;
+    }
+    if (!comment.node_id) throw new Error('Refresh this PR to load the GitHub comment ID.');
+    await this.graphql(
+      'mutation DeletePendingComment($input: DeletePullRequestReviewCommentInput!) { deletePullRequestReviewComment(input: $input) { clientMutationId } }',
+      { input: { id: comment.node_id } },
+    );
   }
 
   async editReview(ref: PRRef, id: number, body: string) {
@@ -919,15 +1123,22 @@ export class GitHub {
     };
   }
 
-  async mergeMethods(ref: PRRef, signal?: AbortSignal): Promise<MergeMethod[]> {
-    const { data } = await this.request<{ allow_merge_commit?: boolean; allow_squash_merge?: boolean; allow_rebase_merge?: boolean }>(
-      repoPath(ref),
-      { signal },
-    );
-    return (['squash', 'merge', 'rebase'] as const).filter(
+  async mergeSettings(ref: PRRef, signal?: AbortSignal): Promise<{ methods: MergeMethod[]; autoMerge: boolean }> {
+    const { data } = await this.request<{
+      allow_merge_commit?: boolean;
+      allow_squash_merge?: boolean;
+      allow_rebase_merge?: boolean;
+      allow_auto_merge?: boolean;
+    }>(repoPath(ref), { signal });
+    const methods = (['squash', 'merge', 'rebase'] as const).filter(
       method =>
         data[method === 'merge' ? 'allow_merge_commit' : method === 'squash' ? 'allow_squash_merge' : 'allow_rebase_merge'] !== false,
     );
+    return { methods, autoMerge: data.allow_auto_merge === true };
+  }
+
+  async pullRequest(ref: PRRef, signal?: AbortSignal) {
+    return (await this.request<PullRequest>(refPath(ref), { signal })).data;
   }
 
   // Write access lets GitHub users edit and delete anyone's comments.
@@ -959,8 +1170,40 @@ export class GitHub {
     ).data;
   }
 
+  // Clean PRs refuse auto-merge, so they merge directly; GitHub then reports the queue state.
+  async setAutoMerge(pr: PullRequest, method: MergeMethod | null) {
+    const enable = method !== null;
+    const name = enable ? 'enablePullRequestAutoMerge' : 'disablePullRequestAutoMerge';
+    const data = await this.graphql<Record<string, { pullRequest: { autoMergeRequest: unknown } | null } | null>>(
+      enable
+        ? 'mutation EnableAutoMerge($input: EnablePullRequestAutoMergeInput!) { enablePullRequestAutoMerge(input: $input) { pullRequest { autoMergeRequest { mergeMethod } } } }'
+        : 'mutation DisableAutoMerge($input: DisablePullRequestAutoMergeInput!) { disablePullRequestAutoMerge(input: $input) { pullRequest { autoMergeRequest { mergeMethod } } } }',
+      enable
+        ? { input: { pullRequestId: pr.node_id, mergeMethod: method.toUpperCase(), expectedHeadOid: pr.head.sha } }
+        : { input: { pullRequestId: pr.node_id } },
+    );
+    const confirmed = data?.[name]?.pullRequest;
+    if (!confirmed || !!confirmed.autoMergeRequest !== enable)
+      throw new Error('GitHub did not confirm the auto-merge change. Refresh before trying again.');
+  }
+
+  async mergeOrAutoMerge(ref: PRRef, pr: PullRequest, method: MergeMethod, autoMerge: boolean): Promise<'merged' | 'queued'> {
+    if (!mergeReady(pr) && autoMerge) {
+      try {
+        await this.setAutoMerge(pr, method);
+        return 'queued';
+      } catch (error) {
+        if (!(error instanceof Error && /clean status/i.test(error.message))) throw error;
+      }
+    }
+    await this.merge(ref, pr.head.sha, method);
+    return 'merged';
+  }
+
   async rerunChecks(ref: PRRef, checks: StatusCheck[], failedOnly: boolean) {
-    const runs = new Set(checks.flatMap(check => (check.job && (!failedOnly || check.state === 'failure') ? [check.job.run] : [])));
+    const runs = new Set(
+      checks.flatMap(check => (check.job && (!failedOnly || blockingStates.includes(check.state)) ? [check.job.run] : [])),
+    );
     await Promise.all(
       [...runs].map(run =>
         this.request(`${repoPath(ref)}/actions/runs/${run}/${failedOnly ? 'rerun-failed-jobs' : 'rerun'}`, { method: 'POST' }),
@@ -1004,7 +1247,11 @@ export class GitHub {
     ).data;
   }
 
+  async reviewExists(ref: PRRef, id: number) {
+    return this.requestIfPresent(`${refPath(ref)}/reviews/${id}`);
+  }
+
   async discardReview(ref: PRRef, id: number) {
-    await this.request(`${refPath(ref)}/reviews/${id}`, { method: 'DELETE' });
+    return this.requestIfPresent(`${refPath(ref)}/reviews/${id}`, { method: 'DELETE' });
   }
 }

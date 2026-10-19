@@ -23,12 +23,28 @@ import {
   Users,
   X,
 } from '@lucide/vue';
-import type { GitHub, Label, LinkedIssue, MergeMethod, PRRef, PullRequest, Review, StatusCheck } from './github';
+import {
+  mergeabilityPending,
+  mergeReady,
+  type GitHub,
+  type Label,
+  type LinkedIssue,
+  type MergeMethod,
+  type PRRef,
+  type PullRequest,
+  type Review,
+  type StatusCheck,
+} from './github';
+import { checkIcons } from './Checks';
 import { pop } from './motion';
 import { Avatar, IconButton, Loader, SearchField, useWidth, Dismiss } from './ui';
 import styles from './DetailsPanel.module.css';
 
-export type Run = <T>(label: string, work: (api: GitHub) => Promise<T>, refresh?: boolean) => Promise<T | undefined>;
+export type Run = <T>(
+  label: string | ((result: T) => string),
+  work: (api: GitHub) => Promise<T>,
+  refresh?: boolean,
+) => Promise<T | undefined>;
 
 const readiness: Record<string, [string, string]> = {
   clean: ['Ready to merge', 'All checks and approval requirements have been met'],
@@ -39,8 +55,6 @@ const readiness: Record<string, [string, string]> = {
   dirty: ['Merge conflicts', 'Resolve conflicts on GitHub before merging'],
 };
 const pendingReadiness: [string, string] = ['Checking merge status…', 'GitHub is still computing mergeability'];
-export const mergeReady = (pr: PullRequest) =>
-  pr.state === 'open' && !pr.draft && ['clean', 'has_hooks', 'unstable'].includes(pr.mergeable_state ?? '');
 const reviewLabels: Record<string, string> = {
   APPROVED: 'Approved',
   CHANGES_REQUESTED: 'Changes requested',
@@ -59,11 +73,17 @@ const methodLabels: Record<MergeMethod, string> = {
   merge: 'Create a merge commit',
   rebase: 'Rebase and merge',
 };
-const checkKinds = ['failure', 'pending', 'success', 'skipped', 'neutral'] as const;
+const checkKinds = ['failure', 'cancelled', 'pending', 'success', 'skipped', 'neutral'] as const;
 export const checkCounts = (checks: StatusCheck[] = []) =>
   checkKinds.map(kind => [kind, checks.filter(check => check.state === kind).length] as const);
-const checkWords = { failure: 'failed', pending: 'pending', success: 'passed', skipped: 'skipped', neutral: 'neutral' };
-const checkIcons = { failure: CircleX, pending: CircleDashed, success: Check, skipped: CircleSlash, neutral: CircleSlash };
+const checkWords = {
+  failure: 'failed',
+  cancelled: 'cancelled',
+  pending: 'pending',
+  success: 'passed',
+  skipped: 'skipped',
+  neutral: 'neutral',
+};
 const checkKind = (check: StatusCheck) => checkKinds.find(kind => check.state === kind) ?? 'neutral';
 const describeChecks = (checks?: StatusCheck[]) =>
   checkCounts(checks)
@@ -83,8 +103,22 @@ const teamKey = (pr: PullRequest, slug: string) => `${pr.base.repo?.full_name.sp
 // GitHub rejects review requests for the PR author and for bots.
 const requestable = (pr: PullRequest, login: string) => login !== pr.user.login && !login.endsWith('[bot]');
 
+// Unknown mergeability and queueable auto-merge stay clickable; GitHub has the final say on each attempt.
+const mergeAvailable = (pr: PullRequest, autoMerge: boolean) =>
+  mergeReady(pr) ||
+  (!pr.draft &&
+    pr.state === 'open' &&
+    (mergeabilityPending(pr) || (autoMerge && !pr.auto_merge && !['dirty', 'draft'].includes(pr.mergeable_state ?? ''))));
+const mergeHint = (pr: PullRequest, autoMerge: boolean) => {
+  if (mergeReady(pr)) return undefined;
+  if (!mergeAvailable(pr, autoMerge)) return (readiness[pr.mergeable_state ?? ''] ?? pendingReadiness)[0];
+  return autoMerge
+    ? 'GitHub will merge this once required checks and reviews pass.'
+    : 'GitHub is still checking mergeability; merging will be attempted.';
+};
+
 export const MergeMenu = defineComponent(
-  (props: { pr: PullRequest; methods: MergeMethod[]; disabled: boolean; onMerge: (method: MergeMethod) => void }) => {
+  (props: { pr: PullRequest; methods: MergeMethod[]; autoMerge: boolean; disabled: boolean; onMerge: (method: MergeMethod) => void }) => {
     const open = shallowRef(false);
     const confirming = shallowRef<MergeMethod | null>(null);
     const toggle = () => {
@@ -118,8 +152,8 @@ export const MergeMenu = defineComponent(
                     key={method}
                     role="menuitem"
                     class={styles.option}
-                    disabled={props.disabled || !mergeReady(props.pr)}
-                    title={mergeReady(props.pr) ? undefined : (readiness[props.pr.mergeable_state ?? ''] ?? pendingReadiness)[0]}
+                    disabled={props.disabled || !mergeAvailable(props.pr, props.autoMerge)}
+                    title={mergeHint(props.pr, props.autoMerge)}
                     onClick={() => {
                       if (confirming.value !== method) return void (confirming.value = method);
                       open.value = false;
@@ -140,7 +174,7 @@ export const MergeMenu = defineComponent(
         </div>
       );
   },
-  { props: ['pr', 'methods', 'disabled', 'onMerge'] },
+  { props: ['pr', 'methods', 'autoMerge', 'disabled', 'onMerge'] },
 );
 
 export const MoreMenu = defineComponent(

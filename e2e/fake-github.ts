@@ -131,15 +131,75 @@ const inboxGroups: [RegExp, ReturnType<typeof inbox>[]][] = [
     [inbox(42, pr.title), inbox(77, 'Tune cache eviction'), inbox(88, 'Rotate infra credentials', { repository: 'acme/infra' })],
   ],
   [/author:\S+ draft:true/, [inbox(90, 'Sketch retry dashboard', { draft: true, login: 'reviewer' })]],
-  [/author:\S+ draft:false/, [inbox(91, 'Speed up CI cache', { login: 'reviewer' })]],
+  [
+    /author:\S+ draft:false/,
+    [
+      inbox(91, 'Speed up CI cache', { login: 'reviewer' }),
+      inbox(94, 'Retry the sync backoff', { login: 'reviewer' }),
+      inbox(95, 'Tighten cache keys', { login: 'reviewer' }),
+    ],
+  ],
   [/reviewed-by:/, [inbox(92, 'Draft reviewed earlier', { draft: true })]],
-  [/is:merged/, [inbox(93, 'Ship metrics exporter', { login: 'reviewer' })]],
 ];
 
 const reviewState = { APPROVE: 'APPROVED', REQUEST_CHANGES: 'CHANGES_REQUESTED', COMMENT: 'COMMENTED' } as Record<string, string>;
+// Review-requested is checked first because the reviewing query also contains -author:.
+const mergedResults = (q: string) =>
+  q.includes('review-requested:')
+    ? [inbox(96, 'Tune retry jitter', { login: 'alice' })]
+    : q.includes('author:')
+      ? [inbox(93, 'Ship metrics exporter', { login: 'reviewer' })]
+      : [
+          inbox(93, 'Ship metrics exporter', { login: 'reviewer' }),
+          inbox(96, 'Tune retry jitter', { login: 'alice' }),
+          inbox(97, 'Clean up scheduler logs', { login: 'carol' }),
+        ];
+const reviewer = (login: string) => ({ __typename: 'User', login });
+const basePullRequest: Payload = {
+  createdAt: at,
+  additions: 4,
+  deletions: 1,
+  reviewDecision: null,
+  commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+  participants: { totalCount: 0, nodes: [] },
+  latestReviews: { nodes: [] },
+  reviewRequests: { nodes: [] },
+};
+// Keyed by PR number: #94 was commented on and not re-requested, with a 12/3 change and two participants;
+// #95 is approved; #91 has no reviews.
+const reviewSummaries: Record<number, Payload> = {
+  94: {
+    additions: 12,
+    deletions: 3,
+    reviewDecision: 'REVIEW_REQUIRED',
+    participants: {
+      totalCount: 2,
+      nodes: [
+        { login: 'bob', avatarUrl: '' },
+        { login: 'carol', avatarUrl: '' },
+      ],
+    },
+    latestReviews: { nodes: [{ state: 'COMMENTED', author: reviewer('bob') }] },
+  },
+  95: {
+    reviewDecision: 'APPROVED',
+    latestReviews: { nodes: [{ state: 'APPROVED', author: reviewer('bob') }] },
+  },
+};
 const reactionContents = ['THUMBS_UP', 'THUMBS_DOWN', 'LAUGH', 'HOORAY', 'CONFUSED', 'HEART', 'ROCKET', 'EYES'];
 
-export async function mockGitHub(page: Page, options: { hold?: RegExp; write?: boolean; onBehalf?: boolean } = {}) {
+export async function mockGitHub(
+  page: Page,
+  options: {
+    hold?: RegExp;
+    write?: boolean;
+    onBehalf?: boolean;
+    emptyReviewDeletes?: boolean;
+    prState?: 'merged' | 'closed';
+    mergeStates?: PullRequest['mergeable_state'][];
+    autoMergeClean?: boolean;
+  } = {},
+) {
   let release = () => {};
   const gate = new Promise<void>(resolve => (release = resolve));
   const state = {
@@ -173,8 +233,11 @@ export async function mockGitHub(page: Page, options: { hold?: RegExp; write?: b
     reactions: new Map<string, Map<string, { count: number; viewer: boolean }>>(),
     restReactions: new Map<string, { id: number; content: string; user: typeof viewer }[]>(),
     writes: [] as { method: string; path: string; body: Record<string, unknown> | undefined; operation?: string }[],
+    searches: [] as { q: string; advanced: boolean; sort: string | null; order: string | null }[],
     nextId: 1000,
     prEdits: {} as Record<string, unknown>,
+    prReads: 0,
+    autoMerge: null as null | { merge_method: string; enabled_by: typeof viewer },
   };
   const reactionGroups = (id: string) =>
     reactionContents.map(content => {
@@ -203,6 +266,12 @@ export async function mockGitHub(page: Page, options: { hold?: RegExp; write?: b
     state.inline.push(comment);
     if (!comment.in_reply_to_id) state.threads.push({ id: `T${comment.id}`, rootCommentId: comment.id, resolved: false });
     return comment;
+  };
+  const inPendingReview = (comment: Comment) =>
+    state.reviews.some(review => review.id === comment.pull_request_review_id && review.state === 'PENDING');
+  const pendingComment = (nodeId: string) => {
+    const comment = state.inline.find(comment => comment.node_id === nodeId);
+    return comment && inPendingReview(comment) ? comment : undefined;
   };
   function graphql(query: string, variables: Payload) {
     const operation = query.match(/^(?:query|mutation) (\w+)/)?.[1];
@@ -243,6 +312,33 @@ export async function mockGitHub(page: Page, options: { hold?: RegExp; write?: b
         state.reactions.set(input.subjectId, groups);
         return { [name]: { subject: { viewerCanReact: true, reactionGroups: reactionGroups(input.subjectId) } } };
       }
+      case 'EditPendingComment': {
+        const comment = pendingComment(input.pullRequestReviewCommentId);
+        if (!comment) return { updatePullRequestReviewComment: { pullRequestReviewComment: null } };
+        comment.body = input.body;
+        return { updatePullRequestReviewComment: { pullRequestReviewComment: { id: comment.node_id, body: comment.body } } };
+      }
+      case 'DeletePendingComment': {
+        const comment = pendingComment(input.id)!;
+        state.inline = state.inline.filter(other => other !== comment);
+        const review = state.reviews.find(other => other.id === comment.pull_request_review_id)!;
+        if (options.emptyReviewDeletes && !state.inline.some(other => other.pull_request_review_id === review.id))
+          state.reviews = state.reviews.filter(other => other !== review);
+        return { deletePullRequestReviewComment: { clientMutationId: null } };
+      }
+      case 'EnableAutoMerge':
+        if (options.autoMergeClean) return { errors: [{ message: 'Pull request is in clean status' }] };
+        state.autoMerge = { merge_method: input.mergeMethod.toLowerCase(), enabled_by: viewer };
+        return { enablePullRequestAutoMerge: { pullRequest: { autoMergeRequest: { mergeMethod: input.mergeMethod } } } };
+      case 'DisableAutoMerge':
+        state.autoMerge = null;
+        return { disablePullRequestAutoMerge: { pullRequest: { autoMergeRequest: null } } };
+      case 'InboxDetails':
+        return Object.fromEntries(
+          Object.keys(variables)
+            .filter(key => key.startsWith('number'))
+            .map(key => [`pr${key.slice('number'.length)}`, { pullRequest: { ...basePullRequest, ...reviewSummaries[variables[key]] } }]),
+        );
       case 'UpdateReviewThread': {
         const name = query.match(/\{ (\w+)\(input/)![1];
         const thread = state.threads.find(thread => thread.id === input.threadId)!;
@@ -305,14 +401,32 @@ export async function mockGitHub(page: Page, options: { hold?: RegExp; write?: b
     if (path === '/user') return [200, viewer, { 'access-control-expose-headers': 'X-OAuth-Scopes', 'x-oauth-scopes': 'repo, read:org' }];
     if (path === '/search/issues') {
       const q = query.get('q') || '';
+      // GitHub rejects OR outside advanced search.
+      if (/\sOR\s/.test(q) && !query.has('advanced_search')) return [422, { message: 'Validation Failed' }];
+      state.searches.push({ q, advanced: query.has('advanced_search'), sort: query.get('sort'), order: query.get('order') });
       const repos = [...q.matchAll(/repo:(\S+)/g)].map(match => match[1]);
-      const items = (inboxGroups.find(([pattern]) => pattern.test(q))?.[1] || []).filter(
-        item => !repos.length || repos.some(repo => item.repository_url.endsWith(`/${repo}`)),
-      );
+      const found = q.includes('is:merged') ? mergedResults(q) : inboxGroups.find(([pattern]) => pattern.test(q))?.[1] || [];
+      const items = found.filter(item => !repos.length || repos.some(repo => item.repository_url.endsWith(`/${repo}`)));
       return [200, { items, total_count: items.length, incomplete_results: false }];
     }
     if (path === prPath && method === 'PATCH') Object.assign(state.prEdits, body);
-    if (path === prPath) return [200, { ...pr, ...state.prEdits }];
+    if (path === prPath) {
+      const reads = options.mergeStates ?? [];
+      const mergeable_state = reads[Math.min(state.prReads, reads.length - 1)] ?? pr.mergeable_state;
+      if (method === 'GET') state.prReads++;
+      return [
+        200,
+        {
+          ...pr,
+          state: options.prState ? 'closed' : 'open',
+          merged: options.prState === 'merged',
+          mergeable_state,
+          mergeable: mergeable_state === 'unknown' ? null : true,
+          auto_merge: state.autoMerge,
+          ...state.prEdits,
+        },
+      ];
+    }
     if (path === `${prPath}/files`) return [200, files];
     if (path === `${prPath}/commits`)
       return [
@@ -365,7 +479,7 @@ export async function mockGitHub(page: Page, options: { hold?: RegExp; write?: b
     if (commentPath) {
       const list = commentPath[1] === 'issues' ? 'conversation' : 'inline';
       const comment = state[list].find(comment => comment.id === Number(commentPath[2]));
-      if (!comment) return [404, { message: 'Not Found' }];
+      if (!comment || inPendingReview(comment)) return [404, { message: 'Not Found' }];
       if (method === 'DELETE') {
         state[list] = state[list].filter(other => other !== comment) as never;
         return [204, null];
@@ -395,8 +509,10 @@ export async function mockGitHub(page: Page, options: { hold?: RegExp; write?: b
     }
     const reviewPath = path.match(/\/pulls\/42\/reviews\/(\d+)(\/events|\/comments)?$/);
     if (reviewPath) {
-      const review = state.reviews.find(review => review.id === Number(reviewPath[1]))!;
+      const review = state.reviews.find(review => review.id === Number(reviewPath[1]));
+      if (!review) return [404, { message: 'Not Found' }];
       if (reviewPath[2] === '/comments') return [200, state.inline.filter(comment => comment.pull_request_review_id === review.id)];
+      if (method === 'GET') return [200, review];
       if (method === 'DELETE') {
         state.reviews = state.reviews.filter(other => other !== review);
         state.inline = state.inline.filter(comment => comment.pull_request_review_id !== review.id);
@@ -410,7 +526,13 @@ export async function mockGitHub(page: Page, options: { hold?: RegExp; write?: b
     if (path === '/repos/acme/app')
       return [
         200,
-        { allow_merge_commit: true, allow_squash_merge: true, allow_rebase_merge: false, permissions: { push: !!options.write } },
+        {
+          allow_merge_commit: true,
+          allow_squash_merge: true,
+          allow_rebase_merge: false,
+          allow_auto_merge: true,
+          permissions: { push: !!options.write },
+        },
       ];
     if (path === `${prPath}/merge`) return [200, { merged: true, message: 'Merged' }];
     if (path === '/repos/acme/app/labels')
@@ -510,7 +632,8 @@ export async function mockGitHub(page: Page, options: { hold?: RegExp; write?: b
       if (path === '/graphql') {
         const operation = body.query.match(/^(?:query|mutation) (\w+)/)?.[1];
         if (body.query.startsWith('mutation')) state.writes.push({ method: 'POST', path, body: body.variables, operation });
-        return await route.fulfill({ json: { data: graphql(body.query, body.variables) } });
+        const result = graphql(body.query, body.variables);
+        return await route.fulfill({ json: 'errors' in result ? result : { data: result } });
       }
       if (request.method() !== 'GET') state.writes.push({ method: request.method(), path, body });
       const [status, data, headers] = rest(request.method(), path, url.searchParams, body);

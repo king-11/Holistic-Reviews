@@ -41,7 +41,7 @@ export function createReactionActions(api: () => GitHub | null, ref: () => PRRef
       if (state(comment).loading || state(comment).busy || (state(comment).loaded && !force)) return;
       update(comment, { loading: true, error: '' });
       try {
-        const client = api();
+        const client = force ? api()?.fresh() : api();
         const result = client ? await client.reactions(ref(), comment, viewerId()) : { viewerCanReact: true, reactionGroups: [] };
         update(comment, { ...result, loaded: true });
       } catch (error) {

@@ -122,6 +122,9 @@
 .chip[data-state='failure'] svg {
   color: var(--color-red);
 }
+.chip[data-state='cancelled'] svg {
+  color: var(--color-secondary);
+}
 .chip[data-state='pending'] svg {
   color: var(--color-amber);
 }
@@ -142,6 +145,9 @@
 }
 .bar > [data-state='failure'] {
   background: var(--color-red);
+}
+.bar > [data-state='cancelled'] {
+  background: var(--color-secondary);
 }
 .bar > [data-state='pending'] {
   background: var(--color-amber);

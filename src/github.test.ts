@@ -1,11 +1,32 @@
 import { afterEach, describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { GitHub, branchRelations, inboxQuery, parsePRUrl, workspaceSections, type Review } from './github.ts';
+import {
+  GitHub,
+  branchRelations,
+  classifyReview,
+  inboxQuery,
+  parsePRUrl,
+  workspaceSections,
+  type Comment,
+  type PullRequest,
+  type Review,
+  type ReviewSummary,
+  type StatusCheck,
+} from './github.ts';
 import { demoInbox, demoPR } from './demo.ts';
 
 const ref = { owner: 'acme', repo: 'app', number: 42 };
 const sha = demoPR.head.sha;
 const pending: Review = { id: 7, node_id: 'review-node', user: { id: 1, login: 'me' }, state: 'PENDING', body: '', commit_id: sha };
+const reviewComment: Comment = {
+  id: 101,
+  node_id: 'comment-node',
+  body: 'old',
+  user: pending.user,
+  created_at: '2024-01-01T00:00:00Z',
+  path: 'a.ts',
+  pull_request_review_id: 7,
+};
 type Call = { url: string; init: RequestInit; body: Record<string, unknown> | undefined };
 function fake(responses: { status?: number; data?: unknown; headers?: Record<string, string> }[]) {
   const calls: Call[] = [];
@@ -21,6 +42,22 @@ function fake(responses: { status?: number; data?: unknown; headers?: Record<str
   return calls;
 }
 afterEach(() => mock.restoreAll());
+const checkRun = (id: number, name: string, suite: number, app = 15368) => ({
+  id,
+  name,
+  status: 'completed',
+  conclusion: 'success',
+  html_url: null,
+  started_at: '2026-01-01T10:00:00Z',
+  check_suite: { id: suite },
+  app: { id: app },
+});
+const workflowRun = (id: number, name: string, workflow: number, suite: number) => ({
+  id,
+  name,
+  workflow_id: workflow,
+  check_suite_id: suite,
+});
 
 describe('commit history, full-file context and reactions', () => {
   const base = 'a'.repeat(40),
@@ -154,6 +191,10 @@ describe('commit history, full-file context and reactions', () => {
     assert.deepEqual(added.mine, { HEART: 80 });
     assert.deepEqual((await api.setReaction(ref, { id: 5 }, 'HEART', false, 1, added)).reactionGroups, []);
     assert.deepEqual(
+      calls.filter(call => (call.init.method ?? 'GET') === 'GET').map(call => call.init.cache),
+      ['no-cache', 'no-cache'],
+    );
+    assert.deepEqual(
       calls.map(call => [call.init.method ?? 'GET', new URL(call.url).pathname, call.body]),
       [
         ['POST', '/repos/acme/app/issues/comments/5/reactions', { content: 'heart' }],
@@ -194,6 +235,28 @@ describe('commit history, full-file context and reactions', () => {
     await assert.rejects(api.setReaction(ref, { id: 5 }, 'ROCKET', false, 1, empty), /reaction ID is unavailable/);
     assert.equal(calls.length, 4);
   });
+  for (const status of [404, 500]) {
+    it(`removing a reaction whose DELETE returns ${status} ${status === 404 ? 're-lists confirmed counts' : 'still throws'}`, async () => {
+      const calls = fake([{ status, data: { message: 'Server broke' } }, { data: [] }]);
+      const api = new GitHub('test-only-token');
+      const removal = api.setReaction(ref, { id: 5 }, 'HEART', false, 1, {
+        viewerCanReact: true,
+        reactionGroups: [{ content: 'HEART', viewerHasReacted: true, reactors: { totalCount: 1 } }],
+        mine: { HEART: 80 },
+      });
+      if (status === 404) assert.deepEqual((await removal).reactionGroups, []);
+      else await assert.rejects(removal, /Server broke/);
+      assert.deepEqual(
+        calls.map(call => [call.init.method ?? 'GET', new URL(call.url).pathname]),
+        status === 404
+          ? [
+              ['DELETE', '/repos/acme/app/issues/comments/5/reactions/80'],
+              ['GET', '/repos/acme/app/issues/comments/5/reactions'],
+            ]
+          : [['DELETE', '/repos/acme/app/issues/comments/5/reactions/80']],
+      );
+    });
+  }
 });
 
 describe('PR references and inbox queries', () => {
@@ -224,6 +287,30 @@ describe('PR references and inbox queries', () => {
     assert.match(inboxQuery('merged', 'me'), /is:merged author:me/);
     assert.match(inboxQuery('requested', 'me', ['acme/app', 'acme/other']), /repo:acme\/app repo:acme\/other/);
   });
+  for (const [name, repos, merged, expected] of [
+    ['every merged PR in selected repositories', ['acme/app'], 'all', 'is:pr archived:false repo:acme/app is:merged'],
+    ['only your merged PRs when no repository is selected', [], 'all', 'is:pr archived:false is:merged author:me'],
+    ['your merged PRs', ['acme/app'], 'mine', 'is:pr archived:false repo:acme/app is:merged author:me'],
+    [
+      'PRs where you were asked or reviewed',
+      [],
+      'reviewing',
+      'is:pr archived:false is:merged (review-requested:me OR reviewed-by:me) -author:me',
+    ],
+  ] as const)
+    it(`builds the merged query for ${name}`, () => {
+      assert.equal(inboxQuery('merged', 'me', [...repos], merged), expected);
+    });
+  for (const [merged, advanced] of [
+    ['reviewing', true],
+    ['mine', false],
+    ['all', false],
+  ] as const)
+    it(`requests advanced search only for the ${merged} merged filter`, async () => {
+      const calls = fake([{ data: { items: [], total_count: 0, incomplete_results: false } }]);
+      await new GitHub('test-only-token').inbox('merged', 'me', ['acme/app'], 1, undefined, merged);
+      assert.equal(new URL(calls[0].url).searchParams.has('advanced_search'), advanced);
+    });
   it('links only branch matches in the correct repository, excluding itself', () => {
     const parent = { ...demoPR, id: 3, head: { ...demoPR.head, ref: demoPR.base.ref } };
     const child = { ...demoPR, id: 4, base: { ...demoPR.base, ref: demoPR.head.ref } };
@@ -231,6 +318,220 @@ describe('PR references and inbox queries', () => {
     const deletedFork = { ...child, id: 6, base: { ...child.base, repo: null } };
     assert.deepEqual(branchRelations(demoPR, [demoPR, parent, child, unrelated, deletedFork]), { parents: [parent], children: [child] });
   });
+});
+
+describe('review state, auto-merge and merge settings', () => {
+  const me = { id: 1, login: 'me', type: 'User' };
+  const review = (state: string, login: string, type = 'User') => ({ state, author: { __typename: type, login } });
+  const summary = (
+    reviewDecision: ReviewSummary['reviewDecision'],
+    latestReviews: ReviewSummary['latestReviews'] = [],
+    requested: string[] = [],
+  ) => ({ reviewDecision, latestReviews, requested }) satisfies ReviewSummary;
+  const pullRequest = (mergeable_state: PullRequest['mergeable_state']): PullRequest => ({
+    ...demoPR,
+    state: 'open',
+    draft: false,
+    mergeable_state,
+  });
+  const authoredItem = (number: number, repo = 'acme/app') => ({
+    id: number,
+    number,
+    title: `PR ${number}`,
+    html_url: '',
+    repository_url: `https://api.github.com/repos/${repo}`,
+    user: me,
+    draft: false,
+    state: 'open',
+    updated_at: '',
+    comments: 0,
+    labels: [],
+  });
+  const reviewData = (decision: ReviewSummary['reviewDecision'], latestReviews: ReviewSummary['latestReviews'] = []) => ({
+    createdAt: '2026-01-01T00:00:00Z',
+    additions: 3,
+    deletions: 1,
+    reviewDecision: decision,
+    commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+    participants: { totalCount: 0, nodes: [] },
+    latestReviews: { nodes: latestReviews },
+    reviewRequests: { nodes: [] },
+  });
+
+  for (const [name, input, expected] of [
+    ['an approving decision', summary('APPROVED', [review('APPROVED', 'bob')]), 'approved'],
+    ['a changes-requested decision', summary('CHANGES_REQUESTED'), 'returned'],
+    ['a human comment that is not re-requested', summary('REVIEW_REQUIRED', [review('COMMENTED', 'bob')]), 'returned'],
+    ['a human comment that was re-requested', summary('REVIEW_REQUIRED', [review('COMMENTED', 'bob')], ['bob']), 'waiting'],
+    ['only bot comments', summary('REVIEW_REQUIRED', [review('COMMENTED', 'glean-pr-reviewer', 'Bot')]), 'waiting'],
+    ["only the author's own comment", summary('REVIEW_REQUIRED', [review('COMMENTED', 'me')]), 'waiting'],
+    ['an approval without a decision', summary(null, [review('APPROVED', 'bob')]), 'approved'],
+    ['no reviews', summary(null), 'waiting'],
+  ] as const)
+    it(`classifies ${name} as ${expected}`, () => {
+      assert.equal(classifyReview(input, 'me'), expected);
+    });
+
+  it('attaches review state to authored items from one batched GraphQL query', async () => {
+    const calls = fake([
+      { data: { items: [authoredItem(1), authoredItem(2, 'acme/other')], total_count: 2, incomplete_results: false } },
+      {
+        data: {
+          data: {
+            pr0: { pullRequest: reviewData('APPROVED') },
+            pr1: { pullRequest: reviewData('REVIEW_REQUIRED', [review('COMMENTED', 'bob')]) },
+          },
+        },
+      },
+    ]);
+    const result = await new GitHub('test-only-token').inbox('authored', 'me');
+    assert.deepEqual(
+      result.items.map(item => item.review),
+      ['approved', 'returned'],
+    );
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1].body?.variables, {
+      owner0: 'acme',
+      name0: 'app',
+      number0: 1,
+      owner1: 'acme',
+      name1: 'other',
+      number1: 2,
+    });
+  });
+  for (const group of ['authored', 'requested'] as const)
+    it(`leaves ${group} items unenriched when the detail batch fails so the section still loads`, async () => {
+      fake([
+        { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
+        { data: { errors: [{ message: 'Something went wrong' }] } },
+      ]);
+      const result = await new GitHub('test-only-token').inbox(group, 'me');
+      assert.equal(result.items.length, 1);
+      assert.equal(result.items[0].review, undefined);
+      assert.equal(result.items[0].details, undefined);
+    });
+  for (const [rollup, checks] of [
+    ['SUCCESS', 'success'],
+    ['FAILURE', 'failure'],
+    ['ERROR', 'failure'],
+    ['PENDING', 'pending'],
+    ['EXPECTED', 'pending'],
+    [null, null],
+  ] as const)
+    it(`maps check rollup ${rollup} to ${checks}`, async () => {
+      fake([
+        { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
+        {
+          data: {
+            data: {
+              pr0: {
+                pullRequest: {
+                  ...reviewData(null),
+                  commits: { nodes: [{ commit: { statusCheckRollup: rollup ? { state: rollup } : null } }] },
+                },
+              },
+            },
+          },
+        },
+      ]);
+      const [item] = (await new GitHub('test-only-token').inbox('requested', 'me')).items;
+      assert.equal(item.details?.checks, checks);
+    });
+  for (const [group, review] of [
+    ['reviewed', undefined],
+    ['authored', 'approved'],
+  ] as const)
+    it(`attaches details to ${group} items${review ? ' and classifies their review' : ' without review state'}`, async () => {
+      fake([
+        { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
+        {
+          data: {
+            data: {
+              pr0: {
+                pullRequest: {
+                  ...reviewData('APPROVED'),
+                  additions: 7,
+                  deletions: 2,
+                  participants: {
+                    totalCount: 3,
+                    nodes: [
+                      { login: 'me', avatarUrl: 'https://example.test/me' },
+                      { login: 'bob', avatarUrl: 'https://example.test/bob' },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+      ]);
+      const [item] = (await new GitHub('test-only-token').inbox(group, 'me')).items;
+      assert.equal(item.review, review);
+      assert.deepEqual(item.details?.participants, [{ login: 'bob', avatarUrl: 'https://example.test/bob' }]);
+      assert.equal(item.details?.participantCount, 2);
+      assert.deepEqual([item.details?.additions, item.details?.deletions], [7, 2]);
+    });
+  for (const [order, sort, direction] of [
+    [{ sort: 'created', order: 'asc' }, 'created', 'asc'],
+    [undefined, 'updated', 'desc'],
+  ] as const)
+    it(`requests ${sort} ${direction} search results${order ? '' : ' by default'}`, async () => {
+      const calls = fake([{ data: { items: [], total_count: 0, incomplete_results: false } }]);
+      await new GitHub('test-only-token').inbox('requested', 'me', [], 1, undefined, 'mine', order);
+      const url = new URL(calls[0].url);
+      assert.equal(url.searchParams.get('sort'), sort);
+      assert.equal(url.searchParams.get('order'), direction);
+    });
+
+  const enabled = { data: { data: { enablePullRequestAutoMerge: { pullRequest: { autoMergeRequest: { mergeMethod: 'SQUASH' } } } } } };
+  const cleanStatus = { data: { errors: [{ message: 'Pull request is in clean status' }] } };
+  const merged = { data: { merged: true, message: 'Merged' } };
+  for (const [name, state, autoMerge, responses, result, paths] of [
+    ['merges a clean PR directly', 'clean', true, [merged], 'merged', ['PUT /repos/acme/app/pulls/42/merge']],
+    ['queues auto-merge while mergeability is unknown', 'unknown', true, [enabled], 'queued', ['POST /graphql']],
+    [
+      'merges directly when GitHub says the PR is already clean',
+      'unknown',
+      true,
+      [cleanStatus, merged],
+      'merged',
+      ['POST /graphql', 'PUT /repos/acme/app/pulls/42/merge'],
+    ],
+    ['merges directly without auto-merge enabled', 'blocked', false, [merged], 'merged', ['PUT /repos/acme/app/pulls/42/merge']],
+  ] as const)
+    it(`${name}`, async () => {
+      const calls = fake([...responses]);
+      const outcome = await new GitHub('test-only-token').mergeOrAutoMerge(ref, pullRequest(state), 'squash', autoMerge);
+      assert.equal(outcome, result);
+      assert.deepEqual(
+        calls.map(call => `${call.init.method ?? 'GET'} ${new URL(call.url).pathname}`),
+        paths,
+      );
+    });
+
+  it('enables auto-merge with the chosen method pinned to the head commit', async () => {
+    const calls = fake([enabled]);
+    await new GitHub('test-only-token').mergeOrAutoMerge(ref, pullRequest('unknown'), 'squash', true);
+    assert.match(String(calls[0].body?.query), /EnableAutoMerge/);
+    assert.deepEqual(calls[0].body?.variables, { input: { pullRequestId: 'demo-pr', mergeMethod: 'SQUASH', expectedHeadOid: sha } });
+  });
+  it('disables auto-merge and requires GitHub to confirm it was cleared', async () => {
+    const calls = fake([{ data: { data: { disablePullRequestAutoMerge: { pullRequest: { autoMergeRequest: null } } } } }]);
+    await new GitHub('test-only-token').setAutoMerge(pullRequest('clean'), null);
+    assert.match(String(calls[0].body?.query), /DisableAutoMerge/);
+    assert.deepEqual(calls[0].body?.variables, { input: { pullRequestId: 'demo-pr' } });
+  });
+  for (const [allowed, autoMerge] of [
+    [true, true],
+    [undefined, false],
+  ] as const)
+    it(`reads merge methods and auto-merge support (allow_auto_merge ${allowed ? 'true' : 'absent'}) from one repository request`, async () => {
+      const calls = fake([
+        { data: { allow_merge_commit: false, allow_squash_merge: true, allow_rebase_merge: true, allow_auto_merge: allowed } },
+      ]);
+      assert.deepEqual(await new GitHub('test-only-token').mergeSettings(ref), { methods: ['squash', 'rebase'], autoMerge });
+      assert.equal(calls.length, 1);
+    });
 });
 
 describe('GitHub authentication and safe requests', () => {
@@ -243,6 +544,28 @@ describe('GitHub authentication and safe requests', () => {
     assert.equal(calls[0].init.credentials, 'omit');
     assert.equal(calls[0].init.redirect, 'error');
     assert.equal(new Headers(calls[0].init.headers).get('Authorization'), 'Bearer test-only-token');
+  });
+  for (const [name, api, cache] of [
+    ['a default client', () => new GitHub('test-only-token'), 'default'],
+    ['a fresh client', () => new GitHub('test-only-token').fresh(), 'no-cache'],
+  ] as const)
+    it(`reads through ${name} with the ${cache} HTTP cache mode`, async () => {
+      const calls = fake([{ data: demoPR }]);
+      await api().pullRequest(ref);
+      assert.equal(calls[0].init.cache, cache);
+    });
+  it('memoises the fresh client and reuses it for fresh reads', () => {
+    const client = new GitHub('test-only-token');
+    assert.equal(client.fresh(), client.fresh());
+    assert.notEqual(client.fresh(), client);
+    assert.equal(client.fresh().fresh(), client.fresh());
+  });
+  it('reads the PR head fresh before a write that depends on it', async () => {
+    const calls = fake([{ data: demoPR }, { data: pending }]);
+    await new GitHub('test-only-token').startReview(ref, sha);
+    assert.equal(calls[0].init.method, undefined);
+    assert.equal(calls[0].init.cache, 'no-cache');
+    assert.equal(new URL(calls[0].url).pathname, '/repos/acme/app/pulls/42');
   });
   it('rejects URL paths that could escape the API origin', async () => {
     const calls = fake([]);
@@ -359,7 +682,7 @@ describe('GitHub data loading', () => {
     assert.equal(await api.stack(ref), undefined);
     await assert.rejects(api.stack(ref), /Field unavailable/);
   });
-  it('sorts checks by state with skipped ones last', async () => {
+  it('sorts checks by state with skipped ones last and cancelled apart from failures', async () => {
     const run = (id: number, conclusion: string | null) => ({
       id,
       name: `job ${id}`,
@@ -368,13 +691,147 @@ describe('GitHub data loading', () => {
       html_url: null,
     });
     fake([
-      { data: { check_runs: [run(1, 'skipped'), run(2, 'success'), run(3, null), run(4, 'failure'), run(5, 'neutral')] } },
+      {
+        data: {
+          check_runs: [
+            run(1, 'skipped'),
+            run(2, 'success'),
+            run(3, null),
+            run(4, 'failure'),
+            run(5, 'neutral'),
+            run(6, 'cancelled'),
+            run(7, 'timed_out'),
+          ],
+        },
+      },
       { data: { statuses: [] } },
+      { data: { workflow_runs: [] } },
     ]);
     const checks = await new GitHub('test-only-token').checks(ref, sha);
     assert.deepEqual(
       checks.map(check => check.state),
-      ['failure', 'pending', 'neutral', 'success', 'skipped'],
+      ['failure', 'failure', 'cancelled', 'pending', 'neutral', 'success', 'skipped'],
+    );
+  });
+  it('re-runs failed and cancelled jobs for "Re-run failed checks"', async () => {
+    const calls = fake([
+      { status: 201, data: {} },
+      { status: 201, data: {} },
+    ]);
+    const job = (run: number, state: StatusCheck['state']): StatusCheck => ({
+      id: `run-${run}`,
+      name: `job ${run}`,
+      state,
+      url: '',
+      job: { id: run, run },
+    });
+    const checks = [job(10, 'failure'), job(11, 'cancelled'), job(12, 'success')];
+    assert.equal(await new GitHub('test-only-token').rerunChecks(ref, checks, true), 2);
+    assert.deepEqual(calls.map(call => new URL(call.url).pathname).sort(), [
+      '/repos/acme/app/actions/runs/10/rerun-failed-jobs',
+      '/repos/acme/app/actions/runs/11/rerun-failed-jobs',
+    ]);
+  });
+  it('keeps the highest check run id per workflow job, even when a queued or re-run attempt has no start time', async () => {
+    fake([
+      {
+        data: {
+          check_runs: [
+            checkRun(11, 'analyze', 1),
+            checkRun(12, 'analyze', 2),
+            { ...checkRun(13, 'analyze', 3), conclusion: 'failure', started_at: null },
+            checkRun(14, 'lint', 4),
+            { ...checkRun(15, 'lint', 5), status: 'queued', conclusion: null, started_at: null },
+          ],
+        },
+      },
+      { data: { statuses: [] } },
+      {
+        data: {
+          workflow_runs: [
+            workflowRun(900, 'CI', 10, 1),
+            workflowRun(901, 'CI', 10, 2),
+            workflowRun(899, 'CI', 10, 3),
+            workflowRun(902, 'CI', 10, 4),
+            workflowRun(903, 'CI', 10, 5),
+          ],
+        },
+      },
+    ]);
+    const checks = await new GitHub('test-only-token').checks(ref, sha);
+    assert.deepEqual(
+      checks.map(check => [check.id, check.name, check.state]),
+      [
+        ['run-13', 'CI / analyze', 'failure'],
+        ['run-15', 'CI / lint', 'pending'],
+      ],
+    );
+  });
+  it('keeps same-named jobs from different workflows apart, labelled by workflow', async () => {
+    fake([
+      {
+        data: {
+          check_runs: [checkRun(21, 'check', 1), checkRun(22, 'check', 2)],
+        },
+      },
+      { data: { statuses: [] } },
+      { data: { workflow_runs: [workflowRun(800, 'CI', 10, 1), workflowRun(801, 'Release', 20, 2)] } },
+    ]);
+    const checks = await new GitHub('test-only-token').checks(ref, sha);
+    assert.deepEqual(
+      checks.map(check => check.name),
+      ['CI / check', 'Release / check'],
+    );
+  });
+  it('dedupes check runs without a workflow by app and name', async () => {
+    fake([
+      {
+        data: {
+          check_runs: [checkRun(31, 'deploy', 5, 99), checkRun(32, 'deploy', 6, 99), checkRun(33, 'deploy', 7, 88)],
+        },
+      },
+      { data: { statuses: [] } },
+      { data: { workflow_runs: [] } },
+    ]);
+    const checks = await new GitHub('test-only-token').checks(ref, sha);
+    assert.deepEqual(
+      checks.map(check => [check.id, check.name]),
+      [
+        ['run-32', 'deploy'],
+        ['run-33', 'deploy'],
+      ],
+    );
+  });
+  it('follows check-run pagination past the first 100 runs', async () => {
+    const batch = (start: number, count: number) =>
+      Array.from({ length: count }, (_, index) => checkRun(start + index, `job ${start + index}`, 1));
+    const calls = fake([
+      { headers: { link: '<https://api.github.com/x?page=2>; rel="next"' }, data: { check_runs: batch(1, 100) } },
+      { data: { statuses: [] } },
+      { data: { workflow_runs: [] } },
+      { data: { check_runs: batch(101, 1) } },
+    ]);
+    const checks = await new GitHub('test-only-token').checks(ref, sha);
+    assert.equal(checks.length, 101);
+    assert.deepEqual(
+      calls.filter(call => call.url.includes('/check-runs')).map(call => new URL(call.url).searchParams.get('page')),
+      ['1', '2'],
+    );
+  });
+  it('falls back to app and name dedupe with plain names when the Actions run lookup fails', async () => {
+    fake([
+      {
+        data: {
+          check_runs: [checkRun(41, 'lint', 1), checkRun(42, 'lint', 2)],
+        },
+      },
+      { data: { statuses: [] } },
+      { status: 403, data: { message: 'Resource not accessible by integration' } },
+    ]);
+    const checks = await new GitHub('test-only-token').checks(ref, sha);
+    assert.deepEqual(
+      checks.map(check => [check.id, check.name]),
+      [['run-42', 'lint']],
     );
   });
   it('keeps a workspace usable when conversation or stack data fails', async () => {
@@ -674,10 +1131,63 @@ describe('GitHub review actions (mocked; no real writes)', () => {
     await assert.rejects(api.submitReview(ref, sha, 'APPROVE', ''), /no longer open/);
     assert.equal(calls.length, 3);
   });
-  it('discards pending reviews and handles empty 204 responses', async () => {
-    const calls = fake([{ status: 204 }]);
-    await new GitHub('test-only-token').discardReview(ref, 7);
-    assert.equal(calls[0].init.method, 'DELETE');
-    assert.match(calls[0].url, /\/reviews\/7$/);
+  for (const [name, ok] of [
+    ['discardReview', 204],
+    ['reviewExists', 200],
+  ] as const) {
+    it(`${name} reports true when GitHub answers, false for a 404, and rethrows other failures`, async () => {
+      const calls = fake([{ status: ok, data: { id: 7 } }, { status: 404 }, { status: 500, data: { message: 'Server broke' } }]);
+      const api = new GitHub('test-only-token');
+      assert.equal(await api[name](ref, 7), true);
+      assert.equal(await api[name](ref, 7), false);
+      await assert.rejects(api[name](ref, 7), /Server broke/);
+      assert.deepEqual(
+        calls.map(call => [call.init.method ?? 'GET', new URL(call.url).pathname]),
+        Array(3).fill([name === 'discardReview' ? 'DELETE' : 'GET', '/repos/acme/app/pulls/42/reviews/7']),
+      );
+    });
+  }
+  for (const pendingComment of [true, false]) {
+    it(`edits and deletes ${pendingComment ? 'pending' : 'published'} comments ${pendingComment ? 'only through GraphQL' : 'over REST'}`, async () => {
+      const calls = fake(
+        pendingComment
+          ? [
+              {
+                data: { data: { updatePullRequestReviewComment: { pullRequestReviewComment: { id: 'comment-node', body: 'new body' } } } },
+              },
+              { data: { data: { deletePullRequestReviewComment: { clientMutationId: null } } } },
+            ]
+          : [{ data: { ...reviewComment, body: 'new body' } }, { status: 204 }],
+      );
+      const api = new GitHub('test-only-token');
+      assert.equal((await api.editComment(ref, reviewComment, 'new body', pendingComment)).body, 'new body');
+      await api.deleteComment(ref, reviewComment, pendingComment);
+      assert.deepEqual(
+        calls.map(call => [call.init.method ?? 'GET', new URL(call.url).pathname]),
+        pendingComment
+          ? [
+              ['POST', '/graphql'],
+              ['POST', '/graphql'],
+            ]
+          : [
+              ['PATCH', '/repos/acme/app/pulls/comments/101'],
+              ['DELETE', '/repos/acme/app/pulls/comments/101'],
+            ],
+      );
+      if (pendingComment)
+        assert.deepEqual(
+          calls.map(call => call.body?.variables),
+          [{ input: { pullRequestReviewCommentId: 'comment-node', body: 'new body' } }, { input: { id: 'comment-node' } }],
+        );
+    });
+  }
+  it('refuses pending comment writes without a GraphQL ID and rejects unconfirmed edits', async () => {
+    const calls = fake([{ data: { data: { updatePullRequestReviewComment: { pullRequestReviewComment: null } } } }]);
+    const api = new GitHub('test-only-token');
+    const withoutId: Comment = { ...reviewComment, node_id: undefined };
+    await assert.rejects(api.editComment(ref, withoutId, 'x', true), /Refresh this PR to load the GitHub comment ID/);
+    await assert.rejects(api.deleteComment(ref, withoutId, true), /Refresh this PR to load the GitHub comment ID/);
+    await assert.rejects(api.editComment(ref, reviewComment, 'x', true), /did not confirm the comment update/);
+    assert.equal(calls.length, 1);
   });
 });

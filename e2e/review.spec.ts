@@ -19,13 +19,39 @@ async function drag(page: Page, from: Locator, to: Locator) {
   await page.mouse.up();
 }
 
+async function startLineReview(page: Page, body: string) {
+  await lineNumber(page, 'src/worker.py', 10, 'addition').click();
+  await composer(page).fill(body);
+  await page.getByRole('group', { name: 'Line comment' }).getByRole('button', { name: 'Start a review' }).click();
+  await expect(page.getByRole('button', { name: 'Discard pending', exact: true })).toBeVisible();
+}
+
+// Inbox repositories default to the most-used one, so tests that need every repository seed an explicit choice.
+async function seedInbox(page: Page, preferences: { repos?: string[]; sort?: string }) {
+  await page.addInitScript(saved => {
+    if (!localStorage.getItem('review.inbox')) localStorage.setItem('review.inbox', JSON.stringify(saved));
+  }, preferences);
+}
+
 test.describe('inbox', () => {
   test('shows every section, keeps drafts out of review requests, and includes reviewed drafts', async ({ page }) => {
     await mockGitHub(page);
+    await seedInbox(page, { repos: [] });
     await page.goto('/');
     const group = (name: RegExp) => page.getByRole('main').getByRole('button', { name });
-    for (const name of [/Needs your review\s*3/, /Your pull requests\s*1/, /Drafts\s*1/, /Reviewed by you\s*1/, /Recently merged\s*1/])
+    for (const name of [
+      /Needs your review\s*3/,
+      /Returned to you\s*1/,
+      /Approved\s*1/,
+      /Waiting for review\s*1/,
+      /Drafts\s*1/,
+      /Reviewed by you\s*1/,
+      /Recently merged\s*1/,
+    ])
       await expect(group(name)).toBeVisible();
+    await expect(page.getByRole('button', { name: /Retry the sync backoff/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Tighten cache keys/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Speed up CI cache/ })).toBeVisible();
     await expect(page.getByRole('button', { name: /Sketch retry dashboard/ })).toBeVisible();
     await group(/Reviewed by you/).click();
     await expect(page.getByRole('button', { name: /Draft reviewed earlier/ })).toBeVisible();
@@ -33,6 +59,7 @@ test.describe('inbox', () => {
 
   test('filters pull requests by search text and repository', async ({ page }) => {
     await mockGitHub(page);
+    await seedInbox(page, { repos: [] });
     await page.goto('/');
     await page.getByRole('textbox', { name: 'Search loaded pull requests' }).fill('cache');
     await expect(page.getByRole('button', { name: /Tune cache eviction/ })).toBeVisible();
@@ -42,6 +69,98 @@ test.describe('inbox', () => {
     await page.getByRole('checkbox', { name: 'acme/infra' }).check();
     await expect(page.getByRole('button', { name: /Rotate infra credentials/ })).toBeVisible();
     await expect(page.getByRole('button', { name: /Tune cache eviction/ })).toHaveCount(0);
+  });
+
+  test('filters recently merged pull requests by all, yours, or review requests in selected repositories', async ({ page }) => {
+    const fake = await mockGitHub(page);
+    await seedInbox(page, { repos: [] });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'All repositories' }).click();
+    await page.getByRole('checkbox', { name: 'acme/app' }).check();
+    await page
+      .getByRole('main')
+      .getByRole('button', { name: /Recently merged/ })
+      .click();
+    const radios = page.getByRole('radiogroup', { name: 'Merged pull requests' });
+    await expect(radios.getByRole('radio', { name: 'All' })).toHaveAttribute('aria-checked', 'true');
+    await expect(page.getByRole('button', { name: /Clean up scheduler logs/ })).toBeVisible();
+    await radios.getByRole('radio', { name: 'By me' }).click();
+    await expect(page.getByRole('button', { name: /Clean up scheduler logs/ })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /Ship metrics exporter/ })).toBeVisible();
+    expect(fake.searches.at(-1)).toMatchObject({ advanced: false });
+    expect(fake.searches.at(-1)?.q).toContain('author:reviewer');
+    await radios.getByRole('radio', { name: 'Review requested' }).click();
+    await expect(page.getByRole('button', { name: /Tune retry jitter/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Ship metrics exporter/ })).toHaveCount(0);
+    expect(fake.searches.at(-1)).toMatchObject({ advanced: true });
+    expect(fake.searches.at(-1)?.q).toContain('(review-requested:reviewer OR reviewed-by:reviewer)');
+  });
+
+  test('disables All for recently merged pull requests until a repository is selected', async ({ page }) => {
+    await mockGitHub(page);
+    await seedInbox(page, { repos: [] });
+    await page.goto('/');
+    await page
+      .getByRole('main')
+      .getByRole('button', { name: /Recently merged/ })
+      .click();
+    const radios = page.getByRole('radiogroup', { name: 'Merged pull requests' });
+    await expect(radios.getByRole('radio', { name: 'All' })).toBeDisabled();
+    await expect(radios.getByRole('radio', { name: 'By me' })).toHaveAttribute('aria-checked', 'true');
+    await expect(page.getByRole('button', { name: /Ship metrics exporter/ })).toBeVisible();
+  });
+
+  test('a merged filter in the collapsed section bar expands the section and applies the filter', async ({ page }) => {
+    await mockGitHub(page);
+    await page.goto('/');
+    const merged = page.getByRole('main').getByRole('button', { name: /Recently merged/ });
+    await expect(merged).toHaveAttribute('aria-expanded', 'false');
+    await page.getByRole('radiogroup', { name: 'Merged pull requests' }).getByRole('radio', { name: 'By me' }).click();
+    await expect(merged).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByRole('radio', { name: 'By me' })).toHaveAttribute('aria-checked', 'true');
+    await expect(page.getByRole('button', { name: /Ship metrics exporter/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Clean up scheduler logs/ })).toHaveCount(0);
+  });
+
+  test('starts on the most-used repository and keeps a later choice across reloads', async ({ page }) => {
+    await mockGitHub(page);
+    await page.goto('/');
+    await expect(page.getByRole('button', { name: '1 repository' })).toBeVisible();
+    await page.getByRole('button', { name: '1 repository' }).click();
+    await expect(page.getByRole('checkbox', { name: 'acme/app' })).toBeChecked();
+    await expect(page.getByRole('checkbox', { name: 'acme/infra' })).not.toBeChecked();
+    await page.getByRole('checkbox', { name: 'acme/infra' }).check();
+    await page.getByRole('checkbox', { name: 'acme/app' }).uncheck();
+    await page.reload();
+    await expect(page.getByRole('button', { name: '1 repository' })).toBeVisible();
+    await page.getByRole('button', { name: '1 repository' }).click();
+    await expect(page.getByRole('checkbox', { name: 'acme/infra' })).toBeChecked();
+    await expect(page.getByRole('checkbox', { name: 'acme/app' })).not.toBeChecked();
+  });
+
+  test('sorts by title client-side and by creation date on the server, remembering the choice', async ({ page }) => {
+    const fake = await mockGitHub(page);
+    await page.goto('/');
+    await expect(page.getByRole('button', { name: '1 repository' })).toBeVisible();
+    await page.getByRole('button', { name: 'Sort pull requests' }).click();
+    await page.getByRole('menuitemradio', { name: /^Title Z–A/ }).click();
+    await expect(page.locator('section.requested .pr-row-title').first()).toContainText('Tune cache eviction');
+    await page.getByRole('button', { name: 'Sort pull requests' }).click();
+    await page.getByRole('menuitemradio', { name: /Created Oldest first/ }).click();
+    await expect.poll(() => fake.searches.at(-1)).toMatchObject({ sort: 'created', order: 'asc' });
+    await page.reload();
+    await page.getByRole('button', { name: 'Sort pull requests' }).click();
+    await expect(page.getByRole('menuitemradio', { name: /Created Oldest first/ })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  test('shows changes, checks, and people involved on each inbox row', async ({ page }) => {
+    await mockGitHub(page);
+    await page.goto('/');
+    const row = page.getByRole('button', { name: /Retry the sync backoff/ });
+    await expect(row.getByText('+12')).toBeVisible();
+    await expect(row.getByText('−3')).toBeVisible();
+    await expect(row.getByRole('img', { name: 'Checks passed' })).toBeVisible();
+    await expect(row.getByTitle('bob, carol')).toBeVisible();
   });
 
   test('demo mode is labelled and never calls GitHub', async ({ page }) => {
@@ -392,6 +511,54 @@ test.describe('details panel', () => {
     expect(lastWrite(fake, '/repos/acme/app/pulls/42/merge')).toBeUndefined();
     await menu.getByRole('menuitem', { name: 'Confirm squash and merge' }).click();
     await expect.poll(() => lastWrite(fake, '/repos/acme/app/pulls/42/merge')).toMatchObject({ merge_method: 'squash' });
+  });
+
+  test('queues auto-merge while GitHub is still computing mergeability, then turns it off from the toggle', async ({ page }) => {
+    const fake = await mockGitHub(page, { mergeStates: ['unknown'] });
+    await openPR(page);
+    await page.getByRole('button', { name: 'Merge', exact: true }).click();
+    const menu = page.getByRole('menu', { name: 'Merge options' });
+    await menu.getByRole('menuitem', { name: 'Squash and merge' }).click();
+    await menu.getByRole('menuitem', { name: 'Confirm squash and merge' }).click();
+    await expect(page.getByText('Auto-merge enabled. GitHub will merge once requirements pass.')).toBeVisible();
+    expect(lastWrite(fake, '/repos/acme/app/pulls/42/merge')).toBeUndefined();
+    await expect
+      .poll(() => lastWrite(fake, 'EnableAutoMerge'))
+      .toEqual({ input: { pullRequestId: 'PR42', mergeMethod: 'SQUASH', expectedHeadOid: 'b'.repeat(40) } });
+    const toggle = page.getByRole('switch', { name: 'Auto-merge' });
+    await expect(toggle).toBeChecked();
+    await toggle.click();
+    await expect.poll(() => fake.writes.at(-1)?.operation).toBe('DisableAutoMerge');
+    await expect(toggle).not.toBeChecked();
+  });
+
+  test('picks up mergeability that GitHub finishes computing, without a manual refresh', async ({ page }) => {
+    await mockGitHub(page, { mergeStates: ['unknown', 'clean'] });
+    await openPR(page);
+    await page.getByRole('button', { name: 'Merge', exact: true }).click();
+    const merge = page.getByRole('menu', { name: 'Merge options' }).getByRole('menuitem', { name: 'Squash and merge' });
+    await expect(merge).toHaveAttribute('title', 'GitHub will merge this once required checks and reviews pass.');
+    await expect(merge).not.toHaveAttribute('title');
+  });
+
+  test('merges directly and explains refusals when GitHub says the pull request is already clean', async ({ page }) => {
+    const fake = await mockGitHub(page, { mergeStates: ['unknown'], autoMergeClean: true });
+    await openPR(page);
+    await page.getByRole('button', { name: 'Merge', exact: true }).click();
+    const menu = page.getByRole('menu', { name: 'Merge options' });
+    await menu.getByRole('menuitem', { name: 'Squash and merge' }).click();
+    await menu.getByRole('menuitem', { name: 'Confirm squash and merge' }).click();
+    await expect.poll(() => lastWrite(fake, '/repos/acme/app/pulls/42/merge')).toMatchObject({ merge_method: 'squash' });
+    await expect(page.getByText('Pull request merged')).toBeVisible();
+  });
+
+  test('the auto-merge toggle asks for Merge when the pull request is already clean', async ({ page }) => {
+    const fake = await mockGitHub(page, { autoMergeClean: true });
+    await openPR(page);
+    await page.getByRole('switch', { name: 'Auto-merge' }).click();
+    await expect(page.getByText('This pull request is already mergeable. Use Merge.')).toBeVisible();
+    await expect(page.getByRole('switch', { name: 'Auto-merge' })).not.toBeChecked();
+    expect(lastWrite(fake, '/repos/acme/app/pulls/42/merge')).toBeUndefined();
   });
 
   for (const [name, steps, path, method, body] of [
@@ -925,6 +1092,26 @@ test.describe('inline comments and reviews', () => {
     expect(lastWrite(fake, '/repos/acme/app/pulls/42/reviews')).toEqual({ commit_id: 'b'.repeat(40) });
   });
 
+  for (const [prState, header] of [
+    ['merged', 'merged 2 commits into'],
+    ['closed', 'wanted to merge 2 commits into'],
+  ] as const)
+    test(`replies to review threads on a ${prState} pull request`, async ({ page }) => {
+      const fake = await mockGitHub(page, { prState });
+      await openPR(page);
+      await expect(page.locator('.pr-details')).toContainText(header);
+      const reply = page.getByRole('textbox', { name: 'Reply to thread on line 10' });
+      await expect(reply).toBeEnabled();
+      await reply.fill('Reply after close');
+      const actions = page.getByRole('group', { name: 'Reply actions' });
+      await expect(actions.getByRole('button', { name: 'Start a review' })).toHaveCount(0);
+      await actions.getByRole('button', { name: 'Reply', exact: true }).click();
+      await expect
+        .poll(() => fake.writes.at(-1))
+        .toMatchObject({ method: 'POST', path: '/repos/acme/app/pulls/42/comments/101/replies', body: { body: 'Reply after close' } });
+      await expect(page.getByText('Reply posted to GitHub.')).toBeVisible();
+    });
+
   test('resolves and reopens threads', async ({ page }) => {
     const fake = await mockGitHub(page);
     await openPR(page);
@@ -944,6 +1131,59 @@ test.describe('inline comments and reviews', () => {
     await page.getByRole('group', { name: 'Choose a reaction' }).getByRole('button').first().click();
     await expect.poll(() => lastWrite(fake, '/repos/acme/app/pulls/comments/101/reactions')).toEqual({ content: '+1' });
     await expect(file.getByRole('button', { name: /: 1\b/ })).toBeVisible();
+  });
+
+  test('edits a pending review comment through GraphQL and shows the saved text', async ({ page }) => {
+    const fake = await mockGitHub(page);
+    await openPR(page);
+    await startLineReview(page, 'First pending');
+    const pendingId = fake.inline.find(comment => comment.body === 'First pending')!.node_id;
+    await page.locator('.thread-comment').filter({ hasText: 'First pending' }).getByRole('button', { name: 'Edit comment' }).click();
+    await page.getByRole('textbox', { name: 'Edit comment' }).fill('Edited pending');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect
+      .poll(() => lastWrite(fake, 'EditPendingComment'))
+      .toEqual({ input: { pullRequestReviewCommentId: pendingId, body: 'Edited pending' } });
+    expect(writes(fake, /^\/repos\/acme\/app\/pulls\/comments\//)).toEqual([]);
+    await expect(page.locator('.thread-comment').filter({ hasText: 'Edited pending' })).toHaveCount(1);
+  });
+
+  for (const emptyReviewDeletes of [false, true]) {
+    test(`deleting the only pending comment then discarding is clean when GitHub ${emptyReviewDeletes ? 'removes' : 'keeps'} the empty review`, async ({
+      page,
+    }) => {
+      const fake = await mockGitHub(page, { emptyReviewDeletes });
+      await openPR(page);
+      await startLineReview(page, 'Only pending');
+      const comment = page.locator('.thread-comment').filter({ hasText: 'Only pending' });
+      await comment.getByRole('button', { name: 'Delete comment' }).click();
+      await comment.getByRole('button', { name: 'Delete?' }).click();
+      await expect.poll(() => fake.writes.at(-1)).toMatchObject({ operation: 'DeletePendingComment' });
+      if (emptyReviewDeletes) await expect(page.getByText('Comment deleted. GitHub removed the now-empty pending review.')).toBeVisible();
+      else {
+        await page.getByRole('button', { name: 'Discard pending', exact: true }).click();
+        await page.getByRole('button', { name: 'Discard review', exact: true }).click();
+        await expect(page.getByText('Pending review discarded.')).toBeVisible();
+      }
+      await expect(page.getByRole('button', { name: 'Discard pending', exact: true })).toHaveCount(0);
+      await expect(page.getByRole('alert')).toHaveCount(0);
+      expect(fake.reviews.some(review => review.state === 'PENDING')).toBe(false);
+    });
+  }
+
+  test('adds then removes a reaction on a published comment during a pending review', async ({ page }) => {
+    const fake = await mockGitHub(page);
+    await openPR(page);
+    await startLineReview(page, 'Pending alongside reaction');
+    const published = page.locator('.thread-comment').filter({ hasText: 'Please rename this' });
+    await published.getByRole('button', { name: 'Add a reaction' }).click();
+    await page.getByRole('group', { name: 'Choose a reaction' }).getByRole('button').first().click();
+    await expect.poll(() => lastWrite(fake, '/repos/acme/app/pulls/comments/101/reactions')).toEqual({ content: '+1' });
+    await published.getByRole('button', { name: /: 1\b/ }).click();
+    await expect.poll(() => fake.writes.at(-1)?.path).toMatch(/^\/repos\/acme\/app\/pulls\/comments\/101\/reactions\/\d+$/);
+    expect(fake.writes.at(-1)?.method).toBe('DELETE');
+    await expect(published.getByRole('button', { name: /: 1\b/ })).toHaveCount(0);
+    await expect(page.getByRole('alert')).toHaveCount(0);
   });
 
   for (const [option, expectColor] of [

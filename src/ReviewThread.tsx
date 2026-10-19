@@ -10,6 +10,7 @@ export interface ReplyActions {
   reactions: ReactionActions;
   edits: EditActions;
   pendingReviewId?: number;
+  canStartReview: boolean;
   disabled: boolean;
   draft: (id: number) => { body: string; error?: string };
   onChange: (id: number, body: string) => void;
@@ -165,7 +166,11 @@ export default defineComponent(
                   <div class={`${styles['thread-reply-actions']}`} role="group" aria-label="Reply actions">
                     <span>
                       Markdown supported ·{' '}
-                      {props.replies.pendingReviewId ? 'Added to your pending review.' : 'Reply now, or start a review to batch feedback.'}
+                      {props.replies.pendingReviewId
+                        ? 'Added to your pending review.'
+                        : props.replies.canStartReview
+                          ? 'Reply now, or start a review to batch feedback.'
+                          : 'Replies post immediately.'}
                     </span>
                     <button
                       class="button small"
@@ -191,7 +196,7 @@ export default defineComponent(
                     >
                       {busy.value ? 'Saving…' : props.replies.pendingReviewId ? 'Add review reply' : 'Reply'}
                     </button>
-                    {!props.replies.pendingReviewId && (
+                    {!props.replies.pendingReviewId && props.replies.canStartReview && (
                       <button
                         class="button small"
                         title="Start a pending review with this reply and batch subsequent feedback"
