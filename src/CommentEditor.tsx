@@ -1,7 +1,7 @@
 import { defineComponent, shallowRef } from 'vue';
 import { Pencil, Trash2 } from '@lucide/vue';
 import type { Comment, Review } from './github';
-import Markdown from './Markdown';
+import Markdown from './MarkdownView';
 import { IconButton, inputValue } from './ui';
 
 export type Editable = Comment | Review;

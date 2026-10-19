@@ -4,7 +4,7 @@ import { slide } from './motion';
 import { ChevronDown, FileCode2, MessageSquare, PanelRightClose } from '@lucide/vue';
 import type { CommentEntry, CommentFilter } from './comments';
 import { commentSnippet, filterCommentEntries } from './comments';
-import Markdown from './Markdown';
+import Markdown from './MarkdownView';
 import ReviewThreadCard, { type ReplyActions } from './ReviewThread';
 import { Avatar, CodeSnippet, IconButton, Loader, inputValue, timeAgo, useWidth } from './ui';
 import ReactionBar from './Reactions';

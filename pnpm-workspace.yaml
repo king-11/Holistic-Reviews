@@ -1,0 +1,14 @@
+allowBuilds:
+  esbuild: true
+
+# Root-level types and assets (vite/client, the dotlottie wasm path in src/ui.tsx) assume these resolve from node_modules/ root.
+publicHoistPattern:
+  - vite
+  - '@lottiefiles/dotlottie-web'
+
+auditConfig:
+  ignoreGhsas:
+    # braces@3.0.3 via nuxt > nitropack > globby > micromatch; no patched release yet. Build-time only, glob patterns are trusted.
+    - GHSA-vfj7-8cjw-p6xm
+    # node-forge@1.4.0 via nitropack > listhen; no patched release yet. Dev-only self-signed cert, signatures never verified.
+    - GHSA-86w9-cpqp-85rv

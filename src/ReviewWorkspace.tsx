@@ -72,7 +72,7 @@ import {
   update,
   Dismiss,
 } from './ui';
-import Markdown from './Markdown';
+import Markdown from './MarkdownView';
 import { toggleViewedFile, verifiedContextLines } from './diff';
 import {
   commentEntries,

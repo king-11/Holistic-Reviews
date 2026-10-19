@@ -4,11 +4,11 @@ A standalone Vue (Nuxt) + TypeScript pull-request inbox and review workspace, us
 
 ## Run
 
-Requires Node.js 22.18+ (or Node.js 24+) and npm.
+Requires Node.js 22.18+ (or Node.js 24+) and pnpm. Run `corepack enable` to use the pnpm version pinned in `package.json`.
 
 ```sh
-npm ci
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 Open the local Nuxt address (http://localhost:5173). The initial workspace is a clearly labeled demo; no demo actions are sent to GitHub.
@@ -55,13 +55,13 @@ Before inline/review writes, the app checks that the PR head still matches the d
 ## Checks and build
 
 ```sh
-npm test
-npm run fmt:check
-npm run lint
-npm run typecheck
-npm run build
+pnpm test
+pnpm fmt:check
+pnpm lint
+pnpm typecheck
+pnpm build
 ```
 
-`npm run fmt` formats with Oxfmt; `npm run lint` runs Oxlint. Tests use Node's built-in runner and mocked GitHub requests; they do not post anything to GitHub.
+`pnpm fmt` formats with Oxfmt; `pnpm lint` runs Oxlint. Tests use Node's built-in runner and mocked GitHub requests; they do not post anything to GitHub.
 
-`npm run build` runs `nuxt generate` with `ssr: false`, writing a static single-page app to `.output/public/`; it needs no server. GitHub calls stay in the browser because they need the user's token, so there is nothing to prerender per user; a future webhook or hosted mode would be a separate server alongside this static app. All review state except display preferences and the session token is in memory or on GitHub.
+`pnpm build` runs `nuxt generate` with `ssr: false`, writing a static single-page app to `.output/public/`; it needs no server. GitHub calls stay in the browser because they need the user's token, so there is nothing to prerender per user; a future webhook or hosted mode would be a separate server alongside this static app. All review state except display preferences and the session token is in memory or on GitHub.
