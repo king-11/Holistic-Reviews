@@ -1,0 +1,23 @@
+.pb-3 {
+  padding-bottom: 12px;
+}
+.pt-2 {
+  padding-top: 8px;
+}
+.thread-reply-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  flex-wrap: wrap;
+}
+.thread-reply-actions > span {
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+  margin-right: auto;
+}
+.thread-target {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-accent-soft);
+  scroll-margin-top: 80px;
+}

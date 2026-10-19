@@ -1,0 +1,7 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 140,
+  "singleQuote": true,
+  "arrowParens": "avoid",
+  "ignorePatterns": ["package-lock.json", "e2e/__screenshots__/**", ".agents/**"]
+}

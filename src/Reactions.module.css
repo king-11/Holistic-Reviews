@@ -1,0 +1,44 @@
+.reaction-add {
+  display: grid;
+  place-items: center;
+  padding: 4px;
+  color: var(--color-muted);
+  border-radius: var(--radius-md);
+}
+/* Pulls the button's hit-area padding out so its glyph lines up with the text edge. */
+.reaction-anchor:first-child > .reaction-add {
+  margin-left: -4px;
+}
+.reaction-add:hover {
+  color: var(--color-accent);
+  background: var(--color-subtle);
+}
+.reaction-picker {
+  position: absolute;
+  top: 28px;
+  left: 0;
+  z-index: 100;
+  display: flex;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  background: var(--color-surface);
+}
+.reaction-picker > button {
+  padding: 8px;
+  border-radius: var(--radius-md);
+}
+.reaction-picker > button:hover {
+  background: var(--color-subtle);
+}
+.reaction-error {
+  flex-basis: 100%;
+  color: var(--color-red);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+.reaction-error button {
+  margin-left: 8px;
+}

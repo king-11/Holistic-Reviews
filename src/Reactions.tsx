@@ -1,0 +1,236 @@
+import { defineComponent, onMounted, onUnmounted, shallowRef, Teleport, watch } from 'vue';
+import { motion } from 'motion-v';
+import { pop } from './motion';
+import { SmilePlus } from '@lucide/vue';
+import type { GitHub, PRRef, ReactionContent, ReactionSubject, Reactions } from './github';
+import styles from './Reactions.module.css';
+
+export const reactionChoices: { content: ReactionContent; emoji: string; label: string }[] = [
+  { content: 'THUMBS_UP', emoji: '👍', label: 'thumbs up' },
+  { content: 'THUMBS_DOWN', emoji: '👎', label: 'thumbs down' },
+  { content: 'LAUGH', emoji: '😄', label: 'laugh' },
+  { content: 'HOORAY', emoji: '🎉', label: 'hooray' },
+  { content: 'CONFUSED', emoji: '😕', label: 'confused' },
+  { content: 'HEART', emoji: '❤️', label: 'heart' },
+  { content: 'ROCKET', emoji: '🚀', label: 'rocket' },
+  { content: 'EYES', emoji: '👀', label: 'eyes' },
+];
+interface ReactionState extends Reactions {
+  loading: boolean;
+  loaded: boolean;
+  busy: boolean;
+  error: string;
+}
+export interface ReactionActions {
+  state: (comment: ReactionSubject) => ReactionState;
+  load: (comment: ReactionSubject, force?: boolean) => Promise<void>;
+  toggle: (comment: ReactionSubject, content: ReactionContent) => Promise<void>;
+}
+const initial: ReactionState = { reactionGroups: [], viewerCanReact: false, loading: false, loaded: false, busy: false, error: '' };
+
+export function createReactionActions(api: () => GitHub | null, ref: () => PRRef, viewerId: () => number): ReactionActions {
+  const states = shallowRef<Record<string, ReactionState>>({});
+  const key = (comment: ReactionSubject) => comment.node_id || `demo-${comment.id}`;
+  const state = (comment: ReactionSubject) => states.value[key(comment)] || initial;
+  const update = (comment: ReactionSubject, patch: Partial<ReactionState>) => {
+    states.value = { ...states.value, [key(comment)]: { ...(states.value[key(comment)] || initial), ...patch } };
+  };
+  return {
+    state,
+    async load(comment, force = false) {
+      if (state(comment).loading || state(comment).busy || (state(comment).loaded && !force)) return;
+      update(comment, { loading: true, error: '' });
+      try {
+        const client = api();
+        const result = client ? await client.reactions(ref(), comment, viewerId()) : { viewerCanReact: true, reactionGroups: [] };
+        update(comment, { ...result, loaded: true });
+      } catch (error) {
+        update(comment, { error: error instanceof Error ? error.message : 'Reactions could not be loaded.' });
+      } finally {
+        update(comment, { loading: false });
+      }
+    },
+    async toggle(comment, content) {
+      const current = state(comment);
+      if (!current.loaded || current.busy || !current.viewerCanReact) return;
+      update(comment, { busy: true, error: '' });
+      const mine = current.reactionGroups.find(group => group.content === content)?.viewerHasReacted || false;
+      try {
+        const client = api();
+        const result = client
+          ? await client.setReaction(ref(), comment, content, !mine, viewerId(), current)
+          : {
+              viewerCanReact: true,
+              reactionGroups: [
+                ...current.reactionGroups.filter(group => group.content !== content),
+                {
+                  content,
+                  viewerHasReacted: !mine,
+                  reactors: {
+                    totalCount:
+                      (current.reactionGroups.find(group => group.content === content)?.reactors.totalCount || 0) + (mine ? -1 : 1),
+                  },
+                },
+              ],
+            };
+        update(comment, result);
+      } catch (error) {
+        update(comment, {
+          error: `${error instanceof Error ? error.message : 'Reaction could not be confirmed.'} Refresh reactions before trying again.`,
+        });
+      } finally {
+        update(comment, { busy: false });
+      }
+    },
+  };
+}
+
+export default defineComponent(
+  (props: { comment: ReactionSubject; actions: ReactionActions; pending?: boolean }) => {
+    const element = shallowRef<HTMLDivElement>();
+    const visible = shallowRef(false);
+    const open = shallowRef(false);
+    const position = shallowRef({ left: 0, top: 0 });
+    const state = () => props.actions.state(props.comment);
+    const disabled = () => !!props.pending || state().busy || !state().loaded || !state().viewerCanReact;
+    let observer: IntersectionObserver | undefined;
+    onMounted(() => {
+      if (!('IntersectionObserver' in window)) {
+        visible.value = true;
+        return;
+      }
+      observer = new IntersectionObserver(
+        entries => {
+          if (entries.some(entry => entry.isIntersecting)) {
+            visible.value = true;
+            observer?.disconnect();
+          }
+        },
+        { rootMargin: '200px' },
+      );
+      observer.observe(element.value!);
+    });
+    onUnmounted(() => observer?.disconnect());
+    watch(open, (isOpen, _, onCleanup) => {
+      if (!isOpen) return;
+      const escape = (event: KeyboardEvent) => {
+        if (event.key === 'Escape') open.value = false;
+      };
+      document.addEventListener('keydown', escape);
+      onCleanup(() => document.removeEventListener('keydown', escape));
+    });
+    watch(
+      () => visible.value && !props.pending,
+      ready => {
+        if (ready) void props.actions.load(props.comment);
+      },
+      { immediate: true },
+    );
+    function react(content: ReactionContent) {
+      open.value = false;
+      void props.actions.toggle(props.comment, content);
+    }
+    function togglePicker(event: MouseEvent) {
+      const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+      position.value = {
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - 300)),
+        top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 60)),
+      };
+      open.value = !open.value;
+    }
+    return () => (
+      <div ref={element} class="comment-reactions">
+        {reactionChoices.map(choice => {
+          const group = state().reactionGroups.find(group => group.content === choice.content);
+          return (
+            (group?.reactors.totalCount || 0) > 0 && (
+              <button
+                key={choice.content}
+                class={`reaction-pill ${group?.viewerHasReacted ? 'mine' : ''}`}
+                title={`${group?.viewerHasReacted ? 'Remove your' : 'Add a'} ${choice.label} reaction`}
+                aria-label={`${choice.label}: ${group?.reactors.totalCount} reactions`}
+                aria-pressed={group?.viewerHasReacted || false}
+                disabled={disabled()}
+                onClick={() => react(choice.content)}
+              >
+                <span class="emoji" aria-hidden="true">
+                  {choice.emoji}
+                </span>
+                {group?.reactors.totalCount}
+              </button>
+            )
+          );
+        })}
+        <div class={`relative ${styles['reaction-anchor']}`}>
+          <button
+            class={`${styles['reaction-add']}`}
+            title={
+              props.pending
+                ? 'Reactions are available after this review is published'
+                : state().loaded && !state().viewerCanReact
+                  ? 'GitHub does not allow reactions on this comment'
+                  : 'Add a reaction'
+            }
+            aria-label="Add a reaction"
+            aria-expanded={open.value}
+            disabled={disabled()}
+            onClick={togglePicker}
+          >
+            <SmilePlus size={15} />
+          </button>
+          {open.value && (
+            <Teleport to="body">
+              <motion.div
+                {...pop()}
+                class={`${styles['reaction-picker']}`}
+                style={{ transformOrigin: 'top left', position: 'fixed', left: `${position.value.left}px`, top: `${position.value.top}px` }}
+                role="group"
+                aria-label="Choose a reaction"
+              >
+                {reactionChoices.map(choice => (
+                  <button
+                    key={choice.content}
+                    class="emoji"
+                    title={`React with ${choice.label}`}
+                    aria-label={`React with ${choice.label}`}
+                    disabled={disabled()}
+                    onClick={() => react(choice.content)}
+                  >
+                    {choice.emoji}
+                  </button>
+                ))}
+              </motion.div>
+              <button
+                class={`fixed inset-0 z-99 bg-transparent cursor-default`}
+                aria-label="Close reaction picker"
+                title="Close reaction picker"
+                onClick={() => {
+                  open.value = false;
+                }}
+              />
+            </Teleport>
+          )}
+        </div>
+        {(state().busy || state().loading) && (
+          <span class="sr-only" role="status">
+            {state().busy ? 'Saving reaction…' : 'Loading reactions…'}
+          </span>
+        )}
+        {state().error && (
+          <span class={`${styles['reaction-error']}`} role="alert">
+            {state().error}
+            <button
+              class="text-button"
+              title="Reload reaction counts and your current reaction state"
+              disabled={state().loading || state().busy}
+              onClick={() => void props.actions.load(props.comment, true)}
+            >
+              Refresh reactions
+            </button>
+          </span>
+        )}
+      </div>
+    );
+  },
+  { props: ['comment', 'actions', 'pending'] },
+);

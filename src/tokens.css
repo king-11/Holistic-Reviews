@@ -1,0 +1,41 @@
+:root {
+  --font-sans: 'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-prose:
+    'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+  --font-display: 'Geist Variable', sans-serif;
+  --font-mono: 'SF Mono', SFMono-Regular, 'Geist Mono Variable', monospace;
+  --font-mono-compact: var(--font-mono);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --font-emoji: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-base: 16px;
+  --text-lg: 18px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --text-3xl: 30px;
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-3xl: 24px;
+  --shadow-panel: 0 8px 36px #18213c17, 0 1px 4px #18213c0a;
+  --color-white: #fff;
+  --color-danger-hover: #9c3540;
+  --color-indigo: #7a88c6;
+  --color-sage: #74a486;
+  --color-violet: #9c78b5;
+  --color-slate: #a3a9b5;
+  --color-avatar: #65789a;
+  --color-amber: #cfa448;
+  --shadow-xs: 0 1px 2px #18213c0d;
+  --shadow-sm: 0 2px 6px #00000008;
+  --shadow-md: 0 8px 30px #0002;
+  --shadow-ring: inset 0 0 0 1px #00000010;
+  --shadow-primary: inset 0 1px #ffffff18, 0 1px 2px #1d2a6420;
+  --shadow-modal: 0 24px 90px #17203540;
+  --shadow-drawer-left: -8px 0 24px #1018271a;
+  --shadow-drawer-right: 4px 0 20px #17203522;
+}

@@ -1,0 +1,64 @@
+.toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 24px 24px 0;
+}
+.list {
+  margin: 12px 24px 24px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+.list > li {
+  display: flex;
+  align-items: center;
+  padding-right: 12px;
+}
+.list > li + li {
+  border-top: 1px solid var(--color-border);
+}
+.row {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  color: var(--color-text);
+  font-size: var(--text-xs);
+}
+.row:hover {
+  background: var(--color-hover);
+}
+.row strong {
+  font-weight: 500;
+}
+.row span {
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+}
+.icon {
+  flex-shrink: 0;
+  color: var(--color-muted);
+}
+.row[data-state='success'] .icon {
+  color: var(--color-green);
+}
+.row[data-state='failure'] .icon {
+  color: var(--color-red);
+}
+.row[data-state='pending'] .icon {
+  color: var(--color-amber);
+}
+.out {
+  margin-left: auto;
+  color: var(--color-muted);
+}
+.empty {
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+}

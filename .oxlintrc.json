@@ -1,0 +1,20 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "import", "vue", "jsx-a11y", "promise"],
+  "categories": {
+    "correctness": "error"
+  },
+  "env": {
+    "browser": true,
+    "node": true,
+    "es2024": true
+  },
+  "ignorePatterns": [".nuxt/**", ".output/**", "node_modules/**", "e2e/__screenshots__/**"],
+  "rules": {
+    "jsx-a11y/role-has-required-aria-props": "off",
+    "jsx-a11y/prefer-tag-over-role": "off",
+    "jsx-a11y/no-static-element-interactions": "off",
+    "jsx-a11y/click-events-have-key-events": "off",
+    "jsx-a11y/label-has-associated-control": "off"
+  }
+}
