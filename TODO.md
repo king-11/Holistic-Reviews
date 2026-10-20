@@ -38,33 +38,31 @@
   - Queue writes per PR so they stay in order, and show pending / failed / retry states inline. On failure, roll back only the affected item.
   - Make writes idempotent (client IDs on comments) so a retry never posts twice.
 
-- [ ] Rank the inbox by priority
-  - Compute a score in one pure function and show the reasons as chips on each row, never a bare number. Sort rows into Now / Soon / Later lanes; nothing is hidden, and a toggle switches back to "Updated".
+- [ ] Rank "Needs your review" by priority
+  - Compute a score in one pure function and show the reasons as chips on each row, never a bare number. Sort rows into Now (≥ 50) / Soon (≥ 20) / Later lanes; nothing is hidden. Priority is the default sort, with a toggle back to "Updated".
   - Signals:
-    - Stack: PRs that other open PRs are stacked on rank higher.
-    - Waiting on you: time since the PR was marked ready for review, or since your last review if there are new commits since then.
-    - You are a code owner (`reviewRequests { asCodeOwner }`).
-    - Checks green, so your review is what's blocking it.
-  - Show a size tag from lines changed: XS < 10, S < 50, M < 250, L < 500, XL < 1,000, XXL ≥ 1,000.
+    - Stack: count only ready-for-review PRs stacked on top; drafts add nothing. `min(30, 15·log₂(1 + n))`, so it levels off instead of growing with every PR someone opens.
+    - Waiting on you: since the PR was marked ready for review, or since the first commit after your last review. `min(30, 30·ln(1 + h) / ln 17)`, levelling off at 16 working hours. `h` counts only 9–5 on weekdays in the viewer's local time zone; the chip still shows the real elapsed time.
+    - You are a code owner (`reviewRequests { asCodeOwner }`): fixed +20.
+    - Checks green: fixed +15. Failing checks go to Later.
+  - Commits since your review: in the same `InboxDetails` batch, swap `commits(last: 1)` for `commits(last: 20) { nodes { commit { oid committedDate } } }` and add `viewerLatestReview { commit { oid } }`. Count the commits after the reviewed oid, and show "20+" when it isn't among them. If it's no longer in the PR's history, show "force-pushed since your review". No extra requests.
+  - Show a size tag from lines changed: XS < 42, S < 100, M < 250, L < 500, XL < 1,000, XXL ≥ 1,000. Size only breaks ties (smaller first).
   - Ignore labels; they mean different things in every repo.
-  - Add the needed fields to the existing `InboxDetails` batch, with no extra requests.
 
 - [ ] Pending review comments
-  - Show "N pending" as a pill in the PR header (and on the inbox row) whenever the viewer has a pending review.
-  - Submitting opens a sheet listing every pending comment with its file:line, editable in place, above the Comment / Approve / Request changes choice.
+  - Show "N pending" as a pill with the total in the PR header (and on the inbox row), and the count for each file in that file's diff header.
+  - The Submit review button opens a sheet listing every pending comment with its file:line, editable in place, above the Comment / Approve / Request changes choice.
   - No guard when leaving the page; the pending review already lives on GitHub.
 
 - [ ] Diff minimap (toggle)
-  - A canvas strip next to the diff in Blocks style: one row per diff line, coloured by added / removed, with markers for comment threads, pending comments and file boundaries, and a viewport frame.
+  - A canvas strip (about 96px wide) next to the diff in Blocks style, not blurred code: one row per diff line, coloured by added / removed, with markers for comment threads, pending comments and file boundaries, and a viewport frame.
   - Click or drag to jump. Toggle with `m` and remember the choice; off by default and hidden on narrow screens.
   - Draw from the patch data we already load; redraw only when files load, expand or collapse. The frame snaps (no animation) during keyboard navigation.
 
 - [ ] Command bar
-  - Grow ⌘K from "open by URL" into one place for every action, aware of the current context (inbox, PR, selection).
-  - Define each action once (label, keys, `run`, `enabled(ctx)` returning a reason when disabled) in `shortcuts.ts`, so key bindings, the `?` dialog and the menu all come from that one list.
-  - Show disabled actions with their reason (for example, "waiting on test / integration") instead of hiding them.
-  - Actions with options open a sub-page that shows what will happen before running (for example, Approve with a comment).
-  - Hold approvals and merges started from the bar for a few seconds with an Undo, since GitHub can't take them back.
-  - Recognise pasted PR URLs, `owner/repo#123` and `#123`; support `>` files, `@` people, `#` PRs.
-  - Bulk actions on inbox rows selected with `x`, run through `mutate()`.
-  - Show each action's shortcut, and list recently used actions first.
+  - Grow ⌘K from "open by URL" into a command bar for the current PR. Commands: Submit review, Approve, Request changes, Squash and merge, Merge when ready, Copy branch name, Toggle minimap, Theme, Upstack, Inbox.
+  - Pasting a PR URL, `owner/repo#123` or `#123` switches the bar and the page to that PR.
+  - Define each command once (label, keys, `run`, `enabled(ctx)` returning a reason when disabled) in `shortcuts.ts`, so key bindings, the `?` dialog and the bar all come from that one list.
+  - Show disabled commands with their reason (for example, "waiting on test / integration") instead of hiding them.
+  - Approve and Theme open a sub-page; Approve's shows what will happen before it runs. Approvals and merges wait a few seconds with an Undo, since GitHub can't take them back.
+  - Show each command's shortcut, and list recently used commands first.
