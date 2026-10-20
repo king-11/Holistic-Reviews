@@ -46,7 +46,6 @@ import {
   type ReviewCommentInput,
   type TokenInfo,
   type User,
-  type Workspace,
   type WorkspaceSection,
 } from './github';
 import FileTree from './FileTree';
@@ -86,6 +85,7 @@ import {
 import CommentsPanel from './CommentsPanel';
 import InlineComposer, { type InlineLocation } from './InlineComposer';
 import type { ReplyActions } from './ReviewThread';
+import type { PRWorkspace } from './prWorkspace';
 import { CommentActions, CommentBody, isReview, type EditActions, type Editable } from './CommentEditor';
 import ReactionBar, { createReactionActions } from './Reactions';
 import { CommitHistory, CommitPicker, type CommitRange } from './Commits';
@@ -97,21 +97,20 @@ type ReviewEvent = 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES';
 type Dialog = 'review' | 'inline' | 'discard' | null;
 
 type Props = {
-  workspace: Workspace;
+  store: PRWorkspace;
   api: GitHub;
   info: TokenInfo;
   settings: DiffSettings;
   onSettings: (settings: DiffSettings) => void;
   onOpen: (url: string) => void;
   onBack: () => void;
-  onRefresh: () => void;
-  onRefreshPR: () => void;
   onBusy: (busy: boolean) => void;
 };
 
 export default defineComponent(
   (props: Props) => {
-    const pr = () => props.workspace.pr;
+    const ws = () => props.store.current();
+    const pr = () => ws().pr;
     const ref = (): PRRef => {
       const [owner, repo] = (pr().base.repo?.full_name || '').split('/');
       return { owner, repo, number: pr().number };
@@ -120,25 +119,11 @@ export default defineComponent(
     const markdownBase = () => `${pr().html_url.replace(/\/pull\/\d+(?:\/.*)?$/, '')}/blob/${pr().head.sha}/`;
     const viewer = () => props.info.user;
     const ownPR = () => pr().user.id === viewer().id;
-    const pendingSection = (...sections: WorkspaceSection[]) => sections.some(section => props.workspace.pending.includes(section));
+    const pendingSection = (...sections: WorkspaceSection[]) => sections.some(section => ws().pending.includes(section));
     const tab = shallowRef<'changes' | 'conversation' | 'review' | 'commits' | 'checks'>('changes');
     let active = true;
     onUnmounted(() => (active = false));
 
-    // Sections arrive after mount; keep anything posted locally that the server snapshot doesn't include yet.
-    const mirror = <T extends { id: number | string }>(source: () => T[] | undefined) => {
-      const state = shallowRef(source() ?? []);
-      watch(source, incoming => {
-        const next = incoming ?? [];
-        state.value = [...next, ...state.value.filter(item => !next.some(other => other.id === item.id))];
-      });
-      return state;
-    };
-    const comments = mirror(() => props.workspace.comments);
-    const inlineComments = mirror(() => props.workspace.inlineComments);
-    const reviews = mirror(() => props.workspace.reviews);
-    const threads = mirror(() => props.workspace.reviewThreads);
-    const draftComments = shallowRef<Comment[]>([]);
     const people = computed(() => peopleDirectory(ref(), props.api));
     provide(peopleKey, () => people.value);
     // Everyone already on this PR is who reviewers and mentions most likely want, before any search.
@@ -148,18 +133,18 @@ export default defineComponent(
           pr().user,
           ...(pr().requested_reviewers ?? []),
           ...(pr().assignees ?? []),
-          ...[...comments.value, ...inlineComments.value, ...reviews.value].map(item => item.user),
+          ...[...ws().comments, ...ws().inlineComments, ...ws().reviews].map(item => item.user),
           viewer(),
         ].map(user => ({ login: user.login, avatarUrl: user.avatar_url })),
       ),
     );
-    const pending = computed(() => reviews.value.find(review => review.user.id === viewer().id && review.state === 'PENDING'));
+    const pending = computed(() => ws().reviews.find(review => review.user.id === viewer().id && review.state === 'PENDING'));
     const stalePending = () => !!pending.value && pending.value?.commit_id !== pr().head.sha;
-    const canReview = () => props.workspace.reviewsLoaded && pr().state === 'open';
-    const canReply = () => props.workspace.reviewsLoaded && !stalePending();
+    const canReview = () => ws().reviewsLoaded && pr().state === 'open';
+    const canReply = () => ws().reviewsLoaded && !stalePending();
     // The kept-alive inbox corrects this PR's row from what this page knows, ahead of GitHub search catching up.
     watchEffect(() => {
-      if (props.workspace.reviewsLoaded) recordPR(pr(), reviews.value, inlineComments.value, viewer().login);
+      if (ws().reviewsLoaded) recordPR(pr(), ws().reviews, ws().inlineComments, viewer().login);
     });
 
     const busy = shallowRef(false);
@@ -175,7 +160,7 @@ export default defineComponent(
       try {
         await work();
         markInboxStale();
-        if (active) props.onRefreshPR();
+        if (active) props.store.refresh('pr');
         return true;
       } catch (failure) {
         if (active) error.value = errorMessage(failure, 'GitHub could not complete this action.');
@@ -214,7 +199,7 @@ export default defineComponent(
         const result = await work(props.api);
         markInboxStale();
         showToast(label);
-        if (refresh) props.onRefresh();
+        if (refresh) props.store.refresh('all');
         return result;
       } catch (failure) {
         showToast(errorMessage(failure, 'GitHub could not complete this action.'), 'error');
@@ -227,7 +212,7 @@ export default defineComponent(
     async function loadPendingComments(review: Review, fresh = false) {
       const version = ++draftLoadVersion;
       const result = await (fresh ? props.api.fresh() : props.api).reviewComments(ref(), review.id);
-      if (active && version === draftLoadVersion && pending.value?.id === review.id) draftComments.value = result;
+      if (active && version === draftLoadVersion && pending.value?.id === review.id) props.store.patch({ draftComments: result });
     }
     watchEffect(() => {
       const review = pending.value;
@@ -239,7 +224,7 @@ export default defineComponent(
     async function refreshThreads() {
       try {
         const result = await props.api.fresh().reviewThreads(ref());
-        if (active) threads.value = result.items;
+        if (active) props.store.patch({ reviewThreads: result.items });
         return result.truncated ? ' Some thread statuses are unavailable. Open GitHub for the rest.' : '';
       } catch {
         return ' Feedback saved, but thread status could not be refreshed. Refresh the PR before resolving new threads.';
@@ -248,18 +233,18 @@ export default defineComponent(
 
     const allComments = computed(() =>
       withThreadLocations(
-        [...draftComments.value, ...inlineComments.value].filter(
+        [...ws().draftComments, ...ws().inlineComments].filter(
           (item, index, array) => array.findIndex(other => other.id === item.id) === index,
         ),
-        threads.value,
+        ws().reviewThreads,
       ),
     );
     const shown = (item: { user: User }) => !props.settings.hideBotComments || !isBot(item.user);
     const panelEntries = computed(() =>
-      commentEntries(props.workspace.files, allComments.value, comments.value, threads.value, props.settings.hideBotComments),
+      commentEntries(ws().files, allComments.value, ws().comments, ws().reviewThreads, props.settings.hideBotComments),
     );
-    const visibleConversation = computed(() => comments.value.filter(shown));
-    const visibleReviews = computed(() => reviews.value.filter(shown));
+    const visibleConversation = computed(() => ws().comments.filter(shown));
+    const visibleReviews = computed(() => ws().reviews.filter(shown));
 
     const moderator = shallowRef(false);
     onMounted(
@@ -272,11 +257,11 @@ export default defineComponent(
     const withBody = <T extends { id: number }>(list: T[], id: number, body?: string) =>
       body === undefined ? list.filter(item => item.id !== id) : list.map(item => (item.id === id ? { ...item, body } : item));
     const changeComment = (item: Editable, body?: string) => {
-      if (isReview(item)) update(reviews, prev => withBody(prev, item.id, body));
-      else if (!item.path && !item.pull_request_review_id) update(comments, prev => withBody(prev, item.id, body));
+      if (isReview(item)) props.store.edit('reviews', prev => withBody(prev, item.id, body));
+      else if (!item.path && !item.pull_request_review_id) props.store.edit('comments', prev => withBody(prev, item.id, body));
       else {
-        update(inlineComments, prev => withBody(prev, item.id, body));
-        update(draftComments, prev => withBody(prev, item.id, body));
+        props.store.edit('inlineComments', prev => withBody(prev, item.id, body));
+        props.store.edit('draftComments', prev => withBody(prev, item.id, body));
       }
     };
     const inPendingReview = (item: Editable) => !isReview(item) && !!pending.value && item.pull_request_review_id === pending.value.id;
@@ -308,8 +293,8 @@ export default defineComponent(
                 () => false,
               ));
           if (removedByGitHub) {
-            update(reviews, prev => prev.filter(other => other.id !== review.id));
-            draftComments.value = [];
+            props.store.edit('reviews', prev => prev.filter(other => other.id !== review.id));
+            props.store.patch({ draftComments: [] });
           }
           done(removedByGitHub ? 'Comment deleted. GitHub removed the now-empty pending review.' : 'Comment deleted from GitHub.');
         }),
@@ -344,10 +329,10 @@ export default defineComponent(
         const root = allComments.value.find(comment => comment.id === id);
         if (!root) throw new Error('This comment is no longer loaded. Refresh before replying.');
         let current = pending.value;
-        let thread = threads.value.find(thread => thread.rootCommentId === id);
+        let thread = ws().reviewThreads.find(thread => thread.rootCommentId === id);
         if ((current || startReview) && !thread) {
           const result = await props.api.fresh().reviewThreads(ref());
-          threads.value = result.items;
+          props.store.patch({ reviewThreads: result.items });
           thread = result.items.find(thread => thread.rootCommentId === id);
           if (!thread) throw new Error('Thread metadata is unavailable. Open this thread on GitHub or refresh before starting a review.');
         }
@@ -355,7 +340,7 @@ export default defineComponent(
         if (starting) {
           const started = await props.api.startReview(ref(), pr().head.sha);
           current = started;
-          update(reviews, prev => [...prev, started]);
+          props.store.edit('reviews', prev => [...prev, started]);
         }
         const result = await props.api.reply(ref(), id, body, current, thread?.id);
         const comment = {
@@ -367,8 +352,8 @@ export default defineComponent(
         };
         if (current) {
           ++draftLoadVersion;
-          update(draftComments, prev => [...prev, comment]);
-        } else update(inlineComments, prev => [...prev, comment]);
+          props.store.edit('draftComments', prev => [...prev, comment]);
+        } else props.store.edit('inlineComments', prev => [...prev, comment]);
         update(replyDrafts, prev => ({ ...prev, [id]: { body: '' } }));
         done(
           starting
@@ -387,11 +372,11 @@ export default defineComponent(
     }
     async function resolveThread(id: string, resolved: boolean) {
       return action(async () => {
-        const thread = threads.value.find(item => item.id === id);
+        const thread = ws().reviewThreads.find(item => item.id === id);
         if (!thread || !(resolved ? thread.canResolve : thread.canUnresolve))
           throw new Error('You do not have permission to change this thread.');
         const result = await props.api.setThreadResolved(id, resolved);
-        update(threads, prev => prev.map(item => (item.id === id ? { ...item, ...result } : item)));
+        props.store.edit('reviewThreads', prev => prev.map(item => (item.id === id ? { ...item, ...result } : item)));
         done(`Thread ${resolved ? 'resolved' : 'reopened'} on GitHub.`);
       });
     }
@@ -419,7 +404,7 @@ export default defineComponent(
     }
     async function submitReview(e?: SubmitEvent) {
       e?.preventDefault();
-      if (event.value !== 'APPROVE' && !reviewBody.value.trim() && !draftComments.value.length) {
+      if (event.value !== 'APPROVE' && !reviewBody.value.trim() && !ws().draftComments.length) {
         error.value = 'Add a review summary or a pending inline comment.';
         return;
       }
@@ -427,9 +412,9 @@ export default defineComponent(
         const result = await props.api.submitReview(ref(), pr().head.sha, event.value, reviewBody.value.trim(), pending.value);
         const current = pending.value;
         entered.set(`review-${result.id}`, 'grow-in');
-        update(reviews, prev => [...prev.filter(review => review.id !== current?.id), result]);
-        update(inlineComments, prev => [...prev, ...draftComments.value]);
-        draftComments.value = [];
+        props.store.edit('reviews', prev => [...prev.filter(review => review.id !== current?.id), result]);
+        props.store.edit('inlineComments', prev => [...prev, ...ws().draftComments]);
+        props.store.patch({ draftComments: [] });
         reviewBody.value = '';
         dialog.value = null;
         done(`${event.value === 'APPROVE' ? 'Approval' : 'Review'} submitted to GitHub.`, await refreshThreads());
@@ -440,8 +425,8 @@ export default defineComponent(
         const current = pending.value;
         if (!current) return;
         const deleted = await props.api.discardReview(ref(), current.id);
-        update(reviews, prev => prev.filter(review => review.id !== current.id));
-        draftComments.value = [];
+        props.store.edit('reviews', prev => prev.filter(review => review.id !== current.id));
+        props.store.patch({ draftComments: [] });
         dialog.value = null;
         done(deleted ? 'Pending review discarded.' : 'This pending review was already gone on GitHub; cleared it here.');
       });
@@ -468,7 +453,7 @@ export default defineComponent(
         if (selectedRange.value || comparing.value) throw new Error('Switch to All commits before adding a review comment.');
         const location = inlineLocation.value;
         const text = inlineBody.value.trim();
-        const file = props.workspace.files.find(file => file.filename === location.path);
+        const file = ws().files.find(file => file.filename === location.path);
         if (
           !file ||
           !commentRange(file, { line: location.startLine ?? location.line, side: location.startSide ?? location.side }, location)
@@ -487,14 +472,15 @@ export default defineComponent(
         if (starting) {
           const started = await props.api.startReview(ref(), pr().head.sha, comment);
           current = started;
-          update(reviews, prev => [...prev, started]);
+          props.store.edit('reviews', prev => [...prev, started]);
         } else await props.api.inlineComment(ref(), pr().head.sha, comment, current);
         try {
           if (current) await loadPendingComments(current, true);
           else
-            inlineComments.value = (
-              await props.api.fresh().pages<Comment>(`/repos/${ref().owner}/${ref().repo}/pulls/${ref().number}/comments`)
-            ).items;
+            props.store.patch({
+              inlineComments: (await props.api.fresh().pages<Comment>(`/repos/${ref().owner}/${ref().repo}/pulls/${ref().number}/comments`))
+                .items,
+            });
         } catch {
           refreshWarning = ' Comment saved, but comments could not be refreshed. Refresh the PR to see it; do not post it again.';
         }
@@ -519,7 +505,7 @@ export default defineComponent(
       await action(async () => {
         const result = await props.api.comment(ref(), body.value.trim());
         entered.set(`comment-${result.id}`, 'grow-in');
-        update(comments, prev => [...prev, result]);
+        props.store.edit('comments', prev => [...prev, result]);
         body.value = '';
         done('Comment posted to GitHub.');
       });
@@ -544,10 +530,10 @@ export default defineComponent(
     const saveBody = async () => {
       if (await run('Description updated', api => api.editPR(ref(), { body: bodyDraft.value ?? '' }))) bodyDraft.value = null;
     };
-    const approved = () => reviewApproved(pr(), reviews.value, props.workspace.onBehalfOf);
+    const approved = () => reviewApproved(pr(), ws().reviews, ws().onBehalfOf);
     const prStatus = () => {
       const current = pr();
-      const checks = props.workspace.checks ?? [];
+      const checks = ws().checks ?? [];
       if (current.merged) return ['Merged', GitMerge, 'merged'] as const;
       if (current.state === 'closed') return ['Closed', GitPullRequestClosed, 'blocked'] as const;
       if (current.draft) return ['Draft', CircleX, 'blocked'] as const;
@@ -571,10 +557,10 @@ export default defineComponent(
     onUnmounted(() => clearTimeout(celebrationTimer));
 
     const stackOpen = shallowRef(false);
-    const relations = computed(() => branchRelations(pr(), props.workspace.related));
+    const relations = computed(() => branchRelations(pr(), ws().related));
     const stack = () =>
-      props.workspace.nativeStack
-        ? [...props.workspace.nativeStack.entries].sort((a, b) => a.position - b.position)
+      ws().nativeStack
+        ? [...ws().nativeStack!.entries].sort((a, b) => a.position - b.position)
         : [...relations.value.parents, pr(), ...relations.value.children].map(entry => ({ ...entry, url: prUrl(entry.number) }));
     const openStacked = (delta: 1 | -1) => {
       const entries = stack();
@@ -584,12 +570,7 @@ export default defineComponent(
     };
 
     const details = useDetails(() => ({
-      pr: pr(),
-      reviews: reviews.value,
-      checks: pendingSection('checks') ? undefined : (props.workspace.checks ?? []),
-      issues: pendingSection('linkedIssues') ? undefined : (props.workspace.linkedIssues ?? []),
-      codeOwners: props.workspace.codeOwners,
-      onBehalfOf: props.workspace.onBehalfOf,
+      store: props.store,
       api: props.api,
       prRef: ref(),
       busy: acting.value,
@@ -733,14 +714,14 @@ export default defineComponent(
     const contentQuery = shallowRef('');
     const statusFilters = shallowRef<FileStatus[]>([]);
     const focusedFile = shallowRef<string | null>(null);
-    const selected = shallowRef(props.workspace.files[0]?.filename || '');
+    const selected = shallowRef(ws().files[0]?.filename || '');
     watch(
-      () => props.workspace.files,
+      () => ws().files,
       value => (selected.value ||= value[0]?.filename || ''),
     );
     const collapsed = shallowRef<Set<string>>(new Set());
     const viewed = shallowRef<Set<string>>(new Set());
-    const displayFiles = computed(() => comparison.value?.files || props.workspace.files);
+    const displayFiles = computed(() => comparison.value?.files || ws().files);
     const files = computed(() =>
       filterFiles(displayFiles.value, { filename: filenameQuery.value, content: contentQuery.value, statuses: statusFilters.value }),
     );
@@ -991,7 +972,7 @@ export default defineComponent(
     };
 
     return () => (
-      <div class={`review-layout ${commentsOpen.value ? 'comments-open' : ''}`} aria-busy={!!props.workspace.pending.length}>
+      <div class={`review-layout ${commentsOpen.value ? 'comments-open' : ''}`} aria-busy={!!ws().pending.length}>
         {!!(sidebar.value && !focusedFile.value) && (
           <FileTree
             loading={pendingSection('files')}
@@ -1065,8 +1046,8 @@ export default defineComponent(
               <MergeControls
                 pr={pr()}
                 prRef={ref()}
-                methods={props.workspace.mergeMethods ?? []}
-                autoMerge={!!props.workspace.autoMerge}
+                methods={ws().mergeMethods ?? []}
+                autoMerge={!!ws().autoMerge}
                 approved={approved()}
                 disabled={acting.value}
                 onRun={run}
@@ -1085,8 +1066,12 @@ export default defineComponent(
                   <span>{panelEntries.value.length}</span>
                 </button>
               )}
-              <IconButton label="Refresh pull request" onClick={props.onRefresh} disabled={busy.value || !!props.workspace.pending.length}>
-                <RefreshCw size={15} class={props.workspace.pending.length ? 'spin' : ''} />
+              <IconButton
+                label="Refresh pull request"
+                onClick={() => props.store.refresh('all')}
+                disabled={busy.value || !!ws().pending.length}
+              >
+                <RefreshCw size={15} class={ws().pending.length ? 'spin' : ''} />
               </IconButton>
             </div>
           </div>
@@ -1170,7 +1155,7 @@ export default defineComponent(
                     <span class="additions">+{pr().additions}</span>
                     <span class="deletions">−{pr().deletions}</span>
                   </div>
-                  {!!(props.workspace.nativeStack || relations.value.parents.length || relations.value.children.length) && (
+                  {!!(ws().nativeStack || relations.value.parents.length || relations.value.children.length) && (
                     <div class={`reveal border border-border rounded-lg mt-5 ${styles['overflow-hidden']}`}>
                       <div class="dependency-heading">
                         <Layers size={14} />
@@ -1181,16 +1166,10 @@ export default defineComponent(
                           aria-controls="dependency-entries"
                           onClick={() => (stackOpen.value = !stackOpen.value)}
                         >
-                          <strong>
-                            {props.workspace.nativeStack
-                              ? `GitHub stack #${props.workspace.nativeStack.number}`
-                              : 'Dependent pull requests'}
-                          </strong>
+                          <strong>{ws().nativeStack ? `GitHub stack #${ws().nativeStack!.number}` : 'Dependent pull requests'}</strong>
                           <ChevronRight size={13} class={`chevron ${stackOpen.value ? 'rotated' : ''}`} />
                         </button>
-                        <span>
-                          {props.workspace.nativeStack ? `${props.workspace.nativeStack.size} pull requests` : 'Linked by branch'}
-                        </span>
+                        <span>{ws().nativeStack ? `${ws().nativeStack!.size} pull requests` : 'Linked by branch'}</span>
                         {!!stackOpen.value && (
                           <IconButton label="Close stack panel" onClick={() => (stackOpen.value = false)}>
                             <X size={15} />
@@ -1199,9 +1178,9 @@ export default defineComponent(
                       </div>
                       {!!stackOpen.value && (
                         <div id="dependency-entries">
-                          {props.workspace.nativeStack ? (
+                          {ws().nativeStack ? (
                             <>
-                              {(props.workspace.nativeStack?.entries ?? []).map(entry => (
+                              {(ws().nativeStack?.entries ?? []).map(entry => (
                                 <button
                                   class={`dependency-row ${entry.number === pr().number ? styles['current-entry'] : ''}`}
                                   title={`${entry.number === pr().number ? 'Current PR' : 'Open stacked PR'} #${entry.number}: ${entry.title}`}
@@ -1216,7 +1195,7 @@ export default defineComponent(
                                   {entry.number === pr().number ? <span>Current</span> : <ChevronRight size={13} />}
                                 </button>
                               ))}
-                              {!!props.workspace.nativeStack?.truncated && (
+                              {!!ws().nativeStack?.truncated && (
                                 <p class="group-warning">Showing the first 100 stack entries. Open GitHub for the full stack.</p>
                               )}
                             </>
@@ -1362,7 +1341,7 @@ export default defineComponent(
                 >
                   <CheckCheck size={14} />
                   Your review
-                  {!!draftComments.value.length && <span>{draftComments.value.length}</span>}
+                  {!!ws().draftComments.length && <span>{ws().draftComments.length}</span>}
                 </button>
                 <button
                   class={tab.value === 'checks' ? 'selected' : ''}
@@ -1403,7 +1382,7 @@ export default defineComponent(
             {tab.value === 'commits' && <CommitHistory {...commitProps} />}
             {tab.value === 'checks' && (
               <Checks
-                checks={props.workspace.checks}
+                checks={ws().checks}
                 loading={pendingSection('checks')}
                 busy={acting.value}
                 prRef={ref()}
@@ -1421,11 +1400,13 @@ export default defineComponent(
                       : 'Your feedback on this pull request, all in one place.'}
                   </p>
                 </div>
-                {reviews.value.filter(review => review.user.id === viewer().id).map(reviewCard)}
+                {ws()
+                  .reviews.filter(review => review.user.id === viewer().id)
+                  .map(reviewCard)}
                 {allComments.value
                   .filter(
                     comment =>
-                      comment.user.id === viewer().id && !reviews.value.some(review => review.id === comment.pull_request_review_id),
+                      comment.user.id === viewer().id && !ws().reviews.some(review => review.id === comment.pull_request_review_id),
                   )
                   .map(comment => (
                     <div class="conversation-comment">
@@ -1437,7 +1418,7 @@ export default defineComponent(
                       {codeComment(comment)}
                     </div>
                   ))}
-                {!reviews.value.some(review => review.user.id === viewer().id) &&
+                {!ws().reviews.some(review => review.user.id === viewer().id) &&
                   !allComments.value.some(comment => comment.user.id === viewer().id) && (
                     <div class="empty-state">
                       <MessageSquare size={26} />
@@ -1681,7 +1662,7 @@ export default defineComponent(
                           focused={focusedFile.value === file.filename}
                           onFocus={() => focusFile(focusedFile.value ? null : file.filename)}
                           comments={selectedRange.value ? [] : allComments.value.filter(comment => comment.path === file.filename)}
-                          threads={threads.value}
+                          threads={ws().reviewThreads}
                           onResolve={resolveThread}
                           replies={replyActions}
                           loadContext={loadContext}
@@ -1833,10 +1814,10 @@ export default defineComponent(
                     </span>
                   </label>
                 </div>
-                {!!draftComments.value.length && (
+                {!!ws().draftComments.length && (
                   <p class={`text-xs text-secondary flex items-center gap-1 ${styles['mt-4']}`}>
                     <MessageSquare size={14} />
-                    Includes {draftComments.value.length} pending inline {draftComments.value.length === 1 ? 'comment' : 'comments'}.
+                    Includes {ws().draftComments.length} pending inline {ws().draftComments.length === 1 ? 'comment' : 'comments'}.
                   </p>
                 )}
                 {!!error.value && (
@@ -1910,7 +1891,7 @@ export default defineComponent(
       </div>
     );
   },
-  { props: ['workspace', 'api', 'info', 'settings', 'onSettings', 'onOpen', 'onBack', 'onRefresh', 'onRefreshPR', 'onBusy'] },
+  { props: ['store', 'api', 'info', 'settings', 'onSettings', 'onOpen', 'onBack', 'onBusy'] },
 );
 
 function FileCodeIcon() {

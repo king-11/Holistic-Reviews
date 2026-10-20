@@ -236,7 +236,9 @@ export interface Workspace {
   warnings: string[];
   reviewsLoaded: boolean;
   nativeStack?: NativeStack;
-  reviewThreads?: ReviewThread[];
+  reviewThreads: ReviewThread[];
+  // The viewer's pending review comments, loaded separately because they are private until submitted.
+  draftComments: Comment[];
   checks?: StatusCheck[];
   linkedIssues?: LinkedIssue[];
   codeOwners?: string[];
@@ -525,6 +527,7 @@ export class GitHub {
       reviews: [],
       related: [],
       reviewThreads: [],
+      draftComments: [],
       reviewsLoaded: false,
       ...previous,
       pr,

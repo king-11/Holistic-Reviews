@@ -1,4 +1,4 @@
-import { computed, defineComponent, shallowRef, watch } from 'vue';
+import { computed, defineComponent, shallowRef } from 'vue';
 import { AnimatePresence, motion } from 'motion-v';
 import {
   ArrowUpRight,
@@ -36,7 +36,9 @@ import {
   type PullRequest,
   type Review,
   type StatusCheck,
+  type WorkspaceSection,
 } from './github';
+import type { PRWorkspace } from './prWorkspace';
 import { checkIcons } from './Checks';
 import { pop } from './motion';
 import { Avatar, IconButton, Loader, PersonLabel, SearchField, useWidth, Dismiss } from './ui';
@@ -412,13 +414,8 @@ const Picker = defineComponent(
   { props: ['label', 'load', 'search', 'selected', 'disabled', 'onPick'] },
 );
 
-export interface DetailsSource {
-  pr: PullRequest;
-  reviews: Review[];
-  checks?: StatusCheck[];
-  issues?: LinkedIssue[];
-  codeOwners?: string[];
-  onBehalfOf?: Record<string, string[]>;
+export interface DetailsInput {
+  store: PRWorkspace;
   api: GitHub;
   prRef: PRRef;
   busy: boolean;
@@ -426,22 +423,31 @@ export interface DetailsSource {
   onRun: Run;
 }
 
-// Label and reviewer writes return the new values, so they patch locally instead of reloading the PR.
-export function useDetails(source: () => DetailsSource) {
-  const patch = shallowRef<Partial<PullRequest>>({});
-  watch(
-    () => source().pr,
-    () => (patch.value = {}),
-  );
-  const pr = () => ({ ...source().pr, ...patch.value });
+// Sections still loading read as undefined so the panel shows their loaders; writes land in the PR store.
+export function useDetails(input: () => DetailsInput) {
+  const source = () => {
+    const { store } = input();
+    const workspace = store.current();
+    const settled = (section: WorkspaceSection) => !workspace.pending.includes(section);
+    return {
+      ...input(),
+      pr: workspace.pr,
+      reviews: workspace.reviews,
+      checks: settled('checks') ? (workspace.checks ?? []) : undefined,
+      issues: settled('linkedIssues') ? (workspace.linkedIssues ?? []) : undefined,
+      codeOwners: workspace.codeOwners,
+      onBehalfOf: workspace.onBehalfOf,
+    };
+  };
+  const pr = () => source().pr;
   const reviewers = computed(() => reviewerStates(pr(), source().reviews, source().onBehalfOf));
   const labels = () => pr().labels ?? [];
+  // Label and reviewer writes return the new values, so they patch the PR instead of rereading it.
+  const setPR = (change: Partial<PullRequest>) => input().store.edit('pr', current => ({ ...current, ...change }));
   const setLabels = (names: string[]) =>
     void source()
       .onRun('Labels updated', api => api.setLabels(source().prRef, names), false)
-      .then(value => {
-        if (value) patch.value = { ...patch.value, labels: value };
-      });
+      .then(value => value && setPR({ labels: value }));
   const request = (logins: string[], remove = false) =>
     void source()
       .onRun(
@@ -449,9 +455,7 @@ export function useDetails(source: () => DetailsSource) {
         api => api.requestReviewers(source().prRef, logins, remove),
         false,
       )
-      .then(value => {
-        if (value) patch.value = { ...patch.value, requested_reviewers: value.requested_reviewers, requested_teams: value.requested_teams };
-      });
+      .then(value => value && setPR({ requested_reviewers: value.requested_reviewers, requested_teams: value.requested_teams }));
   return {
     source,
     pr,
