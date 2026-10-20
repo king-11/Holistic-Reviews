@@ -1,13 +1,236 @@
+import type { MergeMethod, PRRef } from './github.ts';
+
 export type Shortcut = { combos: string[]; label: string };
+export type CommandSource = 'bar' | 'shortcut';
+export type CommandAction =
+  | 'open-command-bar'
+  | 'submit-review'
+  | 'approve'
+  | 'approve-comment'
+  | 'request-changes'
+  | 'squash-merge'
+  | 'merge-when-ready'
+  | 'copy-branch-name'
+  | 'theme'
+  | 'upstack'
+  | 'inbox';
+export type CommandContext = {
+  busy: boolean;
+  pr?: {
+    ref: PRRef;
+    login: string;
+    pendingComments: number;
+    ownPR: boolean;
+    draft: boolean;
+    open: boolean;
+    busy: boolean;
+    canReview: boolean;
+    stale: boolean;
+    mergeMethods: MergeMethod[];
+    mergeAvailable: boolean;
+    mergeReason?: string;
+    checksPending: boolean;
+    autoMergeAvailable: boolean;
+    autoMergeEnabled: boolean;
+    autoMergeReason?: string;
+    upstackAvailable: boolean;
+  };
+  actions: Partial<Record<CommandAction, (source: CommandSource) => void>>;
+};
+export type CommandEntry = {
+  id: CommandAction;
+  label: string;
+  group: string;
+  shortcutGroup?: string;
+  keys: string[];
+  inBar: boolean;
+  prOnly: boolean;
+  page?: 'approve' | 'theme';
+  hold?: boolean;
+  enabled: (context: CommandContext) => string | undefined;
+  run: (context: CommandContext, source: CommandSource) => void;
+  children?: CommandEntry[];
+};
+
+const busyReason = (context: CommandContext) => (context.busy || context.pr?.busy ? 'A GitHub update is in progress.' : undefined);
+const reviewReason = (context: CommandContext) =>
+  busyReason(context) ??
+  (!context.pr?.open
+    ? 'This pull request is not open.'
+    : context.pr.stale
+      ? 'Refresh the pull request before reviewing.'
+      : !context.pr.canReview
+        ? 'Reviews are not available on this pull request.'
+        : undefined);
+const approveReason = (context: CommandContext) =>
+  (context.pr?.ownPR ? 'You cannot approve your own pull request.' : undefined) ??
+  (context.pr?.draft ? 'Mark this pull request ready for review first.' : undefined) ??
+  reviewReason(context);
+const requestChangesReason = (context: CommandContext) =>
+  (context.pr?.ownPR ? 'You cannot request changes on your own pull request.' : undefined) ?? reviewReason(context);
+const squashMergeReason = (context: CommandContext) => {
+  const pr = context.pr;
+  if (!pr) return 'Only available on a pull request.';
+  if (busyReason(context)) return busyReason(context);
+  if (!pr.open) return 'This pull request is not open.';
+  if (pr.draft) return 'Draft pull requests cannot be merged.';
+  if (!pr.mergeMethods.includes('squash')) return 'Squash merge is not enabled for this repository.';
+  if (pr.checksPending) return 'Checks are still running.';
+  if (!pr.mergeAvailable) return pr.mergeReason ?? 'Merge requirements are not satisfied.';
+  return undefined;
+};
+const mergeWhenReadyReason = (context: CommandContext) => {
+  const pr = context.pr;
+  if (!pr) return 'Only available on a pull request.';
+  if (busyReason(context)) return busyReason(context);
+  if (!pr.open) return 'This pull request is not open.';
+  if (pr.draft) return 'Draft pull requests cannot be merged.';
+  if (pr.autoMergeEnabled) return 'Merge when ready is already enabled.';
+  if (!pr.autoMergeAvailable) return pr.autoMergeReason ?? 'Auto-merge is not available for this repository.';
+  return undefined;
+};
+const enabled = () => undefined;
 
 // A space separates the keys of a sequence; `mod` is ⌘ on macOS and Ctrl elsewhere.
+export const commandDefinitions: CommandEntry[] = [
+  {
+    id: 'open-command-bar',
+    label: 'Open command bar',
+    group: 'General',
+    shortcutGroup: 'General',
+    keys: ['mod+k'],
+    inBar: false,
+    prOnly: false,
+    enabled: context => (context.busy ? 'Wait for the current GitHub update to finish.' : undefined),
+    run: (context, source) => context.actions['open-command-bar']?.(source),
+  },
+  {
+    id: 'submit-review',
+    label: 'Submit review',
+    group: 'Review',
+    shortcutGroup: 'Review',
+    keys: ['r r'],
+    inBar: true,
+    prOnly: true,
+    enabled: reviewReason,
+    run: (context, source) => context.actions['submit-review']?.(source),
+  },
+  {
+    id: 'approve',
+    label: 'Approve',
+    group: 'Review',
+    shortcutGroup: 'Review',
+    keys: ['r y'],
+    inBar: true,
+    prOnly: true,
+    page: 'approve',
+    hold: true,
+    enabled: approveReason,
+    run: (context, source) => context.actions.approve?.(source),
+    children: [
+      {
+        id: 'approve-comment',
+        label: 'Approve with comment',
+        group: 'Review',
+        shortcutGroup: 'Review',
+        keys: ['r a'],
+        inBar: false,
+        prOnly: true,
+        enabled: approveReason,
+        run: (context, source) => context.actions['approve-comment']?.(source),
+      },
+    ],
+  },
+  {
+    id: 'request-changes',
+    label: 'Request changes',
+    group: 'Review',
+    shortcutGroup: 'Review',
+    keys: ['r n'],
+    inBar: true,
+    prOnly: true,
+    enabled: requestChangesReason,
+    run: (context, source) => context.actions['request-changes']?.(source),
+  },
+  {
+    id: 'squash-merge',
+    label: 'Squash and merge',
+    group: 'Merge',
+    keys: [],
+    inBar: true,
+    prOnly: true,
+    hold: true,
+    enabled: squashMergeReason,
+    run: (context, source) => context.actions['squash-merge']?.(source),
+  },
+  {
+    id: 'merge-when-ready',
+    label: 'Merge when ready',
+    group: 'Merge',
+    keys: [],
+    inBar: true,
+    prOnly: true,
+    enabled: mergeWhenReadyReason,
+    run: (context, source) => context.actions['merge-when-ready']?.(source),
+  },
+  {
+    id: 'copy-branch-name',
+    label: 'Copy branch name',
+    group: 'Pull request',
+    shortcutGroup: 'Copy',
+    keys: ['c b'],
+    inBar: true,
+    prOnly: true,
+    enabled: context => (!context.pr ? 'Only available on a pull request.' : undefined),
+    run: (context, source) => context.actions['copy-branch-name']?.(source),
+  },
+  {
+    id: 'theme',
+    label: 'Theme',
+    group: 'Appearance',
+    keys: [],
+    inBar: true,
+    prOnly: false,
+    page: 'theme',
+    enabled,
+    run: (context, source) => context.actions.theme?.(source),
+  },
+  {
+    id: 'upstack',
+    label: 'Upstack',
+    group: 'Pull request',
+    shortcutGroup: 'Pull request',
+    keys: ['shift+mod+ArrowUp'],
+    inBar: true,
+    prOnly: true,
+    enabled: context => (!context.pr?.upstackAvailable ? 'No pull request is stacked above this one.' : busyReason(context)),
+    run: (context, source) => context.actions.upstack?.(source),
+  },
+  {
+    id: 'inbox',
+    label: 'Inbox',
+    group: 'Navigation',
+    shortcutGroup: 'General',
+    keys: ['g i'],
+    inBar: true,
+    prOnly: false,
+    enabled: context => (context.busy ? 'Wait for the current GitHub update to finish.' : undefined),
+    run: (context, source) => context.actions.inbox?.(source),
+  },
+];
+
+const commandShortcuts = (group: string): Shortcut[] =>
+  commandDefinitions
+    .flatMap(command => [command, ...(command.children ?? [])])
+    .filter(command => command.shortcutGroup === group && command.keys.length)
+    .map(command => ({ combos: command.keys, label: command.label }));
+
 export const shortcutGroups: { title: string; shortcuts: Shortcut[] }[] = [
   {
     title: 'General',
     shortcuts: [
       { combos: ['?'], label: 'Show keyboard shortcuts' },
-      { combos: ['mod+k'], label: 'Open a pull request' },
-      { combos: ['g i'], label: 'Go to inbox' },
+      ...commandShortcuts('General'),
       { combos: ['Escape'], label: 'Close a dialog, menu or focused file' },
     ],
   },
@@ -26,33 +249,27 @@ export const shortcutGroups: { title: string; shortcuts: Shortcut[] }[] = [
       { combos: ['v', 'mod+Enter'], label: 'Mark selected file viewed' },
       { combos: ['n', 'p'], label: 'Next / previous comment' },
       { combos: ['/'], label: 'Search changed files' },
+      ...commandShortcuts('Pull request'),
       { combos: ['f'], label: 'Toggle changed files panel' },
       { combos: ['C'], label: 'Toggle comments panel' },
       { combos: ['x'], label: 'Collapse or expand selected file' },
       { combos: ['X'], label: 'Collapse or expand all files' },
       { combos: ['u', 's'], label: 'Unified / split diff' },
       { combos: ['1', '2', '3', '4', '5'], label: 'Changes / Commits / Conversation / Review / Checks tab' },
-      { combos: ['shift+mod+ArrowUp'], label: 'View upstack pull request' },
       { combos: ['shift+mod+ArrowDown'], label: 'View downstack pull request' },
       { combos: ['o'], label: 'Open on GitHub' },
     ],
   },
   {
     title: 'Review',
-    shortcuts: [
-      { combos: ['r y'], label: 'Approve pull request' },
-      { combos: ['r a'], label: 'Approve pull request with comment' },
-      { combos: ['r c'], label: 'Comment on pull request' },
-      { combos: ['r n'], label: 'Request changes on pull request' },
-      { combos: ['r r'], label: 'Open review' },
-    ],
+    shortcuts: [...commandShortcuts('Review'), { combos: ['r c'], label: 'Comment on pull request' }],
   },
   {
     title: 'Copy',
     shortcuts: [
       { combos: ['c l'], label: 'Copy link to PR' },
       { combos: ['c t'], label: 'Copy title' },
-      { combos: ['c b'], label: 'Copy PR branch name' },
+      ...commandShortcuts('Copy'),
       { combos: ['c c'], label: 'Copy CLI checkout command' },
       { combos: ['c g'], label: 'Copy link to GitHub' },
       { combos: ['c s'], label: 'Copy stack' },

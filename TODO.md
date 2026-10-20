@@ -59,10 +59,10 @@
   - Click or drag to jump. Toggle with `m` and remember the choice; off by default and hidden on narrow screens.
   - Draw from the patch data we already load; redraw only when files load, expand or collapse. The frame snaps (no animation) during keyboard navigation.
 
-- [ ] Command bar
-  - Grow ⌘K from "open by URL" into a command bar for the current PR. Commands: Submit review, Approve, Request changes, Squash and merge, Merge when ready, Copy branch name, Toggle minimap, Theme, Upstack, Inbox.
+- [x] Command bar
+  - Grow ⌘K from "open by URL" into a command bar for the current PR. Commands: Submit review, Approve, Request changes, Squash and merge, Merge when ready, Copy branch name, Theme, Upstack, Inbox.
   - Pasting a PR URL, `owner/repo#123` or `#123` switches the bar and the page to that PR.
   - Define each command once (label, keys, `run`, `enabled(ctx)` returning a reason when disabled) in `shortcuts.ts`, so key bindings, the `?` dialog and the bar all come from that one list.
   - Show disabled commands with their reason (for example, "waiting on test / integration") instead of hiding them.
-  - Approve and Theme open a sub-page; Approve's shows what will happen before it runs. Approvals and merges wait a few seconds with an Undo, since GitHub can't take them back.
+  - Approve and Theme open a sub-page; Approve's shows what will happen before it runs. Approvals and merges wait three seconds with an Undo, since GitHub can't take them back.
   - Show each command's shortcut, and list recently used commands first.

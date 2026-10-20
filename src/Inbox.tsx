@@ -124,7 +124,7 @@ const effectiveMerged = (repos: string[], filter: MergedFilter): MergedFilter =>
 type Props = {
   api: GitHub;
   info: TokenInfo;
-  onOpenDialog: () => void;
+  onOpenCommandBar: () => void;
 };
 
 export default defineComponent(
@@ -476,7 +476,7 @@ export default defineComponent(
                 <RefreshCw size={15} class={loading.value ? 'spin' : ''} />
               </IconButton>
               <span class="divider" />
-              <button class="button small" title="Open a GitHub pull request by URL" onClick={() => props.onOpenDialog()}>
+              <button class="button small" title="Open the command bar" onClick={props.onOpenCommandBar}>
                 <Plus size={14} />
                 Open pull request
               </button>
@@ -768,5 +768,5 @@ export default defineComponent(
       </div>
     );
   },
-  { props: ['api', 'info', 'onOpenDialog'] },
+  { props: ['api', 'info', 'onOpenCommandBar'] },
 );

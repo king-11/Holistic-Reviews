@@ -453,7 +453,7 @@ test.describe('motion', () => {
     });
 
   for (const [key, name] of [
-    ['ControlOrMeta+K', 'Open a pull request'],
+    ['ControlOrMeta+K', 'Command bar'],
     ['?', 'Keyboard shortcuts'],
   ])
     test(`${name} opens and closes from the keyboard without animating`, async ({ page }) => {
@@ -469,6 +469,83 @@ test.describe('motion', () => {
       await page.keyboard.press('Escape');
       expect(await page.evaluate(() => document.querySelectorAll('.modal-backdrop').length)).toBe(0);
     });
+
+  test('the PR command bar offers approval options, Undo, and PR shorthand navigation', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    await page.keyboard.press('ControlOrMeta+K');
+    let dialog = page.getByRole('dialog', { name: 'Command bar' });
+    await expect(dialog.getByRole('option', { name: /^Approve/ })).toBeVisible();
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowRight');
+
+    const approve = page.getByRole('dialog', { name: 'Approve' });
+    await expect(approve.getByText('Approves #42 as reviewer')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog', { name: 'Command bar' })).toBeVisible();
+    await page.keyboard.press('Backspace');
+    await expect(page.getByRole('dialog', { name: 'Command bar' })).toHaveCount(0);
+
+    await page.keyboard.press('ControlOrMeta+K');
+    dialog = page.getByRole('dialog', { name: 'Command bar' });
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('Enter');
+    await expect(approve.getByRole('button', { name: /Undo/ })).toBeVisible();
+    await page.keyboard.press('z');
+    await expect(approve.getByRole('button', { name: /Undo/ })).toHaveCount(0);
+
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    const review = page.getByRole('dialog', { name: 'Submit your review' });
+    await expect(review).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(review).toHaveCount(0);
+    await page.keyboard.press('ControlOrMeta+K');
+    dialog = page.getByRole('dialog', { name: 'Command bar' });
+    await dialog.getByRole('textbox', { name: 'Search commands' }).fill('acme/app#42');
+    await expect(dialog.getByRole('option', { name: 'Open acme/app#42' })).toBeVisible();
+    await expect(dialog.getByRole('option')).toHaveCount(1);
+    await page.keyboard.press('Enter');
+    await expect(dialog).toHaveCount(0);
+    await expect(page).toHaveURL(/\/acme\/app\/pull\/42$/);
+
+    await page.keyboard.press('ControlOrMeta+K');
+    dialog = page.getByRole('dialog', { name: 'Command bar' });
+    await dialog.getByRole('textbox', { name: 'Search commands' }).fill('not a pull request');
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+
+    await page.keyboard.press('ControlOrMeta+K');
+    dialog = page.getByRole('dialog', { name: 'Command bar' });
+    await dialog.getByRole('option', { name: 'Theme', exact: true }).click();
+    const theme = page.getByRole('dialog', { name: 'Theme' });
+    await expect(theme.getByRole('option', { name: /^Paper/ })).toHaveAttribute('aria-selected', 'true');
+    await expect(theme.getByText('Current', { exact: true })).toBeVisible();
+    await theme.getByRole('option', { name: 'Solarized Light', exact: true }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'solarized-light');
+  });
+
+  test('Escape and empty Backspace leave the disabled Approve page before closing the command bar', async ({ page }) => {
+    await mockGitHub(page, { ownPR: true });
+    await openPR(page);
+    await page.keyboard.press('ControlOrMeta+K');
+    const commandBar = page.getByRole('dialog', { name: 'Command bar' });
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowRight');
+    const approve = page.getByRole('dialog', { name: 'Approve' });
+    await expect(approve.getByRole('option').first()).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await expect(commandBar).toBeVisible();
+
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowRight');
+    await expect(page.getByRole('dialog', { name: 'Approve' })).toBeVisible();
+    await page.keyboard.press('Backspace');
+    await expect(commandBar).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(commandBar).toHaveCount(0);
+  });
 
   for (const [key, panel] of [
     ['f', 'Changed files'],
@@ -815,8 +892,8 @@ test.describe('keyboard shortcuts', () => {
     await page.keyboard.press('Escape');
     await expect(review).toHaveCount(0);
     await page.keyboard.press('ControlOrMeta+K');
-    await expect(page.getByRole('dialog', { name: 'Open a pull request' })).toBeVisible();
-    await expect(page.getByRole('textbox', { name: 'GitHub pull request URL' })).toBeFocused();
+    await expect(page.getByRole('dialog', { name: 'Command bar' })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'Search commands' })).toBeFocused();
   });
 });
 

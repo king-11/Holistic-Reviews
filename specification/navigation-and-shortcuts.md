@@ -20,6 +20,15 @@
 - **Commit comparison:** The **All commits** popover and **Commits** tab let the user inspect a single commit or base-to-head commit range. Comparison ranges are read-only; selecting **All commits** or jumping to a comment restores the full commentable PR diff.
 - **Stacks & branch dependencies:** Displays native GitHub stack entries when available, falling back to parent/child PRs inferred by matching `head.ref` / `base.ref` within the same repository.
 
+## Command Bar
+
+- `⌘/Ctrl+K` and the header command-bar button open an App-owned command bar. It groups available commands, puts recently used commands first, and keeps unavailable commands visible with the reason they are disabled.
+- The bar offers **Submit review**, **Approve**, **Request changes**, **Squash and merge**, **Merge when ready**, **Copy branch name**, **Theme**, **Upstack**, and **Inbox**. Pull-request commands appear only on a pull-request page. Shortcut hints come from the same definitions as the keyboard shortcut list.
+- Type a GitHub PR URL or `owner/repo#123` to show a single **Open owner/repo#123** result. On a pull-request page, `#123` uses that page's repository. Choosing the result navigates to the PR route.
+- Use `↑` / `↓` to select a result, `Enter` to run it, and `→` to open a command sub-page. `Escape` or `Backspace` in an empty search returns from a sub-page and then closes the bar.
+- **Approve** opens a sub-page with **Approve** and **Approve with comment**. It identifies the PR and viewer and reports pending comments that will be posted. The comment option opens the existing review sheet preselected to Approve. **Theme** lists available themes and marks the current selection.
+- Approve and Squash and merge wait three seconds before sending the GitHub action. The Undo toast or `z` cancels the pending action; other commands run immediately.
+
 ## Keyboard Shortcuts (`src/shortcuts.ts`)
 
 Shortcuts pause when focus is inside an input, textarea, select, or contenteditable element.
@@ -27,7 +36,7 @@ Shortcuts pause when focus is inside an input, textarea, select, or contentedita
 | Scope            | Keys                                                  | Action                                                                                            |
 | ---------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | **Global**       | `?`                                                   | Show keyboard shortcuts                                                                           |
-|                  | `⌘/Ctrl+K`                                            | Open a pull request by URL                                                                        |
+|                  | `⌘/Ctrl+K`                                            | Open command bar                                                                                  |
 |                  | `g` then `i`                                          | Go to inbox                                                                                       |
 |                  | `Escape`                                              | Close dialog, menu, hover card, or focused file                                                   |
 | **Inbox**        | `j` / `k`                                             | Focus next / previous pull request                                                                |

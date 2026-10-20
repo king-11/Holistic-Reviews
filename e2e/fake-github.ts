@@ -256,6 +256,7 @@ export async function mockGitHub(
     blockedUntilApproved?: boolean;
     viewerRequested?: boolean;
     stalePendingReadAfterEdit?: boolean;
+    ownPR?: boolean;
   } = {},
 ) {
   let release = () => {};
@@ -531,6 +532,7 @@ export async function mockGitHub(
         200,
         {
           ...pr,
+          user: options.ownPR ? viewer : pr.user,
           requested_reviewers: options.viewerRequested ? [viewer, ...(pr.requested_reviewers ?? [])] : pr.requested_reviewers,
           state: options.prState ? 'closed' : 'open',
           merged: options.prState === 'merged',
