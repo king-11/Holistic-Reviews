@@ -1,7 +1,7 @@
 import { defineComponent } from 'vue';
 import { ArrowUpRight, CircleCheck, CircleDashed, CircleMinus, CircleSlash, CircleStop, CircleX, RefreshCw } from '@lucide/vue';
 import { blockingStates, type CheckState, type PRRef, type StatusCheck } from './github';
-import type { Run } from './DetailsPanel';
+import type { Mutate } from './DetailsPanel';
 import { IconButton, Loader } from './ui';
 import styles from './Checks.module.css';
 
@@ -15,11 +15,12 @@ export const checkIcons: Record<CheckState, typeof CircleCheck> = {
 };
 
 export default defineComponent(
-  (props: { checks?: StatusCheck[]; loading: boolean; busy: boolean; prRef: PRRef; onRun: Run; entrance: string }) => {
+  (props: { checks?: StatusCheck[]; loading: boolean; busy: boolean; prRef: PRRef; onMutate: Mutate; entrance: string }) => {
     const rerun = (failedOnly: boolean) =>
-      props.onRun(failedOnly ? 'Re-running failed checks' : 'Re-running all checks', api =>
-        api.rerunChecks(props.prRef, props.checks!, failedOnly),
-      );
+      props.onMutate(api => api.rerunChecks(props.prRef, props.checks!, failedOnly), {
+        toast: failedOnly ? 'Re-running failed checks' : 'Re-running all checks',
+        refresh: 'all',
+      });
     const jobs = (failedOnly: boolean) => props.checks!.some(check => check.job && (!failedOnly || blockingStates.includes(check.state)));
     return () =>
       props.loading ? (
@@ -63,7 +64,12 @@ export default defineComponent(
                     <IconButton
                       label={`Re-run ${check.name}`}
                       disabled={props.busy}
-                      onClick={() => props.onRun(`Re-running ${check.name}`, api => api.rerunJob(props.prRef, check.job!.id))}
+                      onClick={() =>
+                        props.onMutate(api => api.rerunJob(props.prRef, check.job!.id), {
+                          toast: `Re-running ${check.name}`,
+                          refresh: 'all',
+                        })
+                      }
                     >
                       <RefreshCw size={13} />
                     </IconButton>
@@ -75,5 +81,5 @@ export default defineComponent(
         </div>
       );
   },
-  { props: ['checks', 'loading', 'busy', 'prRef', 'onRun', 'entrance'] },
+  { props: ['checks', 'loading', 'busy', 'prRef', 'onMutate', 'entrance'] },
 );

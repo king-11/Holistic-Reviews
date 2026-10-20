@@ -50,7 +50,7 @@ import {
 } from './github';
 import FileTree from './FileTree';
 import Checks from './Checks';
-import DetailsPanel, { Information, MergeControls, MoreMenu, ReviewIcon, reviewApproved, useDetails, type Run } from './DetailsPanel';
+import DetailsPanel, { Information, MergeControls, MoreMenu, ReviewIcon, reviewApproved, useDetails, type Mutate } from './DetailsPanel';
 import DiffView, { type ContextLoader, type DiffSettings } from './DiffView';
 import {
   Avatar,
@@ -90,6 +90,7 @@ import { CommentActions, CommentBody, isReview, type EditActions, type Editable 
 import ReactionBar, { createReactionActions } from './Reactions';
 import { CommitHistory, CommitPicker, type CommitRange } from './Commits';
 import { filterFiles, type FileStatus } from './file_filters';
+import { mutationBusy } from './session';
 import styles from './ReviewWorkspace.module.css';
 import switchStyles from './switch.module.css';
 
@@ -104,7 +105,6 @@ type Props = {
   onSettings: (settings: DiffSettings) => void;
   onOpen: (url: string) => void;
   onBack: () => void;
-  onBusy: (busy: boolean) => void;
 };
 
 export default defineComponent(
@@ -147,28 +147,11 @@ export default defineComponent(
       if (ws().reviewsLoaded) recordPR(pr(), ws().reviews, ws().inlineComments, viewer().login);
     });
 
-    const busy = shallowRef(false);
+    // One flag for every write: App also reads it to hold navigation until the write lands.
+    const busy = mutationBusy;
     const error = shallowRef('');
     const notice = shallowRef('');
-    watchEffect(() => props.onBusy(busy.value));
-    onUnmounted(() => props.onBusy(false));
-    async function action(work: () => Promise<void>) {
-      if (busy.value) return false;
-      busy.value = true;
-      error.value = '';
-      notice.value = '';
-      try {
-        await work();
-        markInboxStale();
-        if (active) props.store.refresh('pr');
-        return true;
-      } catch (failure) {
-        if (active) error.value = errorMessage(failure, 'GitHub could not complete this action.');
-        return false;
-      } finally {
-        if (active) busy.value = false;
-      }
-    }
+    onUnmounted(() => (busy.value = false));
 
     const toast = shallowRef({ id: 0, message: '', tone: 'ok' as 'ok' | 'error' });
     let toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -190,21 +173,24 @@ export default defineComponent(
         () => showToast(`Copied ${label}`),
         () => showToast('Clipboard unavailable in this browser', 'error'),
       );
-    // Kept apart from `busy`, which also blocks App from reloading the PR after the write.
-    const acting = shallowRef(false);
-    const run: Run = async (label, work, refresh = true) => {
-      if (acting.value) return;
-      acting.value = true;
+    const mutate: Mutate = async (work, { toast, refresh = 'pr' } = {}) => {
+      if (busy.value) return false;
+      busy.value = true;
+      error.value = '';
+      notice.value = '';
       try {
-        const result = await work(props.api);
+        await work(props.api);
         markInboxStale();
-        showToast(label);
-        if (refresh) props.store.refresh('all');
-        return result;
+        if (toast) showToast(toast);
+        if (active && refresh !== 'none') props.store.refresh(refresh);
+        return true;
       } catch (failure) {
-        showToast(errorMessage(failure, 'GitHub could not complete this action.'), 'error');
+        const message = errorMessage(failure, 'GitHub could not complete this action.');
+        if (toast) showToast(message, 'error');
+        else if (active) error.value = message;
+        return false;
       } finally {
-        acting.value = false;
+        busy.value = false;
       }
     };
 
@@ -270,7 +256,7 @@ export default defineComponent(
         (moderator.value || item.user.id === viewer().id) && (!isReview(item) || (item.state !== 'PENDING' && !!item.body?.trim())),
       disabled: () => busy.value,
       save: (item, text) =>
-        action(async () => {
+        mutate(async () => {
           const body = text.trim();
           await (isReview(item)
             ? props.api.editReview(ref(), item.id, body)
@@ -279,7 +265,7 @@ export default defineComponent(
           done('Comment updated on GitHub.');
         }),
       remove: item =>
-        action(async () => {
+        mutate(async () => {
           const review = inPendingReview(item) ? pending.value : undefined;
           await props.api.deleteComment(ref(), item, !!review);
           changeComment(item);
@@ -323,7 +309,7 @@ export default defineComponent(
       onReply: replyToComment,
     };
     async function replyToComment(id: number, body: string, startReview = false) {
-      const saved = await action(async () => {
+      const saved = await mutate(async () => {
         if (!canReply()) throw new Error('Refresh this PR and its active review before replying.');
         if (startReview && !canReview()) throw new Error('Reviews can only be started on open pull requests.');
         const root = allComments.value.find(comment => comment.id === id);
@@ -371,7 +357,7 @@ export default defineComponent(
       return saved;
     }
     async function resolveThread(id: string, resolved: boolean) {
-      return action(async () => {
+      return mutate(async () => {
         const thread = ws().reviewThreads.find(item => item.id === id);
         if (!thread || !(resolved ? thread.canResolve : thread.canUnresolve))
           throw new Error('You do not have permission to change this thread.');
@@ -408,7 +394,7 @@ export default defineComponent(
         error.value = 'Add a review summary or a pending inline comment.';
         return;
       }
-      await action(async () => {
+      await mutate(async () => {
         const result = await props.api.submitReview(ref(), pr().head.sha, event.value, reviewBody.value.trim(), pending.value);
         const current = pending.value;
         entered.set(`review-${result.id}`, 'grow-in');
@@ -421,7 +407,7 @@ export default defineComponent(
       });
     }
     const discardReview = () =>
-      action(async () => {
+      mutate(async () => {
         const current = pending.value;
         if (!current) return;
         const deleted = await props.api.discardReview(ref(), current.id);
@@ -449,7 +435,7 @@ export default defineComponent(
     }
     async function postInline(start = false) {
       if (!inlineBody.value.trim() || !canReply() || (start && !pending.value && !canReview())) return;
-      await action(async () => {
+      await mutate(async () => {
         if (selectedRange.value || comparing.value) throw new Error('Switch to All commits before adding a review comment.');
         const location = inlineLocation.value;
         const text = inlineBody.value.trim();
@@ -502,7 +488,7 @@ export default defineComponent(
     async function postComment(e: SubmitEvent) {
       e.preventDefault();
       if (!body.value.trim()) return;
-      await action(async () => {
+      await mutate(async () => {
         const result = await props.api.comment(ref(), body.value.trim());
         entered.set(`comment-${result.id}`, 'grow-in');
         props.store.edit('comments', prev => [...prev, result]);
@@ -523,12 +509,13 @@ export default defineComponent(
     const saveTitle = () => {
       const title = titleDraft.value?.trim();
       titleDraft.value = null;
-      if (title && title !== pr().title) void run('Title updated', api => api.editPR(ref(), { title }));
+      if (title && title !== pr().title) void mutate(api => api.editPR(ref(), { title }), { toast: 'Title updated', refresh: 'all' });
     };
     const bodyDraft = shallowRef<string | null>(null);
     const descriptionOpen = shallowRef(true);
     const saveBody = async () => {
-      if (await run('Description updated', api => api.editPR(ref(), { body: bodyDraft.value ?? '' }))) bodyDraft.value = null;
+      if (await mutate(api => api.editPR(ref(), { body: bodyDraft.value ?? '' }), { toast: 'Description updated', refresh: 'all' }))
+        bodyDraft.value = null;
     };
     const approved = () => reviewApproved(pr(), ws().reviews, ws().onBehalfOf);
     const prStatus = () => {
@@ -573,12 +560,12 @@ export default defineComponent(
       store: props.store,
       api: props.api,
       prRef: ref(),
-      busy: acting.value,
+      busy: busy.value,
       onChecks: () => {
         tab.value = 'checks';
         requestAnimationFrame(() => document.querySelector('.review-tabs-bar')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
       },
-      onRun: run,
+      onMutate: mutate,
     }));
 
     const commitList = shallowRef<Commit[]>([]);
@@ -1049,8 +1036,8 @@ export default defineComponent(
                 methods={ws().mergeMethods ?? []}
                 autoMerge={!!ws().autoMerge}
                 approved={approved()}
-                disabled={acting.value}
-                onRun={run}
+                disabled={busy.value}
+                onMutate={mutate}
               />
               <MoreMenu details={details} />
               <span class="header-divider" />
@@ -1384,9 +1371,9 @@ export default defineComponent(
               <Checks
                 checks={ws().checks}
                 loading={pendingSection('checks')}
-                busy={acting.value}
+                busy={busy.value}
                 prRef={ref()}
-                onRun={run}
+                onMutate={mutate}
                 entrance={entrance('checks')}
               />
             )}
@@ -1891,7 +1878,7 @@ export default defineComponent(
       </div>
     );
   },
-  { props: ['store', 'api', 'info', 'settings', 'onSettings', 'onOpen', 'onBack', 'onBusy'] },
+  { props: ['store', 'api', 'info', 'settings', 'onSettings', 'onOpen', 'onBack'] },
 );
 
 function FileCodeIcon() {

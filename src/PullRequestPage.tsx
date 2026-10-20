@@ -3,7 +3,7 @@ import { navigateTo, useHead, useRoute } from 'nuxt/app';
 import { parsePRUrl } from './github';
 import { createPRWorkspace } from './prWorkspace';
 import ReviewWorkspace from './ReviewWorkspace';
-import { api, changeSettings, info, mutationBusy, openPR, settings, showOpenDialog } from './session';
+import { api, changeSettings, info, openPR, settings, showOpenDialog } from './session';
 import { Github, Loader } from './ui';
 
 const home = () => void navigateTo('/');
@@ -40,9 +40,6 @@ export default defineComponent(() => {
         onSettings={changeSettings}
         onOpen={openPR}
         onBack={home}
-        onBusy={value => {
-          mutationBusy.value = value;
-        }}
       />
     ) : (
       <main class="empty-state">
