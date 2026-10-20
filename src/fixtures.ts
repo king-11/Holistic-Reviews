@@ -322,6 +322,7 @@ function demoDetails(number: number, login: string): PullRequestDetails {
     deletions: number % 45,
     createdAt: now,
     checks: ['success', 'pending', 'failure', null][number % 4] as PullRequestDetails['checks'],
+    pendingComments: 0,
     participants,
     participantCount: participants.length + (number % 3 === 0 ? 2 : 0),
   };

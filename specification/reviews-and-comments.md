@@ -12,6 +12,12 @@
 | **Submit review** (`Review changes` dialog or `r y` / `r a` / `r c` / `r n`) | Open PRs only                                         | Publishes `APPROVE`, `COMMENT`, or `REQUEST_CHANGES` (submitting the active `PENDING` review if one exists, or creating a new review). Clears the viewer's review request. |
 | **Discard pending review**                                                   | When `PENDING` review exists                          | Deletes the `PENDING` review and all its unpublished comments after confirmation.                                                                                          |
 
+## Pending Review Comments
+
+- The PR header and each changed-file header show a dashed, muted `N pending` pill when the viewer has unpublished inline comments; inbox rows show the pending total returned by GitHub's viewer-specific `pendingReviews` connection.
+- The Submit review sheet lists each pending comment as `file:line` with its body. Existing edit and delete actions update the pending comment on GitHub; a stale reread must not replace an edited body during the current PR session. Selecting a location closes the sheet and navigates to the matching diff thread when it is available.
+- Pending comments are already stored on GitHub as a pending review; leaving the PR does not prompt for confirmation.
+
 ## Safety & Commit Pinning (`ensureHead`)
 
 - Before any inline comment or review write, the app fetches `GET /pulls/{n}` (`no-cache`) and verifies `pr.head.sha` still matches the displayed diff's `head.sha`. If new commits were pushed, the write is refused with an instruction to refresh.

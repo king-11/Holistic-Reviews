@@ -10,6 +10,34 @@
 .own-review-heading {
   margin-bottom: 24px;
 }
+.pending-comment-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 240px;
+  overflow: auto;
+  margin-bottom: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+.pending-comment {
+  padding: 12px;
+}
+.pending-comment + .pending-comment {
+  border-top: 1px solid var(--color-border);
+}
+.pending-comment-location {
+  color: var(--color-accent);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.pending-comment-location:hover {
+  text-decoration: underline;
+}
+.pending-comment :global(.markdown-body) {
+  padding-top: 8px;
+  font-size: var(--text-xs);
+}
 .own-review-heading h3 {
   margin: 0;
 }

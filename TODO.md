@@ -49,7 +49,7 @@
   - Show a size tag from lines changed: XS < 42, S < 100, M < 250, L < 500, XL < 1,000, XXL ≥ 1,000. Size only breaks ties (smaller first).
   - Ignore labels; they mean different things in every repo.
 
-- [ ] Pending review comments
+- [x] Pending review comments
   - Show "N pending" as a pill with the total in the PR header (and on the inbox row), and the count for each file in that file's diff header.
   - The Submit review button opens a sheet listing every pending comment with its file:line, editable in place, above the Comment / Approve / Request changes choice.
   - No guard when leaving the page; the pending review already lives on GitHub.

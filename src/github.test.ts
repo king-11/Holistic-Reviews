@@ -358,6 +358,7 @@ describe('review state, auto-merge and merge settings', () => {
     deletions: 1,
     reviewDecision: decision,
     commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+    pendingReviews: { nodes: [] },
     participants: { totalCount: 0, nodes: [] },
     latestReviews: { nodes: latestReviews },
     reviewRequests: { nodes: [] },
@@ -414,7 +415,28 @@ describe('review state, auto-merge and merge settings', () => {
       ]);
       const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
       assert.equal(item.details?.checks, checks);
+      assert.equal(item.details?.pendingComments, 0);
     });
+  it('counts comments in the viewer-specific pending review from the same detail batch', async () => {
+    const calls = fake([
+      { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
+      {
+        data: {
+          data: {
+            pr0: {
+              pullRequest: {
+                ...reviewData(null),
+                pendingReviews: { nodes: [{ comments: { totalCount: 3 } }] },
+              },
+            },
+          },
+        },
+      },
+    ]);
+    const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
+    assert.equal(item.details?.pendingComments, 3);
+    assert.match(String(calls[1].body?.query), /pendingReviews:\s*reviews\(states: PENDING, first: 1\)/);
+  });
   for (const [group, reviews] of [
     ['reviewed', [undefined, undefined]],
     ['authored', ['approved', 'returned']],
@@ -527,6 +549,11 @@ describe('GitHub authentication and safe requests', () => {
       await api().pullRequest(ref);
       assert.equal(calls[0].init.cache, cache);
     });
+  it('reads pending review comments without using the browser HTTP cache', async () => {
+    const calls = fake([{ data: [reviewComment] }]);
+    assert.deepEqual(await new GitHub('test-only-token').reviewComments(ref, pending.id), [reviewComment]);
+    assert.equal(calls[0].init.cache, 'no-cache');
+  });
   it('memoises the fresh client and reuses it for fresh reads', () => {
     const client = new GitHub('test-only-token');
     assert.equal(client.fresh(), client.fresh());

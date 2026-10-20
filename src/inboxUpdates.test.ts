@@ -116,7 +116,15 @@ describe('withSnapshots', () => {
   beforeEach(clearInboxSnapshots);
 
   it('moves an approved PR from review requests to reviewed by you, keeping its loaded details', () => {
-    const details = { additions: 1, deletions: 2, createdAt: '', checks: 'success' as const, participants: [], participantCount: 0 };
+    const details = {
+      additions: 1,
+      deletions: 2,
+      createdAt: '',
+      checks: 'success' as const,
+      pendingComments: 0,
+      participants: [],
+      participantCount: 0,
+    };
     const requested = [row(42, { details }), row(7)];
     recordPR(pr({ title: 'Renamed' }), [review(me, 'APPROVED')], [], 'me');
     const known = new Map(requested.map(item => [item.html_url, item]));

@@ -43,6 +43,22 @@ export function withThreadLocations(comments: Comment[], threads: ReviewThread[]
   });
 }
 
+export function preservePendingCommentEdits(loaded: Comment[], current: Comment[], editedBodies: ReadonlyMap<number, string>) {
+  const loadedIds = new Set(loaded.map(comment => comment.id));
+  return [
+    ...loaded.map(comment => (editedBodies.has(comment.id) ? { ...comment, body: editedBodies.get(comment.id)! } : comment)),
+    ...current
+      .filter(comment => editedBodies.has(comment.id) && !loadedIds.has(comment.id))
+      .map(comment => ({ ...comment, body: editedBodies.get(comment.id)! })),
+  ];
+}
+
+export function commentLocationLabel(comment: Pick<Comment, 'path' | 'line' | 'subject_type'>) {
+  const path = comment.path ?? '';
+  if (comment.subject_type === 'file') return `${path}:file`;
+  return typeof comment.line === 'number' ? `${path}:${comment.line}` : path;
+}
+
 export function commentEntries(
   files: ChangedFile[],
   inline: Comment[],

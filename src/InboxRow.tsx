@@ -76,6 +76,7 @@ export default defineComponent(
         <div class="flex-1 min-w-0">
           <div class="pr-row-title">
             {item.title}
+            {!!item.details?.pendingComments && <span class="pending-badge">{item.details.pendingComments} pending</span>}
             {item.labels.slice(0, 1).map(label => (
               <span key={label.name} class="pr-label">
                 {label.name}

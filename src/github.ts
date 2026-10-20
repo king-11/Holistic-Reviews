@@ -169,6 +169,7 @@ export interface PullRequestDetails {
   deletions: number;
   createdAt: string;
   checks: 'success' | 'failure' | 'pending' | null;
+  pendingComments: number;
   participants: { login: string; avatarUrl: string }[];
   participantCount: number;
 }
@@ -207,7 +208,7 @@ const maxTextFileBytes = 1_048_576;
 const contentCacheSize = 32;
 // Review fields feed the authored classification; they are fetched for every page so one query serves all groups.
 const pullRequestDetailFields =
-  'createdAt additions deletions commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } participants(first: 10) { totalCount nodes { login avatarUrl(size: 40) } } reviewDecision latestReviews(first: 50) { nodes { state author { __typename login } } } reviewRequests(first: 50) { nodes { requestedReviewer { ... on User { login } } } }';
+  'createdAt additions deletions commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } pendingReviews: reviews(states: PENDING, first: 1) { nodes { comments { totalCount } } } participants(first: 10) { totalCount nodes { login avatarUrl(size: 40) } } reviewDecision latestReviews(first: 50) { nodes { state author { __typename login } } } reviewRequests(first: 50) { nodes { requestedReviewer { ... on User { login } } } }';
 // Pending and expected checks both mean the outcome is still open; absent rollups mean there are no checks.
 const rollupChecks: Record<string, 'success' | 'failure' | 'pending'> = {
   SUCCESS: 'success',
@@ -912,6 +913,7 @@ export class GitHub {
       deletions: number;
       reviewDecision: ReviewSummary['reviewDecision'];
       commits: { nodes: { commit: { statusCheckRollup: { state: string } | null } }[] };
+      pendingReviews: { nodes: { comments: { totalCount: number } }[] };
       participants: { totalCount: number; nodes: { login: string; avatarUrl: string }[] };
       latestReviews: { nodes: ReviewSummary['latestReviews'] };
       reviewRequests: { nodes: { requestedReviewer: { login?: string } | null }[] };
@@ -941,6 +943,7 @@ export class GitHub {
         deletions: pr.deletions,
         createdAt: pr.createdAt,
         checks: rollupChecks[pr.commits.nodes[0]?.commit.statusCheckRollup?.state ?? ''] ?? null,
+        pendingComments: pr.pendingReviews.nodes.reduce((total, review) => total + review.comments.totalCount, 0),
         participants,
         participantCount: pr.participants.totalCount - (participants.length < pr.participants.nodes.length ? 1 : 0),
       };
@@ -1063,7 +1066,7 @@ export class GitHub {
   }
 
   async reviewComments(ref: PRRef, id: number) {
-    return (await this.pages<Comment>(`${refPath(ref)}/reviews/${id}/comments`)).items;
+    return (await this.fresh().pages<Comment>(`${refPath(ref)}/reviews/${id}/comments`)).items;
   }
 
   async reply(ref: PRRef, commentId: number, body: string, review?: Review, threadId?: string): Promise<Comment> {

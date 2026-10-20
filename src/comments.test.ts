@@ -2,11 +2,13 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   commentEntries,
+  commentLocationLabel,
   commentRange,
   commentSnippet,
   diffLinePreview,
   filterCommentEntries,
   isBot,
+  preservePendingCommentEdits,
   visibleThreads,
   withThreadLocations,
 } from './comments.ts';
@@ -35,6 +37,11 @@ const resolved: ReviewThread = { id: 'thread-3', rootCommentId: 3, resolved: tru
 const open: ReviewThread = { id: 'thread-1', rootCommentId: 1, resolved: false, canResolve: true, canUnresolve: false };
 
 describe('comment panel and bot visibility', () => {
+  it('keeps locally edited pending bodies when a reread returns stale comments', () => {
+    const edited = { ...comment(1, person), body: 'Edited pending' };
+    const stale = { ...edited, body: 'First pending' };
+    assert.deepEqual(preservePendingCommentEdits([stale], [edited], new Map([[edited.id, edited.body]])), [edited]);
+  });
   it('restores pending REST comment locations from canonical GraphQL threads, including left-side replies', () => {
     const root = { ...comment(1, person, null), side: undefined };
     const reply = { ...comment(2, person, null), in_reply_to_id: 1 };
@@ -61,6 +68,18 @@ describe('comment panel and bot visibility', () => {
       assert.equal(entries[0].kind === 'thread' && entries[0].location, 'below');
     }
   });
+  it('preserves a canonical file-level thread location', () => {
+    const thread = { ...open, path: file.filename, line: null, side: 'RIGHT' as const, subjectType: 'FILE' as const };
+    const [located] = withThreadLocations([comment(1, person)], [thread]);
+    assert.equal(located?.subject_type, 'file');
+    assert.equal(commentLocationLabel(located!), `${file.filename}:file`);
+  });
+  for (const [name, item, expected] of [
+    ['a located line comment', comment(1, person, 11), `${file.filename}:11`],
+    ['a line comment without a resolved line', comment(2, person, null), file.filename],
+    ['a file-level comment', { ...comment(3, person, null), subject_type: 'file' as const }, `${file.filename}:file`],
+  ] as const)
+    it(`labels ${name} without inventing a file-level location`, () => assert.equal(commentLocationLabel(item), expected));
   it('does not attach comments to the wrong file or discard usable REST locations when metadata is unavailable', () => {
     const root = comment(1, person);
     assert.deepEqual(withThreadLocations([root], []), [root]);

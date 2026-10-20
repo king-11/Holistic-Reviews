@@ -39,6 +39,7 @@ Each row (`InboxRow`) is a `<NuxtLink>` to `/<owner>/<repo>/pull/<number>` displ
 - **Participants:** Up to 4 avatars (excluding the PR author) plus a `+N` overflow badge.
 - **Checks:** Latest commit `statusCheckRollup` mapped to `success` (green check), `failure`/`error` (red cross), `pending`/`expected` (amber dashed circle), or empty when no checks exist.
 - **Diff size:** `+additions` and `−deletions`.
+- **Pending review comments:** A dashed `N pending` pill when the viewer has unpublished inline comments on the PR.
 
 ## Repository Filter & Sorting
 

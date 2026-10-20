@@ -118,6 +118,7 @@ export default defineComponent(
                 </span>
               );
             })()}
+            {!!ws().draftComments.length && <span class="pending-badge">{ws().draftComments.length} pending</span>}
           </div>
           <div class="pr-details">
             <Avatar login={pr().user.login} src={pr().user.avatar_url} small />

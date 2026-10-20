@@ -53,8 +53,20 @@ test.describe('inbox', () => {
     await expect(page.getByRole('link', { name: /Tighten cache keys/ })).toBeVisible();
     await expect(page.getByRole('link', { name: /Speed up CI cache/ })).toBeVisible();
     await expect(page.getByRole('link', { name: /Sketch retry dashboard/ })).toBeVisible();
-    await group(/Reviewed by you/).click();
-    await expect(page.getByRole('link', { name: /Draft reviewed earlier/ })).toBeVisible();
+    const pendingRows = [
+      ['requested', /Improve worker retries/],
+      ['returned', /Retry the sync backoff/],
+      ['approved', /Tighten cache keys/],
+      ['waiting', /Speed up CI cache/],
+      ['drafts', /Sketch retry dashboard/],
+      ['reviewed', /Draft reviewed earlier/],
+      ['merged', /Ship metrics exporter/],
+    ] as const;
+    for (const [section, title] of pendingRows) {
+      if (section === 'reviewed' || section === 'merged')
+        await group(new RegExp(section === 'merged' ? 'Recently merged' : 'Reviewed by you')).click();
+      await expect(page.getByRole('main').getByRole('link', { name: title })).toContainText('1 pending');
+    }
   });
 
   test('filters pull requests by search text and repository', async ({ page }) => {
@@ -152,6 +164,45 @@ test.describe('inbox', () => {
     await expect(row.getByRole('img', { name: 'Checks passed' })).toBeVisible();
     await expect(row.getByTitle('bob, carol')).toBeVisible();
   });
+});
+
+test('lists pending comments in the review sheet and reuses comment edit and delete actions', async ({ page }) => {
+  const fake = await mockGitHub(page, { stalePendingReadAfterEdit: true });
+  await openPR(page);
+  await startLineReview(page, 'First pending');
+  await expect(page.locator('.pr-title-row .pending-badge')).toHaveText('1 pending');
+  await expect(card(page, 'src/worker.py').locator('.diff-file-header .pending-badge')).toHaveText('1 pending');
+  await page.getByRole('button', { name: 'Review changes' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Submit your review' });
+  const location = dialog.getByRole('button', { name: /src\/worker.py:10/ });
+  await expect(location).toBeVisible();
+  await expect(location).toHaveText('src/worker.py:10');
+  await location.click();
+  await expect(dialog).toHaveCount(0);
+  await page.getByRole('button', { name: 'Review changes' }).click();
+  const reopened = page.getByRole('dialog', { name: 'Submit your review' });
+  await expect(reopened.getByText('First pending')).toBeVisible();
+  await reopened.getByRole('button', { name: 'Edit comment' }).click();
+  await reopened.getByRole('textbox', { name: 'Edit comment' }).fill('Edited pending');
+  await reopened.getByRole('button', { name: 'Save' }).click();
+  await expect(reopened.getByText('Edited pending')).toBeVisible();
+  await expect(reopened.getByText('First pending')).toHaveCount(0);
+  await reopened.getByRole('button', { name: 'Close dialog' }).click();
+  fake.armStalePendingRead();
+  await page.getByRole('button', { name: 'Refresh pull request' }).click();
+  await expect(page.locator('.review-layout[aria-busy="false"]')).toBeVisible();
+  await expect.poll(() => fake.stalePendingReadServed).toBe(true);
+  expect(fake.stalePendingReadBody).toBe('First pending');
+  await expect(page.locator('.thread-comment').filter({ hasText: 'Edited pending' })).toHaveCount(1);
+  await page.getByRole('button', { name: 'Review changes' }).click();
+  const refreshed = page.getByRole('dialog', { name: 'Submit your review' });
+  await expect(refreshed.getByText('Edited pending')).toBeVisible();
+  await expect(refreshed.getByText('First pending')).toHaveCount(0);
+  expect(writes(fake, 'UpdatePullRequestReviewComment')).toHaveLength(1);
+  await reopened.getByRole('button', { name: 'Delete comment' }).click();
+  await reopened.getByRole('button', { name: 'Delete?', exact: true }).click();
+  await expect(reopened.locator('[aria-label="Pending review comments"] section')).toHaveCount(0);
+  expect(writes(fake, 'DeletePullRequestReviewComment')).toHaveLength(1);
 });
 
 test.describe('inbox after acting on a pull request', () => {
