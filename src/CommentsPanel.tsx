@@ -1,6 +1,4 @@
 import { computed, defineComponent, shallowRef, watchEffect } from 'vue';
-import { motion } from 'motion-v';
-import { slide } from './motion';
 import { ChevronDown, FileCode2, MessageSquare, PanelRightClose } from '@lucide/vue';
 import type { CommentEntry, CommentFilter } from './comments';
 import { commentSnippet, filterCommentEntries } from './comments';
@@ -104,7 +102,7 @@ export default defineComponent(
     };
     const { width, handle } = useWidth('comments', 408, 'left');
     return () => (
-      <motion.aside {...slide(8)} class="comments-sidebar" aria-label="Pull request comments" style={{ width: `${width.value}px` }}>
+      <aside class="comments-sidebar" aria-label="Pull request comments" style={{ width: `${width.value}px` }}>
         {handle('Resize comments panel')}
         <div class={`${styles['comments-panel-title']}`}>
           <div>
@@ -205,7 +203,7 @@ export default defineComponent(
             </div>
           )}
         </div>
-      </motion.aside>
+      </aside>
     );
   },
   { props: ['loading', 'entries', 'selectedId', 'replies', 'baseUrl', 'hideBots', 'onClose', 'onNavigate', 'onResolve'] },

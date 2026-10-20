@@ -17,7 +17,12 @@
   top: 2px;
   left: 2px;
   box-shadow: var(--shadow-xs);
-  transition: transform 0.15s;
+  transition: transform 150ms var(--ease-in-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  .switch::after {
+    transition: none;
+  }
 }
 .switch:checked {
   background: var(--color-indigo);

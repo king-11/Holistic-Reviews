@@ -151,7 +151,6 @@
 }
 .group-heading > svg:first-child {
   color: var(--color-muted);
-  transition: transform 0.15s;
 }
 .group-heading strong {
   font-size: var(--text-xs);

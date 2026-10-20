@@ -567,7 +567,10 @@ export async function mockGitHub(
           permissions: { push: !!options.write },
         },
       ];
-    if (path === `${prPath}/merge`) return [200, { merged: true, message: 'Merged' }];
+    if (path === `${prPath}/merge`) {
+      Object.assign(state.prEdits, { state: 'closed', merged: true });
+      return [200, { merged: true, message: 'Merged' }];
+    }
     if (path === `${repoPath}/labels`)
       return [
         200,

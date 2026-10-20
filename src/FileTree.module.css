@@ -118,8 +118,8 @@
 .progress-track > div {
   height: 100%;
   background: var(--color-indigo);
-  border-radius: var(--radius-sm);
-  transition: width 0.2s;
+  transform-origin: left;
+  transition: transform 200ms var(--ease-out);
 }
 .powered-by {
   padding: 16px 16px;

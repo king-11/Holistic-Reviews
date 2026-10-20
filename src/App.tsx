@@ -233,6 +233,7 @@ export default defineComponent((_, { slots }) => {
         {!!openDialog.value && (
           <Modal
             key="open-pr"
+            instant
             title="Open a pull request"
             subtitle="Bring a little context to your code review."
             onClose={() => (openDialog.value = false)}
@@ -288,6 +289,7 @@ export default defineComponent((_, { slots }) => {
           <Modal
             key="shortcuts"
             wide
+            instant
             title="Keyboard shortcuts"
             subtitle="Shortcuts pause while you type in a field."
             onClose={() => (shortcutsOpen.value = false)}

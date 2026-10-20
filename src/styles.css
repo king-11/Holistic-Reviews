@@ -346,6 +346,18 @@ mark {
   color: var(--color-secondary);
   font-size: var(--text-xs);
   background: var(--color-surface);
+  transition:
+    opacity 150ms var(--ease-out),
+    transform 160ms var(--ease-out),
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease;
+}
+@starting-style {
+  .reaction-pill {
+    opacity: 0;
+    transform: scale(0.95);
+  }
 }
 .reaction-pill.mine {
   border-color: var(--color-accent);
@@ -386,6 +398,7 @@ mark {
   padding: 16px;
   left: 0;
   right: auto;
+  transform-origin: top left;
 }
 .commit-card {
   display: flex;
@@ -493,10 +506,33 @@ mark {
   padding: 6px;
   color: var(--color-secondary);
   border-radius: var(--radius-md);
+  transition:
+    transform 160ms var(--ease-out),
+    background-color 150ms ease,
+    color 150ms ease;
 }
 .thread-resolve:hover {
   color: var(--color-green);
   background: var(--color-green-soft);
+}
+.thread-fold {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition:
+    grid-template-rows 200ms var(--ease-out),
+    opacity 200ms var(--ease-out),
+    visibility 0s;
+}
+/* Visibility flips only after the fold, so a folded thread is hidden from focus and assistive tech without cutting the motion short. */
+.thread-fold[data-open='false'] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+  transition-delay: 0s, 0s, 200ms;
+}
+.thread-fold > div {
+  min-height: 0;
+  overflow: hidden;
 }
 .thread-comment {
   padding: 20px 20px 8px;
@@ -589,8 +625,10 @@ mark {
   white-space: nowrap;
   box-shadow: var(--shadow-xs);
   transition:
-    background 0.15s,
-    transform 0.16s cubic-bezier(0.23, 1, 0.32, 1);
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease,
+    transform 160ms var(--ease-out);
 }
 .button:hover:not(:disabled) {
   background: var(--color-hover);
@@ -623,7 +661,9 @@ mark {
   width: 100%;
 }
 .button:active:not(:disabled),
-.icon-button:active:not(:disabled) {
+.icon-button:active:not(:disabled),
+.reaction-pill:active:not(:disabled),
+.thread-resolve:active:not(:disabled) {
   transform: scale(0.97);
 }
 .icon-button {
@@ -761,6 +801,18 @@ a:hover,
   right: auto;
   transform-origin: top left;
   z-index: 101;
+}
+/* Only the hover card eases in; the suggestion list appears while typing and must keep up. */
+.popover.mention-card {
+  transition:
+    opacity 150ms var(--ease-out),
+    transform 150ms var(--ease-out);
+}
+@starting-style {
+  .popover.mention-card {
+    opacity: 0;
+    transform: scale(0.97);
+  }
 }
 .mention-list {
   min-width: 240px;
@@ -999,8 +1051,17 @@ a:hover,
   color: var(--color-accent);
   background: var(--color-accent-soft);
 }
+/* Disclosure chevrons opened by clicking; ones driven by keyboard shortcuts leave this off and snap. */
+.chevron {
+  transition: transform 150ms var(--ease-in-out);
+}
 .rotated {
   transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chevron {
+    transition: none;
+  }
 }
 .group-status {
   color: var(--color-slate);
@@ -1446,6 +1507,7 @@ a:hover,
   right: auto;
   top: calc(100% - 4px);
   width: 240px;
+  transform-origin: top left;
 }
 .file-search {
   border-color: var(--color-border);
@@ -1544,6 +1606,67 @@ a:hover,
 .pr-state[data-tone='merged'] {
   color: var(--color-violet);
   background: color-mix(in srgb, var(--color-violet) 8%, transparent);
+}
+/* A merge you just made is the one moment that earns a playful beat: the badge pops with a little overshoot and sparks fly off it. */
+.pr-state[data-celebrate] {
+  position: relative;
+  animation: merge-pop 500ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes merge-pop {
+  40% {
+    transform: scale(1.25);
+  }
+}
+.merge-burst {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.merge-burst::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--color-violet);
+  border-radius: 50%;
+  animation: merge-ring 600ms var(--ease-out) both;
+}
+@keyframes merge-ring {
+  from {
+    opacity: 0.6;
+  }
+  to {
+    opacity: 0;
+    transform: scale(2.2);
+  }
+}
+.merge-burst > i {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin: -2px;
+  border-radius: 50%;
+  background: var(--color-violet);
+  animation: merge-spark 600ms var(--ease-out) both;
+}
+.merge-burst > i:nth-child(even) {
+  background: var(--color-green);
+  animation-delay: 40ms;
+}
+@keyframes merge-spark {
+  from {
+    transform: rotate(var(--angle)) translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: rotate(var(--angle)) translateY(-24px) scale(0.4);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pr-state[data-celebrate] {
+    animation: reveal-fade 300ms var(--ease-out);
+  }
 }
 .pr-state[data-tone='blocked'] {
   color: var(--color-red);
@@ -2306,9 +2429,7 @@ form:has(.review-options input[value='REQUEST_CHANGES']:checked) .modal-footer .
   *,
   *::before,
   *::after {
-    animation-duration: 0.01ms !important;
     scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
   }
 }
 .shortcut-groups {
@@ -2391,8 +2512,41 @@ form:has(.review-options input[value='REQUEST_CHANGES']:checked) .modal-footer .
 .fade-in {
   animation: reveal-fade 150ms var(--ease-out) both;
 }
+/* Something you just posted opens its own space, so the content below glides down instead of jumping. */
+@keyframes grow-in {
+  from {
+    height: 0;
+    margin-bottom: 0;
+    opacity: 0;
+    overflow: clip;
+  }
+  to {
+    overflow: clip;
+  }
+}
+.grow-in {
+  interpolate-size: allow-keywords;
+  animation: grow-in 200ms var(--ease-out) backwards;
+}
+/* Reduced motion keeps the fades and colour changes that explain state, and drops movement. */
 @media (prefers-reduced-motion: reduce) {
-  .reveal {
+  .reveal,
+  .grow-in {
     animation-name: reveal-fade;
+  }
+  .button:active:not(:disabled),
+  .icon-button:active:not(:disabled),
+  .reaction-pill:active:not(:disabled),
+  .thread-resolve:active:not(:disabled) {
+    transform: none;
+  }
+  .thread-fold {
+    transition-duration: 0s, 200ms, 0s;
+  }
+  @starting-style {
+    .reaction-pill,
+    .popover.mention-card {
+      transform: none;
+    }
   }
 }

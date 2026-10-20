@@ -670,7 +670,7 @@ export const Information = defineComponent(
       return (
         <section class={styles.info} aria-label="Pull request information">
           <button class="section-heading" aria-expanded={open.value} onClick={() => (open.value = !open.value)}>
-            <ChevronRight size={13} class={open.value ? 'rotated' : ''} />
+            <ChevronRight size={13} class={`chevron ${open.value ? 'rotated' : ''}`} />
             Information
           </button>
           {open.value && (

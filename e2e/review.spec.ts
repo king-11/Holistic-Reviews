@@ -261,6 +261,34 @@ test('browser token flow validates scopes and keeps the token in session storage
 
 test.describe('motion', () => {
   const identity = (transform: string) => transform === 'none' || transform === 'matrix(1, 0, 0, 1, 0, 0)';
+  // Records the first frames of the element matching `selector` once it appears; start it before the action under test.
+  // Diff annotations render in shadow roots, so the search looks inside them too.
+  const frames = (page: Page, selector: string, count = 8) =>
+    page.evaluate(
+      ([selector, count]) =>
+        new Promise<{ opacity: string; transform: string }[]>(resolve => {
+          const find = (root: ParentNode): Element | null =>
+            root.querySelector(selector) ??
+            [...root.querySelectorAll('*')].reduce<Element | null>((hit, el) => hit ?? (el.shadowRoot && find(el.shadowRoot)), null);
+          const seen: { opacity: string; transform: string }[] = [];
+          const tick = () => {
+            const node = find(document);
+            if (node) seen.push({ opacity: getComputedStyle(node).opacity, transform: getComputedStyle(node).transform });
+            if (seen.length >= count) resolve(seen);
+            else requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        }),
+      [selector, count] as const,
+    );
+  const still = (seen: { opacity: string; transform: string }[]) => seen.every(frame => frame.opacity === '1' && identity(frame.transform));
+  const runningEntrances = (page: Page) =>
+    page.evaluate(
+      () =>
+        document.getAnimations().filter(a => a instanceof CSSAnimation && a.animationName.startsWith('reveal') && a.playState === 'running')
+          .length,
+    );
+
   for (const [reducedMotion, scales] of [
     ['reduce', false],
     ['no-preference', true],
@@ -268,30 +296,288 @@ test.describe('motion', () => {
     test(`dialogs ${scales ? 'scale in' : 'skip transforms'} and exit with reduced motion ${reducedMotion}`, async ({ page }) => {
       await page.emulateMedia({ reducedMotion });
       await mockGitHub(page);
-      await page.goto('/');
-      await expect(page.getByRole('button', { name: /Needs your review/ })).toBeVisible();
-      const transforms = page.evaluate(
-        () =>
-          new Promise<string[]>(resolve => {
-            const seen: string[] = [];
-            const tick = () => {
-              const node = document.querySelector('[role="dialog"]');
-              if (node) seen.push(getComputedStyle(node).transform);
-              if (seen.length >= 8) resolve(seen);
-              else requestAnimationFrame(tick);
-            };
-            requestAnimationFrame(tick);
-          }),
-      );
-      await page.keyboard.press('ControlOrMeta+K');
-      const dialog = page.getByRole('dialog', { name: 'Open a pull request' });
+      await openPR(page);
+      const seen = frames(page, '[role="dialog"]');
+      await page.getByRole('button', { name: 'Review changes' }).click();
+      const dialog = page.getByRole('dialog', { name: 'Submit your review' });
       await expect(dialog).toBeVisible();
-      const seen = await transforms;
-      expect(seen.some(transform => !identity(transform))).toBe(scales);
+      expect((await seen).some(frame => !identity(frame.transform))).toBe(scales);
       await expect(dialog).toHaveCSS('opacity', '1');
       await page.keyboard.press('Escape');
       await expect(dialog).toHaveCount(0);
     });
+
+  for (const [key, name] of [
+    ['ControlOrMeta+K', 'Open a pull request'],
+    ['?', 'Keyboard shortcuts'],
+  ])
+    test(`${name} opens and closes from the keyboard without animating`, async ({ page }) => {
+      await mockGitHub(page);
+      await page.goto('/');
+      await expect(page.getByRole('button', { name: /Needs your review/ })).toBeVisible();
+      const dialog = frames(page, '[role="dialog"]');
+      const backdrop = frames(page, '.modal-backdrop');
+      await page.keyboard.press(key);
+      await expect(page.getByRole('dialog', { name })).toBeVisible();
+      expect(still(await dialog)).toBe(true);
+      expect(still(await backdrop)).toBe(true);
+      await page.keyboard.press('Escape');
+      expect(await page.evaluate(() => document.querySelectorAll('.modal-backdrop').length)).toBe(0);
+    });
+
+  for (const [key, panel] of [
+    ['f', 'Changed files'],
+    ['Shift+C', 'Pull request comments'],
+  ])
+    test(`the ${panel} panel toggles from the keyboard without sliding`, async ({ page }) => {
+      await mockGitHub(page);
+      await openPR(page);
+      const seen = frames(page, `aside[aria-label="${panel}"]`);
+      await page.keyboard.press(key);
+      await expect(page.getByRole('complementary', { name: panel })).toBeVisible();
+      expect(still(await seen)).toBe(true);
+    });
+
+  test('revisiting a tab shows its content without replaying the entrance', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    await expect(card(page, 'src/worker.py')).toBeVisible();
+    // Sections that arrive late, like dependent PRs, fade in once; only revisits must stay still.
+    await page.waitForLoadState('networkidle');
+    await expect.poll(() => runningEntrances(page)).toBe(0);
+    for (const [key, content] of [
+      ['3', page.locator('.conversation-comment').first()],
+      ['5', page.getByRole('list', { name: 'Status checks' })],
+      ['1', card(page, 'src/worker.py')],
+    ] as const) {
+      await page.keyboard.press(key);
+      await expect(content).toBeVisible();
+      await page.keyboard.press('2');
+      await page.keyboard.press(key);
+      await expect(content).toBeVisible();
+      expect(await runningEntrances(page)).toBe(0);
+    }
+  });
+
+  test('posting a comment confirms with a toast and grows it in instead of jumping the comment box', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    await page.getByRole('button', { name: /^Conversation/ }).click();
+    const box = page.getByRole('textbox', { name: 'Leave a comment' });
+    await box.fill('Looks good');
+    const submit = page.getByRole('button', { name: 'Comment', exact: true });
+    await submit.scrollIntoViewIfNeeded();
+    const shifts = page.evaluate(
+      () =>
+        new Promise<number[]>(resolve => {
+          const box = document.getElementById('pr-comment')!;
+          const start = box.getBoundingClientRect().top;
+          const seen: number[] = [];
+          const began = performance.now();
+          const tick = () => {
+            seen.push(Math.round(box.getBoundingClientRect().top - start));
+            if (performance.now() - began < 1500) requestAnimationFrame(tick);
+            else resolve(seen);
+          };
+          requestAnimationFrame(tick);
+        }),
+    );
+    await submit.click();
+    const toast = page.getByRole('status').filter({ hasText: 'Comment posted to GitHub.' });
+    await expect(toast).toBeVisible();
+    expect((await toast.boundingBox())!.x).toBeLessThan(32);
+    await expect(page.locator('[class*=notice-banner]')).toHaveCount(0);
+    const moved = (await shifts).filter(shift => shift !== 0);
+    const final = moved.at(-1) ?? 0;
+    const added = await page
+      .locator('.conversation-comment')
+      .filter({ hasText: 'Looks good' })
+      .evaluate(node => {
+        const style = getComputedStyle(node);
+        return node.getBoundingClientRect().height + parseFloat(style.marginBottom);
+      });
+    expect(Math.abs(final - added)).toBeLessThan(2);
+    expect(moved.some(shift => shift > 0 && shift < final - 1)).toBe(true);
+  });
+
+  test('a new toast message enters again instead of swapping text in place', async ({ page }) => {
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+    await mockGitHub(page);
+    await openPR(page);
+    await page.keyboard.press('c');
+    await page.keyboard.press('l');
+    await expect(page.getByRole('status').filter({ hasText: 'Copied link to PR' })).toHaveCSS('opacity', '1');
+    const opacities = page.evaluate(
+      () =>
+        new Promise<string[]>(resolve => {
+          const seen: string[] = [];
+          const tick = () => {
+            const toast = [...document.querySelectorAll('[role="status"]')].find(node => node.textContent?.includes('Copied title'));
+            if (toast) seen.push(getComputedStyle(toast).opacity);
+            if (seen.length >= 4) resolve(seen);
+            else requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        }),
+    );
+    await page.keyboard.press('c');
+    await page.keyboard.press('t');
+    expect((await opacities).some(opacity => Number(opacity) < 1)).toBe(true);
+  });
+
+  test('reduced motion keeps fades and colour transitions but drops movement', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await mockGitHub(page);
+    await openPR(page);
+    await expect(card(page, 'src/worker.py')).toHaveCSS('animation-name', 'reveal-fade');
+    await expect(card(page, 'src/worker.py')).toHaveCSS('animation-duration', '0.2s');
+    await page.keyboard.press('f');
+    await expect(page.getByRole('complementary', { name: 'Changed files' }).locator('.search-input')).toHaveCSS(
+      'transition-duration',
+      '0.15s, 0.15s, 0.15s',
+    );
+    const thumb = await page
+      .getByRole('switch', { name: 'Auto-merge' })
+      .evaluate(node => getComputedStyle(node, '::after').transitionProperty);
+    expect(thumb).not.toContain('transform');
+  });
+
+  test('popovers scale from their trigger, movement uses the shared curves, and progress grows by transform', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    await page.getByRole('button', { name: 'All commits' }).click();
+    await expect(page.getByRole('dialog', { name: 'Choose commits to compare' })).toHaveCSS('transform-origin', /^0px 0px/);
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('f');
+    await page.getByRole('button', { name: 'Filter files by Git status' }).click();
+    await expect(page.getByRole('dialog', { name: 'Filter by Git status' })).toHaveCSS('transform-origin', /^0px 0px/);
+    await page.keyboard.press('Escape');
+    const strongInOut = 'cubic-bezier(0.77, 0, 0.175, 1)';
+    expect(
+      await page.getByRole('switch', { name: 'Auto-merge' }).evaluate(node => getComputedStyle(node, '::after').transitionTimingFunction),
+    ).toBe(strongInOut);
+    const merge = page.getByRole('button', { name: /Merge|Not ready to merge/ }).first();
+    await expect(merge).toHaveCSS('transition-property', /color/);
+    await expect(merge).toHaveCSS('transition-property', /border-color/);
+    await page.keyboard.press('v');
+    const progress = page.locator('[class*=progress-track] > div');
+    await expect(progress).toHaveCSS('transition-property', 'transform');
+    await expect(progress).not.toHaveCSS('transform', 'none');
+  });
+
+  test('resolving a thread folds it away smoothly, and reopening unfolds it', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    const thread = card(page, 'src/worker.py').locator('.review-thread').first();
+    await expect(thread).toContainText('Please rename this');
+    // The diff replaces thread cards when their data changes, so each frame measures whichever card is current.
+    const heights = card(page, 'src/worker.py').evaluate(
+      article =>
+        new Promise<number[]>(resolve => {
+          const find = (root: ParentNode): Element | null =>
+            root.querySelector('.review-thread') ??
+            [...root.querySelectorAll('*')].reduce<Element | null>((hit, el) => hit ?? (el.shadowRoot && find(el.shadowRoot)), null);
+          const seen: number[] = [];
+          const began = performance.now();
+          const tick = () => {
+            seen.push(Math.round(find(article)?.getBoundingClientRect().height ?? 0));
+            if (performance.now() - began < 1200) requestAnimationFrame(tick);
+            else resolve(seen);
+          };
+          requestAnimationFrame(tick);
+        }),
+    );
+    await thread.getByRole('button', { name: 'Resolve', exact: true }).click();
+    await expect(thread.getByRole('button', { name: 'Reopen', exact: true })).toBeVisible();
+    const seen = await heights;
+    const [start, end] = [seen[0]!, seen.at(-1)!];
+    expect(end).toBeLessThan(start);
+    expect(seen.filter(height => height < start && height > end).length).toBeGreaterThan(1);
+    await expect(thread.locator('[inert]')).toHaveCount(1);
+    await thread.getByRole('button', { name: 'Reopen', exact: true }).click();
+    await expect(thread.locator('[inert]')).toHaveCount(0);
+    await expect(thread.getByText('Please rename this')).toBeVisible();
+  });
+
+  test('reaction pills enter softly and small actions respond to a press', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    const comment = page.locator('.thread-comment').filter({ hasText: 'Please rename this' });
+    // Reactions load once their bar scrolls near the viewport.
+    await comment.scrollIntoViewIfNeeded();
+    const pill = frames(page, '.reaction-pill', 4);
+    await comment.getByRole('button', { name: 'Add a reaction' }).click();
+    await page.getByRole('group', { name: 'Choose a reaction' }).getByRole('button').first().click();
+    expect((await pill).some(frame => Number(frame.opacity) < 1)).toBe(true);
+    for (const target of [
+      comment.getByRole('button', { name: /: 1\b/ }),
+      comment.getByRole('button', { name: 'Add a reaction' }),
+      card(page, 'src/worker.py').getByRole('button', { name: 'Resolve', exact: true }).first(),
+    ]) {
+      await target.hover();
+      await page.mouse.down();
+      await expect(target).toHaveCSS('transform', /^matrix\(0\.97/);
+      await page.mouse.up();
+      await page.keyboard.press('Escape');
+    }
+  });
+
+  test('a mention hover card grows from its mention', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    await page.getByRole('button', { name: /^Conversation/ }).click();
+    await page.getByRole('textbox', { name: 'Leave a comment' }).fill('Thanks @alice');
+    await page.getByRole('button', { name: 'Comment', exact: true }).click();
+    const card = frames(page, '.mention-card', 4);
+    await page.getByRole('link', { name: '@alice', exact: true }).hover();
+    await expect(page.getByRole('tooltip')).toContainText('Alice Liddell');
+    expect((await card).some(frame => Number(frame.opacity) < 1 && !identity(frame.transform))).toBe(true);
+  });
+
+  test('disclosure chevrons rotate smoothly, except on diff files toggled from the keyboard', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    await page.keyboard.press('f');
+    const timing = (target: Locator) => target.evaluate(node => getComputedStyle(node).transition);
+    expect(await timing(card(page, 'src/worker.py').locator('.thread-toggle svg').first())).toBe(
+      'transform 0.15s cubic-bezier(0.77, 0, 0.175, 1)',
+    );
+    expect(
+      await timing(
+        page.getByRole('complementary', { name: 'Changed files' }).getByRole('button', { name: 'src', exact: true }).locator('svg').first(),
+      ),
+    ).toBe('transform 0.15s cubic-bezier(0.77, 0, 0.175, 1)');
+    await expect(card(page, 'src/worker.py').locator('header button[aria-expanded] svg').first()).toHaveCSS('transition-duration', '0s');
+  });
+
+  for (const [reducedMotion, bursts] of [
+    ['no-preference', true],
+    ['reduce', false],
+  ] as const)
+    test(`merging celebrates ${bursts ? 'with a burst' : 'without movement'} under reduced motion ${reducedMotion}`, async ({ page }) => {
+      await page.emulateMedia({ reducedMotion });
+      await mockGitHub(page);
+      await openPR(page);
+      await page.getByRole('button', { name: 'Merge', exact: true }).click();
+      const menu = page.getByRole('menu', { name: 'Merge options' });
+      await menu.getByRole('menuitem', { name: 'Squash and merge' }).click();
+      await menu.getByRole('menuitem', { name: 'Confirm squash and merge' }).click();
+      const badge = page.getByRole('img', { name: 'Merged' });
+      await expect(badge).toBeVisible();
+      await expect(badge).toHaveAttribute('data-celebrate', '');
+      await expect(page.locator('.merge-burst')).toHaveCount(bursts ? 1 : 0);
+      await expect(badge).not.toHaveAttribute('data-celebrate', '', { timeout: 3000 });
+      await expect(page.locator('.merge-burst')).toHaveCount(0);
+    });
+
+  test('opening an already merged pull request does not celebrate', async ({ page }) => {
+    await mockGitHub(page, { prState: 'merged' });
+    await openPR(page);
+    const badge = page.getByRole('img', { name: 'Merged' });
+    await expect(badge).toBeVisible();
+    await expect(badge).not.toHaveAttribute('data-celebrate', '');
+    await expect(page.locator('.merge-burst')).toHaveCount(0);
+  });
 });
 
 test.describe('keyboard shortcuts', () => {
@@ -1378,6 +1664,21 @@ test.describe('mentions', () => {
     await page.getByRole('button', { name: 'Comment', exact: true }).click();
     await expect.poll(() => lastWrite(fake, '/repos/acme/app/issues/42/comments')).toEqual({ body: 'Thanks @alice and @bo' });
     expect(fake.peopleSearches).toContainEqual({ kind: 'mentionable', query: 'ali', first: 10 });
+  });
+
+  test('@ completes people in a diff thread reply, and mentions there show the profile on hover', async ({ page }) => {
+    const fake = await mockGitHub(page);
+    await openPR(page);
+    const reply = page.getByRole('textbox', { name: 'Reply to thread on line 10' });
+    await reply.fill('Thanks @ali');
+    const list = page.getByRole('listbox', { name: 'Mention suggestions' });
+    await expect(list.getByRole('option', { name: 'Alice Liddell alice' })).toBeVisible();
+    await reply.press('Enter');
+    await expect(reply).toHaveValue('Thanks @alice ');
+    await page.getByRole('group', { name: 'Reply actions' }).getByRole('button', { name: 'Reply', exact: true }).click();
+    await expect.poll(() => lastWrite(fake, /\/pulls\/42\/comments\/101\/replies$/)).toEqual({ body: 'Thanks @alice' });
+    await card(page, 'src/worker.py').getByRole('link', { name: '@alice', exact: true }).hover();
+    await expect(page.getByRole('tooltip')).toContainText('Alice Liddell');
   });
 
   test('a rendered @mention links to the profile and its hover card loads the name once', async ({ page }) => {

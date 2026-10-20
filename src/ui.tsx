@@ -121,7 +121,8 @@ export function useWidth(key: string, initial: number, edge: 'left' | 'right') {
 }
 
 export const Modal = defineComponent(
-  (props: { title: string; subtitle?: string; onClose: () => void; wide?: boolean }, { slots }) => {
+  // `instant` is for dialogs opened from the keyboard many times a day, which should feel like they were already there.
+  (props: { title: string; subtitle?: string; onClose: () => void; wide?: boolean; instant?: boolean }, { slots }) => {
     const dialog = ref();
     const node = () => unrefElement(dialog) as HTMLElement | undefined;
     let previous: HTMLElement | null = null;
@@ -153,7 +154,7 @@ export const Modal = defineComponent(
     };
     return () => (
       <motion.div
-        {...fade()}
+        {...(props.instant ? {} : fade())}
         class="modal-backdrop"
         onClick={(event: MouseEvent) => {
           if (event.target === event.currentTarget) props.onClose();
@@ -161,7 +162,7 @@ export const Modal = defineComponent(
       >
         <motion.div
           ref={dialog}
-          {...pop()}
+          {...(props.instant ? {} : pop())}
           role="dialog"
           aria-modal="true"
           aria-label={props.title}
@@ -182,7 +183,7 @@ export const Modal = defineComponent(
       </motion.div>
     );
   },
-  { props: ['title', 'subtitle', 'onClose', 'wide'] },
+  { props: ['title', 'subtitle', 'onClose', 'wide', 'instant'] },
 );
 
 setWasmUrl(wasmUrl);

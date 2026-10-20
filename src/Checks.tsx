@@ -15,7 +15,7 @@ export const checkIcons: Record<CheckState, typeof CircleCheck> = {
 };
 
 export default defineComponent(
-  (props: { checks?: StatusCheck[]; loading: boolean; busy: boolean; prRef: PRRef; onRun: Run }) => {
+  (props: { checks?: StatusCheck[]; loading: boolean; busy: boolean; prRef: PRRef; onRun: Run; entrance: string }) => {
     const rerun = (failedOnly: boolean) =>
       props.onRun(failedOnly ? 'Re-running failed checks' : 'Re-running all checks', api =>
         api.rerunChecks(props.prRef, props.checks!, failedOnly),
@@ -31,7 +31,7 @@ export default defineComponent(
       ) : !props.checks.length ? (
         <p class={styles.empty}>No checks reported for this commit.</p>
       ) : (
-        <div class="reveal">
+        <div class={props.entrance}>
           <div class={styles.toolbar}>
             <button class="button small" disabled={props.busy || !jobs(true)} onClick={() => rerun(true)}>
               <RefreshCw size={13} />
@@ -75,5 +75,5 @@ export default defineComponent(
         </div>
       );
   },
-  { props: ['checks', 'loading', 'busy', 'prRef', 'onRun'] },
+  { props: ['checks', 'loading', 'busy', 'prRef', 'onRun', 'entrance'] },
 );

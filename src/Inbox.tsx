@@ -586,7 +586,7 @@ export default defineComponent(
                         aria-expanded={open}
                         onClick={() => toggleGroup(section.id)}
                       >
-                        <ChevronRight size={15} class={open ? 'rotated' : ''} />
+                        <ChevronRight size={15} class={`chevron ${open ? 'rotated' : ''}`} />
                         <span class="group-status">
                           <GroupIcon size={15} />
                         </span>

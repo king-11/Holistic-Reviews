@@ -1,6 +1,6 @@
 import { computed, defineComponent, nextTick, onMounted, onUnmounted, shallowRef, useId, watch } from 'vue';
 import { AnimatePresence, motion } from 'motion-v';
-import { pop, slide } from './motion';
+import { pop } from './motion';
 import { unrefElement } from '@vueuse/core';
 import { Check, ChevronRight, ChevronsDownUp, Folder, FolderOpen, ListFilter, PanelLeftClose, X } from '@lucide/vue';
 import type { ChangedFile } from './github';
@@ -136,7 +136,7 @@ export default defineComponent(
           aria-expanded={open}
           onClick={() => toggleFolder(item.path)}
         >
-          <ChevronRight size={13} class={open ? 'rotated' : ''} />
+          <ChevronRight size={13} class={`chevron ${open ? 'rotated' : ''}`} />
           {open ? <FolderOpen size={14} /> : <Folder size={14} />}
           <span>{item.name}</span>
         </button>,
@@ -146,7 +146,7 @@ export default defineComponent(
     return () => {
       const viewedCount = props.files.filter(file => props.viewed.has(file.filename)).length;
       return (
-        <motion.aside {...slide(-8)} class="file-sidebar" aria-label="Changed files" style={{ width: `${width.value}px` }}>
+        <aside class="file-sidebar" aria-label="Changed files" style={{ width: `${width.value}px` }}>
           {handle('Resize changed files')}
           <div class="file-sidebar-title">
             <strong>Changed files</strong>
@@ -295,14 +295,14 @@ export default defineComponent(
               </strong>
             </div>
             <div class={`${styles['progress-track']}`}>
-              <div style={{ width: `${props.files.length ? (viewedCount / props.files.length) * 100 : 0}%` }} />
+              <div style={{ transform: `scaleX(${props.files.length ? viewedCount / props.files.length : 0})` }} />
             </div>
           </div>
           <div class={`${styles['powered-by']}`}>
             <span class="status-dot" />
             Powered by Diffs<span>↗</span>
           </div>
-        </motion.aside>
+        </aside>
       );
     };
   },

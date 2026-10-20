@@ -4,6 +4,18 @@
   padding: 4px;
   color: var(--color-muted);
   border-radius: var(--radius-md);
+  transition:
+    transform 160ms var(--ease-out),
+    background-color 150ms ease,
+    color 150ms ease;
+}
+.reaction-add:active:not(:disabled) {
+  transform: scale(0.97);
+}
+@media (prefers-reduced-motion: reduce) {
+  .reaction-add:active:not(:disabled) {
+    transform: none;
+  }
 }
 /* Pulls the button's hit-area padding out so its glyph lines up with the text edge. */
 .reaction-anchor:first-child > .reaction-add {

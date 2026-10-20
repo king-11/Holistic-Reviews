@@ -1,7 +1,7 @@
 import { computed, defineComponent, onMounted, onUnmounted, provide, shallowRef, watch, watchEffect } from 'vue';
 import { createShortcuts, modalOpen, step } from './shortcuts';
 import { AnimatePresence, motion } from 'motion-v';
-import { drop, rise } from './motion';
+import { drop, reduced, rise } from './motion';
 import {
   ArrowLeft,
   ArrowRight,
@@ -177,13 +177,20 @@ export default defineComponent(
       }
     }
 
-    const toast = shallowRef('');
+    const toast = shallowRef({ id: 0, message: '' });
     let toastTimer: ReturnType<typeof setTimeout> | undefined;
     const showToast = (message: string) => {
-      toast.value = message;
+      // A fresh key per message makes each one enter again, so a repeated action visibly registers.
+      toast.value = { id: toast.value.id + 1, message };
       clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => (toast.value = ''), 2000);
+      toastTimer = setTimeout(() => (toast.value = { ...toast.value, message: '' }), Math.max(2000, message.length * 60));
     };
+    // Confirmations float in the toast so nothing in the page shifts; only warnings stay in the banner until dismissed.
+    const done = (message: string, warning = '') => (warning ? (notice.value = message + warning) : showToast(message));
+    // Content fades in when its data first arrives; revisiting a tab shows it as it was.
+    const entered = new Map<string, string>();
+    const entrance = (key: string) => (entered.has(key) ? entered.get(key)! : (entered.set(key, 'reveal'), 'reveal'));
+    watch(tab, () => entered.forEach((_, key) => entered.set(key, '')));
     onUnmounted(() => clearTimeout(toastTimer));
     const copy = (label: string, text: string) =>
       navigator.clipboard.writeText(text).then(
@@ -275,26 +282,27 @@ export default defineComponent(
             ? props.api.editReview(ref(), item.id, body)
             : props.api.editComment(ref(), item, body, inPendingReview(item)));
           changeComment(item, body);
-          notice.value = 'Comment updated on GitHub.';
+          done('Comment updated on GitHub.');
         }),
       remove: item =>
         action(async () => {
           const review = inPendingReview(item) ? pending.value : undefined;
           await props.api.deleteComment(ref(), item, !!review);
           changeComment(item);
-          notice.value = 'Comment deleted from GitHub.';
-          if (!review) return;
-          const removedByGitHub = await props.api
-            .fresh()
-            .reviewExists(ref(), review.id)
-            .then(
-              exists => !exists,
-              () => false,
-            );
-          if (!removedByGitHub) return;
-          update(reviews, prev => prev.filter(other => other.id !== review.id));
-          draftComments.value = [];
-          notice.value = 'Comment deleted. GitHub removed the now-empty pending review.';
+          const removedByGitHub =
+            !!review &&
+            (await props.api
+              .fresh()
+              .reviewExists(ref(), review.id)
+              .then(
+                exists => !exists,
+                () => false,
+              ));
+          if (removedByGitHub) {
+            update(reviews, prev => prev.filter(other => other.id !== review.id));
+            draftComments.value = [];
+          }
+          done(removedByGitHub ? 'Comment deleted. GitHub removed the now-empty pending review.' : 'Comment deleted from GitHub.');
         }),
     };
     const reactions = createReactionActions(
@@ -353,11 +361,13 @@ export default defineComponent(
           update(draftComments, prev => [...prev, comment]);
         } else update(inlineComments, prev => [...prev, comment]);
         update(replyDrafts, prev => ({ ...prev, [id]: { body: '' } }));
-        notice.value = starting
-          ? 'Review started with this pending reply. Subsequent comments and replies join this review.'
-          : current
-            ? 'Reply added to your pending review. It will publish when you submit the review.'
-            : 'Reply posted to GitHub.';
+        done(
+          starting
+            ? 'Review started with this pending reply. Subsequent comments and replies join this review.'
+            : current
+              ? 'Reply added to your pending review. It will publish when you submit the review.'
+              : 'Reply posted to GitHub.',
+        );
       });
       if (!saved)
         update(replyDrafts, prev => ({
@@ -373,7 +383,7 @@ export default defineComponent(
           throw new Error('You do not have permission to change this thread.');
         const result = await props.api.setThreadResolved(id, resolved);
         update(threads, prev => prev.map(item => (item.id === id ? { ...item, ...result } : item)));
-        notice.value = `Thread ${resolved ? 'resolved' : 'reopened'} on GitHub.`;
+        done(`Thread ${resolved ? 'resolved' : 'reopened'} on GitHub.`);
       });
     }
 
@@ -407,13 +417,13 @@ export default defineComponent(
       await action(async () => {
         const result = await props.api.submitReview(ref(), pr().head.sha, event.value, reviewBody.value.trim(), pending.value);
         const current = pending.value;
+        entered.set(`review-${result.id}`, 'grow-in');
         update(reviews, prev => [...prev.filter(review => review.id !== current?.id), result]);
         update(inlineComments, prev => [...prev, ...draftComments.value]);
         draftComments.value = [];
         reviewBody.value = '';
         dialog.value = null;
-        const threadWarning = await refreshThreads();
-        notice.value = `${event.value === 'APPROVE' ? 'Approval' : 'Review'} submitted to GitHub.${threadWarning}`;
+        done(`${event.value === 'APPROVE' ? 'Approval' : 'Review'} submitted to GitHub.`, await refreshThreads());
       });
     }
     const discardReview = () =>
@@ -424,7 +434,7 @@ export default defineComponent(
         update(reviews, prev => prev.filter(review => review.id !== current.id));
         draftComments.value = [];
         dialog.value = null;
-        notice.value = deleted ? 'Pending review discarded.' : 'This pending review was already gone on GitHub; cleared it here.';
+        done(deleted ? 'Pending review discarded.' : 'This pending review was already gone on GitHub; cleared it here.');
       });
 
     const inlineBody = shallowRef('');
@@ -482,12 +492,14 @@ export default defineComponent(
         refreshWarning += await refreshThreads();
         inlineBody.value = '';
         dialog.value = null;
-        notice.value =
-          (starting
+        done(
+          starting
             ? 'Review started with this pending comment. Add more feedback, then finish your review to publish.'
             : current
               ? 'Comment added to your pending GitHub review.'
-              : 'Inline comment posted to GitHub.') + refreshWarning;
+              : 'Inline comment posted to GitHub.',
+          refreshWarning,
+        );
       });
     }
 
@@ -497,9 +509,10 @@ export default defineComponent(
       if (!body.value.trim()) return;
       await action(async () => {
         const result = await props.api.comment(ref(), body.value.trim());
+        entered.set(`comment-${result.id}`, 'grow-in');
         update(comments, prev => [...prev, result]);
         body.value = '';
-        notice.value = 'Comment posted to GitHub.';
+        done('Comment posted to GitHub.');
       });
     }
 
@@ -534,6 +547,19 @@ export default defineComponent(
         return ['Ready to merge', CircleCheck, 'open'] as const;
       return ['Open', GitPullRequest, 'open'] as const;
     };
+    // Celebrates a merge that happens while you watch, never one that was already done when the PR opened.
+    const celebrating = shallowRef(false);
+    let celebrationTimer: ReturnType<typeof setTimeout> | undefined;
+    watch(
+      () => pr().merged,
+      (merged, was) => {
+        if (!merged || was !== false) return;
+        celebrating.value = true;
+        clearTimeout(celebrationTimer);
+        celebrationTimer = setTimeout(() => (celebrating.value = false), 900);
+      },
+    );
+    onUnmounted(() => clearTimeout(celebrationTimer));
 
     const stackOpen = shallowRef(false);
     const relations = computed(() => branchRelations(pr(), props.workspace.related));
@@ -933,7 +959,7 @@ export default defineComponent(
     const reviewCard = (review: Review) => {
       const code = allComments.value.filter(comment => comment.pull_request_review_id === review.id && shown(comment));
       return (
-        <div class="conversation-comment reveal" data-review-state={review.state}>
+        <div class={`conversation-comment ${entrance(`review-${review.id}`)}`} data-review-state={review.state}>
           <div class="comment-author">
             <Avatar login={review.user.login} src={review.user.avatar_url} small />
             <strong>{review.user.id === viewer().id ? 'You' : review.user.login}</strong>
@@ -1089,8 +1115,22 @@ export default defineComponent(
                     {(() => {
                       const [label, Icon, tone] = prStatus();
                       return (
-                        <span class="pr-state" data-tone={tone} role="img" aria-label={label} title={label}>
+                        <span
+                          class="pr-state"
+                          data-tone={tone}
+                          data-celebrate={celebrating.value ? '' : undefined}
+                          role="img"
+                          aria-label={label}
+                          title={label}
+                        >
                           <Icon size={18} />
+                          {celebrating.value && !reduced() && (
+                            <span class="merge-burst" aria-hidden="true">
+                              {Array.from({ length: 10 }, (_, index) => (
+                                <i key={index} style={`--angle: ${index * 36}deg`} />
+                              ))}
+                            </span>
+                          )}
                         </span>
                       );
                     })()}
@@ -1137,7 +1177,7 @@ export default defineComponent(
                               ? `GitHub stack #${props.workspace.nativeStack.number}`
                               : 'Dependent pull requests'}
                           </strong>
-                          <ChevronRight size={13} class={stackOpen.value ? 'rotated' : ''} />
+                          <ChevronRight size={13} class={`chevron ${stackOpen.value ? 'rotated' : ''}`} />
                         </button>
                         <span>
                           {props.workspace.nativeStack ? `${props.workspace.nativeStack.size} pull requests` : 'Linked by branch'}
@@ -1224,7 +1264,7 @@ export default defineComponent(
                       aria-expanded={descriptionOpen.value}
                       onClick={() => (descriptionOpen.value = !descriptionOpen.value)}
                     >
-                      <ChevronRight size={13} class={descriptionOpen.value ? 'rotated' : ''} />
+                      <ChevronRight size={13} class={`chevron ${descriptionOpen.value ? 'rotated' : ''}`} />
                       Description
                     </button>
                     {bodyDraft.value === null && (
@@ -1353,7 +1393,14 @@ export default defineComponent(
             )}
             {tab.value === 'commits' && <CommitHistory {...commitProps} />}
             {tab.value === 'checks' && (
-              <Checks checks={props.workspace.checks} loading={pendingSection('checks')} busy={acting.value} prRef={ref()} onRun={run} />
+              <Checks
+                checks={props.workspace.checks}
+                loading={pendingSection('checks')}
+                busy={acting.value}
+                prRef={ref()}
+                onRun={run}
+                entrance={entrance('checks')}
+              />
             )}
             {tab.value === 'review' && (
               <div class="conversation own-review">
@@ -1398,7 +1445,7 @@ export default defineComponent(
               <div class="conversation">
                 {pendingSection('comments', 'reviews') && <Loader label="Loading conversation…" />}
                 {visibleConversation.value.map(comment => (
-                  <div id={`conversation-comment-${comment.id}`} class="conversation-comment reveal">
+                  <div id={`conversation-comment-${comment.id}`} class={`conversation-comment ${entrance(`comment-${comment.id}`)}`}>
                     <div class="comment-author">
                       <Avatar login={comment.user.login} src={comment.user.avatar_url} small />
                       <strong>{comment.user.login}</strong>
@@ -1609,7 +1656,7 @@ export default defineComponent(
                     <>
                       {visibleFiles.value.map((file, index) => (
                         <DiffView
-                          class="reveal"
+                          class={entrance(`file-${file.filename}`)}
                           style={{ animationDelay: `${Math.min(index, 4) * 40}ms` }}
                           file={file}
                           settings={props.settings}
@@ -1702,10 +1749,10 @@ export default defineComponent(
           />
         )}
         <AnimatePresence>
-          {!!toast.value && (
-            <motion.div key="toast" {...rise()} class={styles.toast} role="status">
+          {!!toast.value.message && (
+            <motion.div key={`toast-${toast.value.id}`} {...rise()} class={styles.toast} role="status">
               <Check size={14} />
-              {toast.value}
+              {toast.value.message}
             </motion.div>
           )}
           {dialog.value === 'review' && (

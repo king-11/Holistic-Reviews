@@ -1,4 +1,4 @@
-import { defineComponent, onMounted, onUnmounted, shallowRef } from 'vue';
+import { defineComponent, onMounted, onUnmounted, shallowRef, watch } from 'vue';
 import { Check, ChevronRight, MessageSquare, RotateCcw } from '@lucide/vue';
 import { errorMessage, type Comment, type ReviewThread as Thread } from './github';
 import { Avatar, timeAgo } from './ui';
@@ -29,10 +29,32 @@ type Props = {
   onResolve: (id: string, resolved: boolean) => Promise<boolean>;
 };
 
+// The diff re-creates thread cards whenever thread data changes. Remembering each card's state lets the new card keep a
+// manual expand, and play the fold that a resolve or reopen started on the card it replaced.
+const remembered = new Map<string, { open: boolean; resolved: boolean }>();
+
 export default defineComponent(
   (props: Props) => {
     const element = shallowRef<HTMLElement>();
-    const open = shallowRef(!props.thread?.resolved);
+    const saved = props.thread && remembered.get(props.thread.id);
+    const open = shallowRef(saved ? saved.open : !props.thread?.resolved);
+    // Only settled states are remembered; a card that sees the resolution change before it's replaced must not record it,
+    // or its replacement would have nothing left to animate.
+    const remember = () => props.thread && remembered.set(props.thread.id, { open: open.value, resolved: props.thread.resolved });
+    if (saved && saved.resolved !== props.thread?.resolved)
+      onMounted(() =>
+        requestAnimationFrame(() => {
+          // Commit the inherited state first so the fold has a starting point to transition from.
+          void element.value?.offsetHeight;
+          open.value = !props.thread?.resolved;
+          remember();
+        }),
+      );
+    else if (!saved) remember();
+    watch(
+      () => props.thread?.resolved,
+      resolved => (open.value = !resolved),
+    );
     const replyOpen = shallowRef(false);
     const busy = shallowRef(false);
     const error = shallowRef('');
@@ -61,8 +83,8 @@ export default defineComponent(
       busy.value = true;
       error.value = '';
       try {
-        if (await props.onResolve(thread.id, next)) open.value = !next;
-        else error.value = 'Could not update this thread. Check the connection and your GitHub permissions.';
+        if (!(await props.onResolve(thread.id, next)))
+          error.value = 'Could not update this thread. Check the connection and your GitHub permissions.';
       } catch {
         error.value = 'Could not update this thread. Refresh before trying again.';
       } finally {
@@ -101,9 +123,10 @@ export default defineComponent(
               aria-expanded={open.value}
               onClick={() => {
                 open.value = !open.value;
+                remember();
               }}
             >
-              <ChevronRight size={15} class={open.value ? 'rotated' : ''} />
+              <ChevronRight size={15} class={`chevron ${open.value ? 'rotated' : ''}`} />
               <span>
                 {status()} on {location()}
               </span>
@@ -121,8 +144,9 @@ export default defineComponent(
               </button>
             )}
           </div>
-          {open.value && (
-            <>
+          {/* Stays mounted so resolving or collapsing folds the thread away instead of yanking the diff below it up. */}
+          <div class="thread-fold" data-open={open.value} inert={!open.value}>
+            <div>
               {props.comments.map(comment => (
                 <div key={comment.id} class="thread-comment">
                   <div class="thread-author">
@@ -211,8 +235,8 @@ export default defineComponent(
                   </div>
                 )}
               </form>
-            </>
-          )}
+            </div>
+          </div>
           {(props.replies.draft(rootId()).error || error.value) && (
             <p class={`pt-0 ${styles['pb-3']} px-5 error-message`} role="alert">
               {props.replies.draft(rootId()).error || error.value}

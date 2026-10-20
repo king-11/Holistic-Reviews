@@ -1,4 +1,17 @@
-import { computed, defineComponent, h, onMounted, onUnmounted, render, shallowRef, watch, watchEffect, type VNodeChild } from 'vue';
+import {
+  computed,
+  defineComponent,
+  getCurrentInstance,
+  h,
+  onMounted,
+  onUnmounted,
+  render,
+  shallowRef,
+  watch,
+  watchEffect,
+  type AppContext,
+  type VNodeChild,
+} from 'vue';
 import { themeById, type ThemeId } from './themes';
 import { FileDiff, registerCustomTheme } from '@pierre/diffs';
 
@@ -262,6 +275,10 @@ const DiffRenderer = defineComponent(
     const expanding = shallowRef(false);
     const renderer = shallowRef<FileDiff<Annotation> | null>(null);
     const disposers = new Map<string, () => void>();
+    // Annotations mount as separate Vue roots; handing them this component's provides keeps injected context, like the
+    // people directory behind @mention completion and hover cards, working inside diff threads.
+    const instance = getCurrentInstance()!;
+    const annotationContext = { ...instance.appContext, provides: (instance as unknown as { provides: AppContext['provides'] }).provides };
     const metadata = computed(() => {
       try {
         return metadataForFile(props.file);
@@ -379,28 +396,27 @@ const DiffRenderer = defineComponent(
               disposers.get(key)?.();
               const { comments, composer } = annotation.metadata;
               // Annotations live in the renderer's shadow DOM, outside this component tree.
-              render(
-                h(
-                  defineComponent(() => () => (
-                    <>
-                      {comments.length > 0 && (
-                        <CommentThreads
-                          comments={comments}
-                          threads={props.threads}
-                          onResolve={props.onResolve}
-                          baseUrl={props.baseUrl}
-                          replies={props.replies}
-                          hideBotComments={props.settings.hideBotComments}
-                          selectedThreadId={props.selectedThreadId}
-                          onThreadAnchor={props.onThreadAnchor}
-                        />
-                      )}
-                      {composer?.render()}
-                    </>
-                  )),
-                ),
-                host,
+              const annotationRoot = h(
+                defineComponent(() => () => (
+                  <>
+                    {comments.length > 0 && (
+                      <CommentThreads
+                        comments={comments}
+                        threads={props.threads}
+                        onResolve={props.onResolve}
+                        baseUrl={props.baseUrl}
+                        replies={props.replies}
+                        hideBotComments={props.settings.hideBotComments}
+                        selectedThreadId={props.selectedThreadId}
+                        onThreadAnchor={props.onThreadAnchor}
+                      />
+                    )}
+                    {composer?.render()}
+                  </>
+                )),
               );
+              annotationRoot.appContext = annotationContext;
+              render(annotationRoot, host);
               if (composer)
                 requestAnimationFrame(() => {
                   if (!host.isConnected) return;

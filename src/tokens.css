@@ -6,6 +6,7 @@
   --font-mono: 'SF Mono', SFMono-Regular, 'Geist Mono Variable', monospace;
   --font-mono-compact: var(--font-mono);
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
   --font-emoji: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
   --text-xs: 12px;
   --text-sm: 14px;
