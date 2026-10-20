@@ -10,6 +10,11 @@ import { tryStorage } from './storage';
 // The app is a client-only SPA, so module state is one session shared by the shell and every page.
 const tokenKey = 'review.github-token';
 const settingsKey = 'review.preferences';
+const teamsKey = 'review.teams';
+const readTeams = () => {
+  const saved = tryStorage(() => JSON.parse(localStorage.getItem(teamsKey) ?? 'null'));
+  return Array.isArray(saved) ? saved.filter((team): team is string => typeof team === 'string') : undefined;
+};
 const defaults: DiffSettings = {
   layout: 'unified',
   theme: 'paper',
@@ -81,8 +86,9 @@ export function openPR(url: string) {
 let restore: AbortController | undefined;
 export function connect(value: string, details: TokenInfo) {
   restore?.abort();
+  const controller = (restore = new AbortController());
   token.value = value;
-  info.value = details;
+  info.value = { ...details, teams: details.teams ?? readTeams() };
   authOpen.value = false;
   if (
     !tryStorage(() => {
@@ -91,11 +97,23 @@ export function connect(value: string, details: TokenInfo) {
     })
   )
     storageNotice.value = 'Browser storage is unavailable. Your token is kept in memory only.';
+  // Cached teams answer right away; refreshing on load picks up membership changes without delaying sign-in.
+  void new GitHub(value)
+    .userTeams(controller.signal)
+    .then(teams => {
+      if (controller.signal.aborted || !info.value) return;
+      tryStorage(() => localStorage.setItem(teamsKey, JSON.stringify(teams)));
+      info.value = { ...info.value, teams };
+    })
+    .catch(() => {});
 }
 export function disconnect() {
   if (mutationBusy.value) return;
   restore?.abort();
-  tryStorage(() => sessionStorage.removeItem(tokenKey));
+  tryStorage(() => {
+    sessionStorage.removeItem(tokenKey);
+    localStorage.removeItem(teamsKey);
+  });
   clearPeople();
   clearInboxSnapshots();
   token.value = '';

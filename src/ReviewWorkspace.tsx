@@ -132,6 +132,11 @@ export default defineComponent(
     const prUrl = (number: number) => `https://github.com/${ref().owner}/${ref().repo}/pull/${number}`;
     const markdownBase = () => `${pr().html_url.replace(/\/pull\/\d+(?:\/.*)?$/, '')}/blob/${pr().head.sha}/`;
     const viewer = () => props.info.user;
+    // Submitting a review or single inline comment satisfies the viewer's request on GitHub, even before the PR reread catches up.
+    const clearOwnRequest = () => {
+      if (pr().requested_reviewers?.some(user => user.login === viewer().login))
+        props.store.setPR({ requested_reviewers: pr().requested_reviewers!.filter(user => user.login !== viewer().login) });
+    };
     const ownPR = () => pr().user.id === viewer().id;
     const pendingSection = (...sections: WorkspaceSection[]) => sections.some(section => ws().pending.includes(section));
     const tab = shallowRef<'changes' | 'conversation' | 'review' | 'commits' | 'checks'>('changes');
@@ -158,7 +163,7 @@ export default defineComponent(
     const canReply = () => ws().reviewsLoaded && !stalePending();
     // The kept-alive inbox corrects this PR's row from what this page knows, ahead of GitHub search catching up.
     watchEffect(() => {
-      if (ws().reviewsLoaded) recordPR(pr(), ws().reviews, ws().inlineComments, viewer().login);
+      if (ws().reviewsLoaded) recordPR(pr(), ws().reviews, ws().inlineComments, viewer().login, props.info.teams);
     });
 
     // One flag for every write: App also reads it to hold navigation until the write lands.
@@ -194,7 +199,7 @@ export default defineComponent(
       notice.value = '';
       try {
         await work(props.api);
-        markInboxStale();
+        markInboxStale(pr().html_url);
         if (toast) showToast(toast);
         if (active && refresh !== 'none') props.store.refresh(refresh);
         return true;
@@ -353,7 +358,10 @@ export default defineComponent(
         if (current) {
           ++draftLoadVersion;
           props.store.edit('draftComments', prev => [...prev, comment]);
-        } else props.store.edit('inlineComments', prev => [...prev, comment]);
+        } else {
+          props.store.edit('inlineComments', prev => [...prev, comment]);
+          clearOwnRequest();
+        }
         update(replyDrafts, prev => ({ ...prev, [id]: { body: '' } }));
         done(
           starting
@@ -414,6 +422,7 @@ export default defineComponent(
         entered.set(`review-${result.id}`, 'grow-in');
         props.store.edit('reviews', prev => [...prev.filter(review => review.id !== current?.id), result]);
         props.store.edit('inlineComments', prev => [...prev, ...ws().draftComments]);
+        clearOwnRequest();
         props.store.patch({ draftComments: [] });
         reviewBody.value = '';
         dialog.value = null;
@@ -473,7 +482,10 @@ export default defineComponent(
           const started = await props.api.startReview(ref(), pr().head.sha, comment);
           current = started;
           props.store.edit('reviews', prev => [...prev, started]);
-        } else await props.api.inlineComment(ref(), pr().head.sha, comment, current);
+        } else {
+          await props.api.inlineComment(ref(), pr().head.sha, comment, current);
+          if (!current) clearOwnRequest();
+        }
         try {
           if (current) await loadPendingComments(current, true);
           else
@@ -988,11 +1000,7 @@ export default defineComponent(
                   <span>{panelEntries.value.length}</span>
                 </button>
               )}
-              <IconButton
-                label="Refresh pull request"
-                onClick={() => props.store.refresh('all')}
-                disabled={busy.value || !!ws().pending.length}
-              >
+              <IconButton label="Refresh pull request" onClick={props.store.reload} disabled={busy.value || !!ws().pending.length}>
                 <RefreshCw size={15} class={ws().pending.length ? 'spin' : ''} />
               </IconButton>
             </div>

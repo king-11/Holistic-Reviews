@@ -25,6 +25,7 @@ const alice = { id: 2, login: 'alice' };
 const pr = (extra: Partial<PullRequest> = {}): PullRequest => ({
   ...demoPR,
   html_url: 'https://github.com/acme/app/pull/42',
+  base: { ...demoPR.base, repo: { ...demoPR.base.repo!, full_name: 'acme/app' } },
   number: 42,
   user: alice,
   state: 'open',
@@ -53,7 +54,7 @@ const row = (number: number, extra: Partial<InboxItem> = {}): InboxItem => ({
 const view = (extra: Partial<InboxView> = {}): InboxView => ({ login: 'me', repos: [], merged: 'all', now: Date.now(), ...extra });
 
 describe('placement', () => {
-  for (const { name, pull, reviews = [], comments = [], expected } of [
+  for (const { name, pull, reviews = [], comments = [], teams, expected } of [
     {
       name: 'a direct request stays requested until the viewer reviews',
       pull: pr({ requested_reviewers: [me] }),
@@ -66,9 +67,21 @@ describe('placement', () => {
       expected: { requested: false, reviewed: true },
     },
     {
-      name: 'a team request the viewer has not answered is left to search',
+      name: 'a team request without known viewer teams is left to search',
       pull: pr({ requested_teams: [{ slug: 'core', name: 'Core' }] }),
       expected: { requested: undefined, reviewed: false },
+    },
+    {
+      name: 'a team request for one of the viewer’s teams counts as requested',
+      pull: pr({ requested_teams: [{ slug: 'core', name: 'Core' }] }),
+      teams: ['acme/core'],
+      expected: { requested: true, reviewed: false },
+    },
+    {
+      name: 'a PR whose only remaining requested teams do not include the viewer is not requested',
+      pull: pr({ requested_teams: [{ slug: 'qa', name: 'QA' }] }),
+      teams: ['acme/core'],
+      expected: { requested: false, reviewed: false },
     },
     {
       name: 'a single line comment counts as reviewed',
@@ -94,7 +107,7 @@ describe('placement', () => {
     },
   ])
     it(name, () => {
-      const placed = placement(pull, reviews, comments, 'me');
+      const placed = placement(pull, reviews, comments, 'me', teams);
       for (const [group, value] of Object.entries(expected)) assert.equal(placed[group as keyof typeof placed], value, group);
     });
 });

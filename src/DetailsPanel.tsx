@@ -440,12 +440,12 @@ export function useDetails(input: () => DetailsInput) {
     ),
   );
   const labels = () => pr().labels ?? [];
-  // Label and reviewer writes return the new values, so they patch the PR instead of rereading it.
-  const setPR = (change: Partial<PullRequest>) => input().store.edit('pr', current => ({ ...current, ...change }));
+  // Label and reviewer writes return the new values; patching them keeps the sidebar right while GitHub's reread lags.
+  const setPR = (change: Partial<PullRequest>) => input().store.setPR(change);
   const setLabels = (names: string[]) =>
     void source().onMutate(async api => setPR({ labels: await api.setLabels(source().prRef, names) }), {
       toast: 'Labels updated',
-      refresh: 'none',
+      refresh: 'pr',
     });
   const request = (logins: string[], remove = false) =>
     void source().onMutate(
@@ -453,7 +453,7 @@ export function useDetails(input: () => DetailsInput) {
         const { requested_reviewers, requested_teams } = await api.requestReviewers(source().prRef, logins, remove);
         setPR({ requested_reviewers, requested_teams });
       },
-      { toast: `Review ${remove ? 'request removed' : 'requested'} from ${logins.join(', ')}`, refresh: 'none' },
+      { toast: `Review ${remove ? 'request removed' : 'requested'} from ${logins.join(', ')}`, refresh: 'pr' },
     );
   return {
     source,
@@ -491,9 +491,9 @@ export function ReviewIcon(props: { review: string; codeOwner?: boolean }) {
 
 function ReviewerRow(props: { details: Details; login: string; review: string }) {
   const { details, login, review } = props;
-  const { pr, reviews, onBehalfOf, codeOwners = [] } = details.source();
+  const { reviews, onBehalfOf, codeOwners = [] } = details.source();
   const teams = onBehalfOf?.[login] ?? [];
-  const user = [...(pr.requested_reviewers ?? []), ...reviews.map(given => given.user)].find(user => user.login === login);
+  const user = [...(details.pr().requested_reviewers ?? []), ...reviews.map(given => given.user)].find(user => user.login === login);
   const name = usePeople()()?.known(login)?.name;
   return (
     <div class={styles.row}>

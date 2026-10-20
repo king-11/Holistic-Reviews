@@ -1164,4 +1164,13 @@ describe('GitHub review actions (mocked; no real writes)', () => {
     await assert.rejects(api.editComment(ref, reviewComment, 'x', true), /did not confirm the comment update/);
     assert.equal(calls.length, 1);
   });
+  it('loads the viewer’s teams and rejects reviewer removals that GitHub silently ignores', async () => {
+    fake([
+      { data: [{ slug: 'core', organization: { login: 'acme' } }] },
+      { data: { ...demoPR, requested_reviewers: [{ id: 2, login: 'carol' }], requested_teams: [] } },
+    ]);
+    const api = new GitHub('test-only-token');
+    assert.deepEqual(await api.userTeams(), ['acme/core']);
+    await assert.rejects(api.requestReviewers(ref, ['carol'], true), /kept this reviewer/);
+  });
 });

@@ -172,13 +172,16 @@ test.describe('inbox after acting on a pull request', () => {
   const row = (page: Page, section: string) => page.locator(`section.${section}`).getByRole('link', { name: /Improve worker retries/ });
 
   test('approving moves the PR from review requests to reviewed by you, then refetches in the background', async ({ page }) => {
-    const fake = await mockGitHub(page);
+    const fake = await mockGitHub(page, { viewerRequested: true });
     await openFromInbox(page);
     await page.waitForLoadState('networkidle');
     const searches = fake.searches.length;
+    const panel = page.getByRole('complementary', { name: 'Pull request details' });
+    await expect(panel.getByRole('button', { name: 'Remove review request from reviewer', exact: true })).toBeVisible();
     await page.keyboard.press('r');
     await page.keyboard.press('y');
     await expect(page.getByRole('status').getByText('Approval submitted to GitHub.')).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Remove review request from reviewer', exact: true })).toHaveCount(0);
     await backToInbox(page);
     await expect(row(page, 'requested')).toHaveCount(0);
     await expect(page.getByRole('main').getByRole('button', { name: /Needs your review\s*1/ })).toBeVisible();
@@ -207,6 +210,25 @@ test.describe('inbox after acting on a pull request', () => {
       .getByRole('button', { name: /Recently merged/ })
       .click();
     await expect(row(page, 'merged')).toBeVisible();
+  });
+
+  test('removing your review request drops the PR from review requests even when other teams remain, and reopening stays fresh', async ({
+    page,
+  }) => {
+    await mockGitHub(page);
+    await openFromInbox(page);
+    const panel = page.getByRole('complementary', { name: 'Pull request details' });
+    await panel.getByRole('button', { name: 'Request reviewer', exact: true }).click();
+    await panel.getByRole('button', { name: 'acme/frontend', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await expect(panel.getByRole('button', { name: 'Remove review request from acme/frontend', exact: true })).toBeVisible();
+    await panel.getByRole('button', { name: 'Remove review request from acme/backend', exact: true }).click();
+    await expect(panel.getByRole('button', { name: 'Remove review request from acme/backend', exact: true })).toHaveCount(0);
+    await backToInbox(page);
+    await expect(row(page, 'requested')).toHaveCount(0);
+    await page.goBack();
+    await expect(panel.getByRole('button', { name: 'Remove review request from acme/backend', exact: true })).toHaveCount(0);
+    await expect(panel.getByRole('button', { name: 'Remove review request from acme/frontend', exact: true })).toBeVisible();
   });
 });
 
