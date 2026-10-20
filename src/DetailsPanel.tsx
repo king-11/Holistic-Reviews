@@ -1,4 +1,4 @@
-import { computed, defineComponent, shallowRef, watch } from 'vue';
+import { computed, defineComponent, shallowRef } from 'vue';
 import { AnimatePresence, motion } from 'motion-v';
 import {
   ArrowUpRight,
@@ -423,24 +423,20 @@ export interface DetailsSource {
   prRef: PRRef;
   busy: boolean;
   onChecks: () => void;
+  onPatch: (patch: Partial<PullRequest>) => void;
   onRun: Run;
 }
 
-// Label and reviewer writes return the new values, so they patch locally instead of reloading the PR.
+// Label and reviewer writes return the new values, so they patch locally in addition to refreshing the PR.
 export function useDetails(source: () => DetailsSource) {
-  const patch = shallowRef<Partial<PullRequest>>({});
-  watch(
-    () => source().pr,
-    () => (patch.value = {}),
-  );
-  const pr = () => ({ ...source().pr, ...patch.value });
+  const pr = () => source().pr;
   const reviewers = computed(() => reviewerStates(pr(), source().reviews, source().onBehalfOf));
   const labels = () => pr().labels ?? [];
   const setLabels = (names: string[]) =>
     void source()
       .onRun('Labels updated', api => api.setLabels(source().prRef, names), false)
       .then(value => {
-        if (value) patch.value = { ...patch.value, labels: value };
+        if (value) source().onPatch({ labels: value });
       });
   const request = (logins: string[], remove = false) =>
     void source()
@@ -450,7 +446,7 @@ export function useDetails(source: () => DetailsSource) {
         false,
       )
       .then(value => {
-        if (value) patch.value = { ...patch.value, requested_reviewers: value.requested_reviewers, requested_teams: value.requested_teams };
+        if (value) source().onPatch({ requested_reviewers: value.requested_reviewers, requested_teams: value.requested_teams });
       });
   return {
     source,
@@ -488,9 +484,9 @@ export function ReviewIcon(props: { review: string; codeOwner?: boolean }) {
 
 function ReviewerRow(props: { details: Details; login: string; review: string }) {
   const { details, login, review } = props;
-  const { pr, reviews, onBehalfOf, codeOwners = [] } = details.source();
+  const { reviews, onBehalfOf, codeOwners = [] } = details.source();
   const teams = onBehalfOf?.[login] ?? [];
-  const user = [...(pr.requested_reviewers ?? []), ...reviews.map(given => given.user)].find(user => user.login === login);
+  const user = [...(details.pr().requested_reviewers ?? []), ...reviews.map(given => given.user)].find(user => user.login === login);
   const name = usePeople()()?.known(login)?.name;
   return (
     <div class={styles.row}>

@@ -1,6 +1,7 @@
 import { defineComponent, onUnmounted, shallowRef, watch } from 'vue';
 import { navigateTo, useHead, useRoute } from 'nuxt/app';
 import { errorMessage, mergeabilityPending, parsePRUrl, type PRRef, type Workspace } from './github';
+import { inboxChangedAt, isRecentlyMutated } from './inboxUpdates';
 import ReviewWorkspace from './ReviewWorkspace';
 import { api, changeSettings, info, mutationBusy, openPR, settings, showOpenDialog } from './session';
 import { Github, Loader } from './ui';
@@ -30,10 +31,12 @@ export default defineComponent(() => {
     if (delay === undefined || !workspace.value || !mergeabilityPending(workspace.value.pr)) return;
     mergeTimer = setTimeout(async () => {
       const client = api.value;
+      const changedBefore = inboxChangedAt.value;
       if (!client || version !== loadVersion) return;
       try {
         const pr = await client.fresh().pullRequest(ref);
-        if (version !== loadVersion || !workspace.value) return;
+        // A write that landed while this poll was in flight already has newer PR state; don't overwrite it.
+        if (version !== loadVersion || !workspace.value || mutationBusy.value || inboxChangedAt.value !== changedBefore) return;
         workspace.value = { ...workspace.value, pr };
         recheckMergeability(ref, version, attempt + 1);
       } catch {
@@ -69,10 +72,11 @@ export default defineComponent(() => {
       workspace.value = null;
       loading.value = true;
     }
-    // A refresh follows a write or a manual click, so it must not reuse a cached read.
-    const client = refresh ? live.fresh() : live;
+    // A refresh or a PR changed earlier in this session must not reuse a 60s cached read from before the write.
+    const url = `https://github.com${route.path}`;
+    const client = refresh || isRecentlyMutated(url) ? live.fresh() : live;
     try {
-      const ref = parsePRUrl(`https://github.com${route.path}`);
+      const ref = parsePRUrl(url);
       const result = await client.workspace(
         ref,
         signal,

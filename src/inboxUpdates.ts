@@ -25,21 +25,28 @@ export interface PRSnapshot {
 // GitHub search catches up with writes within about a minute; past this, what search says wins again.
 export const snapshotLifetime = 3 * 60_000;
 
-function involvement(pr: PullRequest, reviews: Review[], comments: Comment[], viewer: string) {
+function involvement(pr: PullRequest, reviews: Review[], comments: Comment[], viewer: string, teams?: string[]) {
   const submitted = (review: Review) => review.user.login === viewer && review.state !== 'PENDING';
   // A single line comment is a review on GitHub, so it counts as reviewed-by too.
   const reviewed =
     reviews.some(submitted) ||
     comments.some(comment => comment.user.login === viewer && !reviews.some(review => review.id === comment.pull_request_review_id));
-  return { reviewed, direct: !!pr.requested_reviewers?.some(user => user.login === viewer) };
+  const direct = !!pr.requested_reviewers?.some(user => user.login === viewer);
+  const owner = new URL(pr.html_url).pathname.split('/')[1];
+  const team = !pr.requested_teams?.length
+    ? false
+    : teams
+      ? pr.requested_teams.some(entry => teams.includes(`${owner}/${entry.slug}`))
+      : undefined;
+  return { reviewed, direct, team };
 }
 
-export function placement(pr: PullRequest, reviews: Review[], comments: Comment[], viewer: string): Placement {
+export function placement(pr: PullRequest, reviews: Review[], comments: Comment[], viewer: string, teams?: string[]): Placement {
   const open = pr.state === 'open';
   const mine = pr.user.login === viewer;
-  const { reviewed, direct } = involvement(pr, reviews, comments, viewer);
-  // Submitting any review clears the viewer's request; otherwise a team request may still include them.
-  const requested = direct ? true : reviewed || !pr.requested_teams?.length ? false : undefined;
+  const { reviewed, direct, team } = involvement(pr, reviews, comments, viewer, teams);
+  // Submitting any review clears a team request; otherwise direct or team membership decides.
+  const requested = direct ? true : reviewed ? false : team;
   return {
     requested: open && !pr.draft ? requested : false,
     authored: open && mine && !pr.draft,
@@ -69,7 +76,7 @@ function reviewState(pr: PullRequest, reviews: Review[]) {
 const snapshots = shallowRef(new Map<string, PRSnapshot>());
 export const inboxSnapshots = () => snapshots.value;
 
-export function recordPR(pr: PullRequest, reviews: Review[], comments: Comment[], viewer: string) {
+export function recordPR(pr: PullRequest, reviews: Review[], comments: Comment[], viewer: string, teams?: string[]) {
   const item: InboxItem = {
     id: pr.id,
     number: pr.number,
@@ -85,20 +92,33 @@ export function recordPR(pr: PullRequest, reviews: Review[], comments: Comment[]
     labels: pr.labels ?? [],
     review: reviewState(pr, reviews),
   };
-  const { reviewed, direct } = involvement(pr, reviews, comments, viewer);
+  const { reviewed, direct, team } = involvement(pr, reviews, comments, viewer, teams);
   snapshots.value = new Map(snapshots.value).set(pr.html_url, {
     item,
-    placement: placement(pr, reviews, comments, viewer),
-    involved: reviewed || direct,
+    placement: placement(pr, reviews, comments, viewer, teams),
+    involved: reviewed || direct || !!team,
     at: Date.now(),
   });
 }
 
-// When the viewer last changed a PR; the kept-alive inbox refetches on return if it loaded before this.
+// When the viewer last changed a PR; the kept-alive inbox refetches on return if it loaded before this, and reopening
+// that PR within snapshotLifetime bypasses the browser's 60s HTTP cache.
+const mutated = new Map<string, number>();
 export const inboxChangedAt = shallowRef(0);
-export const markInboxStale = () => (inboxChangedAt.value = Date.now());
+export function markInboxStale(url?: string) {
+  const now = Date.now();
+  inboxChangedAt.value = now;
+  if (url) mutated.set(url, now);
+}
+export const isRecentlyMutated = (url: string, now = Date.now()) => {
+  const at = mutated.get(url);
+  return at !== undefined && now - at < snapshotLifetime;
+};
 
-export const clearInboxSnapshots = () => (snapshots.value = new Map());
+export function clearInboxSnapshots() {
+  snapshots.value = new Map();
+  mutated.clear();
+}
 
 export interface InboxView {
   login: string;

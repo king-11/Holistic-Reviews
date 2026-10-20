@@ -293,6 +293,7 @@ export interface TokenInfo {
   user: User;
   scopes: string[];
   fineGrained: boolean;
+  teams?: string[];
 }
 
 export function parsePRUrl(value: string): PRRef {
@@ -1249,17 +1250,27 @@ export class GitHub {
     return (await this.pages<Team>(`${repoPath(ref)}/teams`, undefined, maxPages.pickers)).items;
   }
 
+  async userTeams(signal?: AbortSignal) {
+    const { items } = await this.pages<{ slug: string; organization: { login: string } }>('/user/teams', signal, maxPages.pickers);
+    return items.map(team => `${team.organization.login}/${team.slug}`);
+  }
+
   // Teams are keyed `org/slug`; logins can't contain '/', and GitHub takes team slugs separately.
   async requestReviewers(ref: PRRef, keys: string[], remove = false) {
-    return (
-      await this.request<PullRequest>(`${refPath(ref)}/requested_reviewers`, {
-        method: remove ? 'DELETE' : 'POST',
-        body: JSON.stringify({
-          reviewers: keys.filter(key => !key.includes('/')),
-          team_reviewers: keys.filter(key => key.includes('/')).map(key => key.split('/')[1]),
-        }),
-      })
-    ).data;
+    const reviewers = keys.filter(key => !key.includes('/'));
+    const team_reviewers = keys.filter(key => key.includes('/')).map(key => key.split('/')[1]);
+    const { data } = await this.request<PullRequest>(`${refPath(ref)}/requested_reviewers`, {
+      method: remove ? 'DELETE' : 'POST',
+      body: JSON.stringify({ reviewers, team_reviewers }),
+    });
+    // GitHub answers 200 even when it refuses to remove a required code owner, leaving them in the list.
+    if (
+      remove &&
+      (reviewers.some(login => data.requested_reviewers?.some(user => user.login === login)) ||
+        team_reviewers.some(slug => data.requested_teams?.some(team => team.slug === slug)))
+    )
+      throw new Error('GitHub kept this reviewer (code owners and required reviewers cannot be removed).');
+    return data;
   }
 
   async reviewExists(ref: PRRef, id: number) {

@@ -42,6 +42,7 @@ import {
   type Comparison,
   type GitHub,
   type PRRef,
+  type PullRequest,
   type Review,
   type ReviewCommentInput,
   type TokenInfo,
@@ -111,7 +112,12 @@ type Props = {
 
 export default defineComponent(
   (props: Props) => {
-    const pr = () => props.workspace.pr;
+    const prPatch = shallowRef<Partial<PullRequest>>({});
+    watch(
+      () => props.workspace.pr.id,
+      () => (prPatch.value = {}),
+    );
+    const pr = () => ({ ...props.workspace.pr, ...prPatch.value });
     const ref = (): PRRef => {
       const [owner, repo] = (pr().base.repo?.full_name || '').split('/');
       return { owner, repo, number: pr().number };
@@ -119,6 +125,11 @@ export default defineComponent(
     const prUrl = (number: number) => `https://github.com/${ref().owner}/${ref().repo}/pull/${number}`;
     const markdownBase = () => `${pr().html_url.replace(/\/pull\/\d+(?:\/.*)?$/, '')}/blob/${pr().head.sha}/`;
     const viewer = () => props.info.user;
+    // Submitting a review or single inline comment satisfies the viewer's request on GitHub, even before the PR reread catches up.
+    const clearOwnRequest = () => {
+      if (pr().requested_reviewers?.some(user => user.login === viewer().login))
+        prPatch.value = { ...prPatch.value, requested_reviewers: pr().requested_reviewers!.filter(user => user.login !== viewer().login) };
+    };
     const ownPR = () => pr().user.id === viewer().id;
     const pendingSection = (...sections: WorkspaceSection[]) => sections.some(section => props.workspace.pending.includes(section));
     const tab = shallowRef<'changes' | 'conversation' | 'review' | 'commits' | 'checks'>('changes');
@@ -157,10 +168,6 @@ export default defineComponent(
     const stalePending = () => !!pending.value && pending.value?.commit_id !== pr().head.sha;
     const canReview = () => props.workspace.reviewsLoaded && pr().state === 'open';
     const canReply = () => props.workspace.reviewsLoaded && !stalePending();
-    // The kept-alive inbox corrects this PR's row from what this page knows, ahead of GitHub search catching up.
-    watchEffect(() => {
-      if (props.workspace.reviewsLoaded) recordPR(pr(), reviews.value, inlineComments.value, viewer().login);
-    });
 
     const busy = shallowRef(false);
     const error = shallowRef('');
@@ -174,7 +181,7 @@ export default defineComponent(
       notice.value = '';
       try {
         await work();
-        markInboxStale();
+        markInboxStale(pr().html_url);
         if (active) props.onRefreshPR();
         return true;
       } catch (failure) {
@@ -212,9 +219,10 @@ export default defineComponent(
       acting.value = true;
       try {
         const result = await work(props.api);
-        markInboxStale();
+        markInboxStale(pr().html_url);
         showToast(label);
         if (refresh) props.onRefresh();
+        else props.onRefreshPR();
         return result;
       } catch (failure) {
         showToast(errorMessage(failure, 'GitHub could not complete this action.'), 'error');
@@ -368,7 +376,10 @@ export default defineComponent(
         if (current) {
           ++draftLoadVersion;
           update(draftComments, prev => [...prev, comment]);
-        } else update(inlineComments, prev => [...prev, comment]);
+        } else {
+          update(inlineComments, prev => [...prev, comment]);
+          clearOwnRequest();
+        }
         update(replyDrafts, prev => ({ ...prev, [id]: { body: '' } }));
         done(
           starting
@@ -429,6 +440,7 @@ export default defineComponent(
         entered.set(`review-${result.id}`, 'grow-in');
         update(reviews, prev => [...prev.filter(review => review.id !== current?.id), result]);
         update(inlineComments, prev => [...prev, ...draftComments.value]);
+        clearOwnRequest();
         draftComments.value = [];
         reviewBody.value = '';
         dialog.value = null;
@@ -488,7 +500,10 @@ export default defineComponent(
           const started = await props.api.startReview(ref(), pr().head.sha, comment);
           current = started;
           update(reviews, prev => [...prev, started]);
-        } else await props.api.inlineComment(ref(), pr().head.sha, comment, current);
+        } else {
+          await props.api.inlineComment(ref(), pr().head.sha, comment, current);
+          if (!current) clearOwnRequest();
+        }
         try {
           if (current) await loadPendingComments(current, true);
           else
@@ -597,8 +612,13 @@ export default defineComponent(
         tab.value = 'checks';
         requestAnimationFrame(() => document.querySelector('.review-tabs-bar')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
       },
+      onPatch: value => (prPatch.value = { ...prPatch.value, ...value }),
       onRun: run,
     }));
+    // The kept-alive inbox corrects this PR's row from what this page knows (including label and reviewer patches), ahead of GitHub search catching up.
+    watchEffect(() => {
+      if (props.workspace.reviewsLoaded) recordPR(pr(), reviews.value, inlineComments.value, viewer().login, props.info.teams);
+    });
 
     const commitList = shallowRef<Commit[]>([]);
     const commitsLoading = shallowRef(false);
@@ -1085,7 +1105,14 @@ export default defineComponent(
                   <span>{panelEntries.value.length}</span>
                 </button>
               )}
-              <IconButton label="Refresh pull request" onClick={props.onRefresh} disabled={busy.value || !!props.workspace.pending.length}>
+              <IconButton
+                label="Refresh pull request"
+                onClick={() => {
+                  prPatch.value = {};
+                  props.onRefresh();
+                }}
+                disabled={busy.value || !!props.workspace.pending.length}
+              >
                 <RefreshCw size={15} class={props.workspace.pending.length ? 'spin' : ''} />
               </IconButton>
             </div>

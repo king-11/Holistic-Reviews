@@ -214,6 +214,7 @@ export async function mockGitHub(
     signedOut?: boolean;
     approved?: boolean;
     blockedUntilApproved?: boolean;
+    viewerRequested?: boolean;
   } = {},
 ) {
   let release = () => {};
@@ -434,6 +435,7 @@ export async function mockGitHub(
       return person ? [200, { login: person.login, name: person.name, avatar_url: '' }] : [404, { message: 'Not Found' }];
     }
     if (path === '/user') return [200, viewer, { 'access-control-expose-headers': 'X-OAuth-Scopes', 'x-oauth-scopes': 'repo, read:org' }];
+    if (path === '/user/teams') return [200, [{ slug: 'backend', name: 'Backend', organization: { login: 'acme' } }]];
     if (path === '/search/issues') {
       const q = query.get('q') || '';
       // GitHub rejects OR outside advanced search.
@@ -458,6 +460,7 @@ export async function mockGitHub(
         200,
         {
           ...pr,
+          requested_reviewers: options.viewerRequested ? [viewer, ...(pr.requested_reviewers ?? [])] : pr.requested_reviewers,
           state: options.prState ? 'closed' : 'open',
           merged: options.prState === 'merged',
           mergeable_state,
@@ -586,7 +589,11 @@ export async function mockGitHub(
           { name: 'retry', color: '0e8a16' },
         ],
       ];
-    if (path === `${repoPath}/issues/42/labels`) return [200, (body!.labels as string[]).map(name => ({ name, color: 'ededed' }))];
+    if (path === `${repoPath}/issues/42/labels`) {
+      const labels = (body!.labels as string[]).map(name => ({ name, color: 'ededed' }));
+      Object.assign(state.prEdits, { labels });
+      return [200, labels];
+    }
     if (path === `${repoPath}/teams`)
       return [
         200,
@@ -595,21 +602,19 @@ export async function mockGitHub(
           { slug: 'frontend', name: 'Frontend' },
         ],
       ];
-    if (path === `${prPath}/requested_reviewers`)
-      return [
-        200,
-        {
-          ...pr,
-          requested_reviewers:
-            method === 'DELETE'
-              ? (pr.requested_reviewers ?? []).filter(user => !(body!.reviewers as string[]).includes(user.login))
-              : (body!.reviewers as string[]).map((login, id) => ({ id, login })),
-          requested_teams:
-            method === 'DELETE'
-              ? (pr.requested_teams ?? []).filter(team => !(body!.team_reviewers as string[]).includes(team.slug))
-              : (body!.team_reviewers as string[]).map(slug => ({ slug, name: slug })),
-        },
-      ];
+    if (path === `${prPath}/requested_reviewers`) {
+      const current = { ...pr, ...state.prEdits };
+      const requested_reviewers =
+        method === 'DELETE'
+          ? (current.requested_reviewers ?? []).filter(user => !(body!.reviewers as string[]).includes(user.login))
+          : [...(current.requested_reviewers ?? []), ...(body!.reviewers as string[]).map((login, id) => ({ id, login }))];
+      const requested_teams =
+        method === 'DELETE'
+          ? (current.requested_teams ?? []).filter(team => !(body!.team_reviewers as string[]).includes(team.slug))
+          : [...(current.requested_teams ?? []), ...(body!.team_reviewers as string[]).map(slug => ({ slug, name: slug }))];
+      Object.assign(state.prEdits, { requested_reviewers, requested_teams });
+      return [200, { ...current, requested_reviewers, requested_teams }];
+    }
     if (/^\/repos\/acme\/app\/actions\/(runs\/\d+\/rerun(-failed-jobs)?|jobs\/\d+\/rerun)$/.test(path)) return [201, {}];
     if (path === `${repoPath}/commits/${HEAD}/check-runs`)
       return [
