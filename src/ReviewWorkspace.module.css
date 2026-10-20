@@ -46,9 +46,6 @@
   flex: 1;
   scroll-padding-top: 94px;
 }
-.focused-diff-list {
-  padding: 16px 12px 0;
-}
 .current-entry {
   background: var(--color-accent-soft);
   opacity: 1 !important;

@@ -1,7 +1,8 @@
 import { defineComponent, onMounted, onUnmounted, shallowRef } from 'vue';
 import { Check, ChevronRight, MessageSquare, RotateCcw } from '@lucide/vue';
 import { errorMessage, type Comment, type ReviewThread as Thread } from './github';
-import { Avatar, inputValue, timeAgo } from './ui';
+import { Avatar, timeAgo } from './ui';
+import MentionField from './MentionField';
 import { CommentActions, CommentBody, type EditActions } from './CommentEditor';
 import ReactionBar, { type ReactionActions } from './Reactions';
 import styles from './ReviewThread.module.css';
@@ -125,7 +126,7 @@ export default defineComponent(
               {props.comments.map(comment => (
                 <div key={comment.id} class="thread-comment">
                   <div class="thread-author">
-                    <Avatar login={comment.user.login} small />
+                    <Avatar login={comment.user.login} src={comment.user.avatar_url} small />
                     <strong>{comment.user.login}</strong>
                     <time datetime={comment.created_at} title={new Date(comment.created_at).toLocaleString()}>
                       {timeAgo(comment.created_at)}
@@ -150,14 +151,14 @@ export default defineComponent(
                   void postReply();
                 }}
               >
-                <textarea
+                <MentionField
                   aria-label={`Reply to thread on ${location()}`}
                   placeholder="Reply"
                   value={reply()}
                   onFocus={() => {
                     replyOpen.value = true;
                   }}
-                  onInput={event => setReply(inputValue(event))}
+                  onInput={setReply}
                   disabled={locked}
                   maxlength={65000}
                   rows={expanded ? 3 : 1}

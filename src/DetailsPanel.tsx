@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   CircleAlert,
+  TriangleAlert,
   CircleCheck,
   CircleDashed,
   CircleDot,
@@ -38,15 +39,12 @@ import {
 } from './github';
 import { checkIcons } from './Checks';
 import { pop } from './motion';
-import { Avatar, IconButton, Loader, SearchField, useWidth, Dismiss } from './ui';
+import { Avatar, IconButton, Loader, PersonLabel, SearchField, useWidth, Dismiss } from './ui';
+import { usePeople, useSearch, type Person } from './people';
 import styles from './DetailsPanel.module.css';
 import switchStyles from './switch.module.css';
 
-export type Run = <T>(
-  label: string | ((result: T) => string),
-  work: (api: GitHub) => Promise<T>,
-  refresh?: boolean,
-) => Promise<T | undefined>;
+export type Run = <T>(label: string, work: (api: GitHub) => Promise<T>, refresh?: boolean) => Promise<T | undefined>;
 
 const readiness: Record<string, [string, string]> = {
   clean: ['Ready to merge', 'All checks and approval requirements have been met'],
@@ -101,34 +99,45 @@ export function reviewerStates(pr: PullRequest, reviews: Review[], onBehalfOf: R
   for (const team of pr.requested_teams ?? []) if (!covered.has(teamKey(pr, team.slug))) latest.set(teamKey(pr, team.slug), 'REQUESTED');
   return [...latest];
 }
+// Approved means someone approved and nobody's latest review still requests changes.
+export const reviewApproved = (pr: PullRequest, reviews: Review[], onBehalfOf?: Record<string, string[]>) => {
+  const states = reviewerStates(pr, reviews, onBehalfOf).map(([, state]) => state);
+  return states.includes('APPROVED') && !states.includes('CHANGES_REQUESTED');
+};
 const teamKey = (pr: PullRequest, slug: string) => `${pr.base.repo?.full_name.split('/')[0]}/${slug}`;
 // GitHub rejects review requests for the PR author and for bots.
 const requestable = (pr: PullRequest, login: string) => login !== pr.user.login && !login.endsWith('[bot]');
 
-// Unknown mergeability and queueable auto-merge stay clickable; GitHub has the final say on each attempt.
-const mergeAvailable = (pr: PullRequest, autoMerge: boolean) =>
-  mergeReady(pr) ||
-  (!pr.draft &&
-    pr.state === 'open' &&
-    (mergeabilityPending(pr) || (autoMerge && !pr.auto_merge && !['dirty', 'draft'].includes(pr.mergeable_state ?? ''))));
-const mergeHint = (pr: PullRequest, autoMerge: boolean) => {
-  if (mergeReady(pr)) return undefined;
-  if (!mergeAvailable(pr, autoMerge)) return (readiness[pr.mergeable_state ?? ''] ?? pendingReadiness)[0];
-  return autoMerge
-    ? 'GitHub will merge this once required checks and reviews pass.'
-    : 'GitHub is still checking mergeability; merging will be attempted.';
+// On busy repositories GitHub can report `unknown` almost constantly, so an approved PR stays mergeable meanwhile.
+const mergeOffered = (pr: PullRequest, approved: boolean) => mergeReady(pr) || (!pr.draft && mergeabilityPending(pr) && approved);
+// The most specific blocker we can name; branch protection details beyond approvals aren't exposed on the PR.
+const notReadyReason = (pr: PullRequest, approved: boolean) => {
+  if (pr.draft) return 'Draft pull requests can’t be merged';
+  if (pr.mergeable_state === 'dirty') return 'This branch has conflicts that must be resolved';
+  if (pr.mergeable_state === 'behind') return 'This branch is out of date with the base branch';
+  if (!approved) return 'This PR needs more approvals';
+  return 'Required reviews or checks aren’t satisfied yet';
 };
 
 const MergeMenu = defineComponent(
-  (props: { pr: PullRequest; methods: MergeMethod[]; autoMerge: boolean; disabled: boolean; onMerge: (method: MergeMethod) => void }) => {
+  (props: {
+    pr: PullRequest;
+    methods: MergeMethod[];
+    autoMerge: boolean;
+    approved: boolean;
+    disabled: boolean;
+    onMerge: (method: MergeMethod) => void;
+  }) => {
     const open = shallowRef(false);
     const confirming = shallowRef<MergeMethod | null>(null);
     const toggle = () => {
       open.value = !open.value;
       confirming.value = null;
     };
-    return () =>
-      props.pr.state !== 'open' ? (
+    return () => {
+      const offered = mergeOffered(props.pr, props.approved);
+      const reason = offered ? undefined : notReadyReason(props.pr, props.approved);
+      return props.pr.state !== 'open' ? (
         <a
           class="button small"
           title="Open this pull request on GitHub in a new tab"
@@ -141,31 +150,53 @@ const MergeMenu = defineComponent(
         </a>
       ) : (
         <div class="popover-anchor">
-          <button class={`button primary small ${styles.trigger}`} aria-haspopup="menu" aria-expanded={open.value} onClick={toggle}>
-            Merge
+          <button
+            class={`button small ${offered ? 'primary' : styles['not-ready']} ${styles.trigger}`}
+            title={reason}
+            aria-haspopup="menu"
+            aria-expanded={open.value}
+            onClick={toggle}
+          >
+            {offered ? (
+              'Merge'
+            ) : (
+              <>
+                <TriangleAlert size={14} />
+                Not ready to merge
+              </>
+            )}
             <ChevronDown size={13} />
           </button>
           {open.value && <Dismiss onClose={toggle} />}
           <AnimatePresence>
             {open.value && (
               <motion.div key="merge" {...pop()} class={`popover ${styles.menu}`} role="menu" aria-label="Merge options">
-                {props.methods.map(method => (
-                  <button
-                    key={method}
-                    role="menuitem"
-                    class={styles.option}
-                    disabled={props.disabled || !mergeAvailable(props.pr, props.autoMerge)}
-                    title={mergeHint(props.pr, props.autoMerge)}
-                    onClick={() => {
-                      if (confirming.value !== method) return void (confirming.value = method);
-                      open.value = false;
-                      props.onMerge(method);
-                    }}
-                  >
-                    <GitMerge size={14} />
-                    {confirming.value === method ? `Confirm ${methodLabels[method].toLowerCase()}` : methodLabels[method]}
-                  </button>
-                ))}
+                {offered ? (
+                  props.methods.map(method => (
+                    <button
+                      key={method}
+                      role="menuitem"
+                      class={styles.option}
+                      disabled={props.disabled}
+                      title={
+                        mergeReady(props.pr) ? undefined : 'GitHub is still checking mergeability; it has the final say when you merge.'
+                      }
+                      onClick={() => {
+                        if (confirming.value !== method) return void (confirming.value = method);
+                        open.value = false;
+                        props.onMerge(method);
+                      }}
+                    >
+                      <GitMerge size={14} />
+                      {confirming.value === method ? `Confirm ${methodLabels[method].toLowerCase()}` : methodLabels[method]}
+                    </button>
+                  ))
+                ) : (
+                  <p class={styles['menu-note']} role="none">
+                    <strong>{reason}</strong>
+                    {props.autoMerge && !props.pr.draft && <span>Turn on auto-merge to merge once requirements pass.</span>}
+                  </p>
+                )}
                 <a role="menuitem" class={styles.option} href={props.pr.html_url} target="_blank" rel="noopener noreferrer">
                   <ArrowUpRight size={14} />
                   Open in GitHub
@@ -175,12 +206,21 @@ const MergeMenu = defineComponent(
           </AnimatePresence>
         </div>
       );
+    };
   },
-  { props: ['pr', 'methods', 'autoMerge', 'disabled', 'onMerge'] },
+  { props: ['pr', 'methods', 'autoMerge', 'approved', 'disabled', 'onMerge'] },
 );
 
 export const MergeControls = defineComponent(
-  (props: { pr: PullRequest; prRef: PRRef; methods: MergeMethod[]; autoMerge: boolean; disabled: boolean; onRun: Run }) => {
+  (props: {
+    pr: PullRequest;
+    prRef: PRRef;
+    methods: MergeMethod[];
+    autoMerge: boolean;
+    approved: boolean;
+    disabled: boolean;
+    onRun: Run;
+  }) => {
     const autoMergeMethod = () => props.pr.auto_merge?.merge_method ?? props.methods[0];
     const toggleAutoMerge = async (input: HTMLInputElement) => {
       const enable = input.checked;
@@ -228,19 +268,15 @@ export const MergeControls = defineComponent(
             pr={pr}
             methods={props.methods}
             autoMerge={props.autoMerge}
+            approved={props.approved}
             disabled={props.disabled}
-            onMerge={method =>
-              props.onRun(
-                result => (result === 'queued' ? 'Auto-merge enabled. GitHub will merge once requirements pass.' : 'Pull request merged'),
-                api => api.mergeOrAutoMerge(props.prRef, pr, method, props.autoMerge),
-              )
-            }
+            onMerge={method => props.onRun('Pull request merged', api => api.merge(props.prRef, pr.head.sha, method))}
           />
         </>
       );
     };
   },
-  { props: ['pr', 'prRef', 'methods', 'autoMerge', 'disabled', 'onRun'] },
+  { props: ['pr', 'prRef', 'methods', 'autoMerge', 'approved', 'disabled', 'onRun'] },
 );
 
 export const MoreMenu = defineComponent(
@@ -300,13 +336,22 @@ export const MoreMenu = defineComponent(
   { props: ['details'] },
 );
 
-type Option = { key: string; text: string; color?: string };
+type Option = { key: string; text: string; detail?: string | null; avatar?: string; color?: string };
+// `load` fills a fixed list that is filtered locally; `search` adds debounced results for the typed query, listed first.
 const Picker = defineComponent(
-  (props: { label: string; load: () => Promise<Option[]>; selected: string[]; disabled: boolean; onPick: (key: string) => void }) => {
+  (props: {
+    label: string;
+    load: () => Promise<Option[]>;
+    search?: (query: string, signal: AbortSignal) => Promise<Option[]>;
+    selected: string[];
+    disabled: boolean;
+    onPick: (key: string) => void;
+  }) => {
     const open = shallowRef(false);
     const options = shallowRef<Option[] | null>(null);
     const failure = shallowRef('');
     const query = shallowRef('');
+    const found = useSearch(() => (open.value ? query.value : null), props.search);
     const toggle = () => {
       open.value = !open.value;
       query.value = '';
@@ -315,6 +360,12 @@ const Picker = defineComponent(
           value => (options.value = value),
           error => (failure.value = errorMessage(error, 'Could not load options.')),
         );
+    };
+    const shown = () => {
+      const text = query.value.toLowerCase();
+      const local = (options.value ?? []).filter(option => [option.text, option.detail].some(field => field?.toLowerCase().includes(text)));
+      const remote = found().items;
+      return [...remote, ...local.filter(option => !remote.some(other => other.key === option.key))].slice(0, 50);
     };
     return () => (
       <span class="popover-anchor">
@@ -333,34 +384,32 @@ const Picker = defineComponent(
                 inputRef={element => (element as HTMLInputElement | null)?.focus()}
                 onInput={value => (query.value = value)}
               />
-              {failure.value ? (
-                <p class={styles.muted}>{failure.value}</p>
-              ) : !options.value ? (
-                <Loader label="Loading…" />
-              ) : (
-                options.value
-                  .filter(option => option.text.toLowerCase().includes(query.value.toLowerCase()))
-                  .slice(0, 50)
-                  .map(option => (
-                    <button
-                      key={option.key}
-                      class={styles.option}
-                      aria-pressed={props.selected.includes(option.key)}
-                      onClick={() => props.onPick(option.key)}
-                    >
-                      {!!option.color && <i class={styles.swatch} style={{ background: `#${option.color}` }} />}
-                      {option.text}
-                      {props.selected.includes(option.key) && <Check size={14} class={styles.end} />}
-                    </button>
-                  ))
-              )}
+              {shown().map(option => (
+                <button
+                  key={option.key}
+                  class={styles.option}
+                  aria-label={option.text}
+                  aria-pressed={props.selected.includes(option.key)}
+                  onClick={() => props.onPick(option.key)}
+                >
+                  {!!option.color && <i class={styles.swatch} style={{ background: `#${option.color}` }} />}
+                  {option.avatar === undefined ? (
+                    option.text
+                  ) : (
+                    <PersonLabel login={option.text} name={option.detail} avatar={option.avatar} />
+                  )}
+                  {props.selected.includes(option.key) && <Check size={14} class={styles.end} />}
+                </button>
+              ))}
+              {(failure.value || found().error) && <p class={styles.muted}>{failure.value || found().error}</p>}
+              {!options.value && !failure.value && <Loader label="Loading…" />}
             </motion.div>
           )}
         </AnimatePresence>
       </span>
     );
   },
-  { props: ['label', 'load', 'selected', 'disabled', 'onPick'] },
+  { props: ['label', 'load', 'search', 'selected', 'disabled', 'onPick'] },
 );
 
 export interface DetailsSource {
@@ -439,8 +488,10 @@ export function ReviewIcon(props: { review: string; codeOwner?: boolean }) {
 
 function ReviewerRow(props: { details: Details; login: string; review: string }) {
   const { details, login, review } = props;
-  const teams = details.source().onBehalfOf?.[login] ?? [];
-  const codeOwners = details.source().codeOwners ?? [];
+  const { pr, reviews, onBehalfOf, codeOwners = [] } = details.source();
+  const teams = onBehalfOf?.[login] ?? [];
+  const user = [...(pr.requested_reviewers ?? []), ...reviews.map(given => given.user)].find(user => user.login === login);
+  const name = usePeople()()?.known(login)?.name;
   return (
     <div class={styles.row}>
       {login.includes('/') ? (
@@ -448,10 +499,12 @@ function ReviewerRow(props: { details: Details; login: string; review: string })
           <Users size={12} />
         </span>
       ) : (
-        <Avatar login={login} small />
+        <Avatar login={login} src={user?.avatar_url} small />
       )}
       <span class={styles.who}>
-        <span class={styles.name}>{login}</span>
+        <span class={styles.name} title={name ? `${name} (${login})` : login}>
+          {name || login}
+        </span>
         {!!teams.length && <span class={`${styles.name} ${styles.team}`}>{teams.join(', ')}</span>}
       </span>
       <span class={`${styles.end} ${styles.hover}`}>
@@ -476,8 +529,15 @@ function ReviewerRow(props: { details: Details; login: string; review: string })
   );
 }
 
+const personOption = (person: Person): Option => ({
+  key: person.login,
+  text: person.login,
+  detail: person.name,
+  avatar: person.avatarUrl ?? '',
+});
 function ReviewerPicker(props: { details: Details }) {
   const { details } = props;
+  const people = usePeople();
   return (
     <Picker
       label="Request reviewer"
@@ -486,12 +546,14 @@ function ReviewerPicker(props: { details: Details }) {
       load={async () => {
         const { api, prRef } = details.source();
         // Personal repos have no teams, and listing them needs org read access.
-        const [users, teams] = await Promise.all([api.assignableUsers(prRef), api.repoTeams(prRef).catch(() => [])]);
-        return [
-          ...users.map(user => user.login).filter(login => requestable(details.pr(), login)),
-          ...teams.map(team => teamKey(details.pr(), team.slug)),
-        ].map(key => ({ key, text: key }));
+        const teams = await api.repoTeams(prRef).catch(() => []);
+        return teams.map(team => teamKey(details.pr(), team.slug)).map(key => ({ key, text: key }));
       }}
+      search={async (query, signal) =>
+        ((await people()?.search('assignable', query, signal)) ?? [])
+          .filter(person => requestable(details.pr(), person.login))
+          .map(personOption)
+      }
       onPick={login => details.request([login])}
     />
   );
@@ -547,7 +609,7 @@ function Assignees(props: { details: Details }) {
     <>
       {assignees.map(user => (
         <div key={user.login} class={styles.row}>
-          <Avatar login={user.login} small />
+          <Avatar login={user.login} src={user.avatar_url} small />
           <span class={styles.name}>{user.login}</span>
         </div>
       ))}
@@ -735,28 +797,24 @@ export default defineComponent(
                 </section>
               )}
               <section class={styles.section}>
-                {!checks ? (
-                  <>
-                    <h3>Checks</h3>
-                    <Loader label="Loading checks…" />
-                  </>
-                ) : (
-                  <button
-                    class={`${styles.checks} reveal`}
-                    title="Open the Checks tab"
-                    aria-label="Open the Checks tab"
-                    onClick={details.source().onChecks}
-                  >
-                    <h3>
-                      Checks<span>{describeChecks(checks)}</span>
-                    </h3>
-                    <span class={styles.bar}>
-                      {checkCounts(checks).map(([kind, count]) => (
-                        <span key={kind} data-state={kind} style={{ flexGrow: count }} />
-                      ))}
-                    </span>
-                  </button>
-                )}
+                {/* Loading keeps the same heading and bar so the counts fill in place instead of swapping layouts. */}
+                <button
+                  class={styles.checks}
+                  title="Open the Checks tab"
+                  aria-label="Open the Checks tab"
+                  aria-busy={!checks}
+                  disabled={!checks}
+                  onClick={details.source().onChecks}
+                >
+                  <h3>
+                    Checks<span>{checks ? describeChecks(checks) : 'Loading…'}</span>
+                  </h3>
+                  <span class={styles.bar} data-loading={!checks}>
+                    {checkCounts(checks).map(([kind, count]) => (
+                      <span key={kind} data-state={kind} style={{ flexGrow: count }} />
+                    ))}
+                  </span>
+                </button>
               </section>
               <section class={styles.section}>
                 <h3>

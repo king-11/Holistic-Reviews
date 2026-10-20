@@ -140,6 +140,12 @@
   border-radius: var(--radius-sm);
   overflow: hidden;
 }
+.bar[data-loading='true'] {
+  background: var(--color-border);
+}
+.bar > span {
+  transition: flex-grow 200ms var(--ease-out);
+}
 .bar > [data-state='success'] {
   background: var(--color-green);
 }
@@ -242,10 +248,31 @@ button.chip:hover {
 .trigger {
   padding-right: 8px;
 }
+/* Still clickable for the menu, but reads as unavailable so nobody mistakes it for a merge. */
+.not-ready {
+  color: var(--color-muted);
+  background: var(--color-subtle);
+  border-color: transparent;
+}
+.not-ready:hover {
+  color: var(--color-secondary);
+}
 .menu {
   width: 240px;
   max-height: 320px;
   overflow-y: auto;
+}
+.menu-note {
+  display: grid;
+  gap: 2px;
+  max-width: 240px;
+  padding: 8px 12px;
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+}
+.menu-note strong {
+  color: var(--color-text);
+  font-weight: 500;
 }
 .option {
   display: flex;

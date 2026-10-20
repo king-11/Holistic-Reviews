@@ -1,5 +1,5 @@
 import type { InboxItem, SearchOrder } from './github';
-import { tryStorage } from './ui';
+import { tryStorage } from './storage';
 
 const sortChoices = [
   'title-asc',

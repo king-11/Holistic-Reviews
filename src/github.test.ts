@@ -6,6 +6,7 @@ import {
   classifyReview,
   inboxQuery,
   parsePRUrl,
+  prPath,
   searchPageSize,
   workspaceSections,
   type Comment,
@@ -266,6 +267,10 @@ describe('PR references and inbox queries', () => {
       assert.deepEqual(parsePRUrl(` https://${host}/acme/app/pull/42/files?x=1#diff `), ref);
     }
   });
+  it('maps a reference to the app route that parses back to it', () => {
+    assert.equal(prPath(ref), '/acme/app/pull/42');
+    assert.deepEqual(parsePRUrl(`https://github.com${prPath(ref)}`), ref);
+  });
   it('rejects non-HTTPS, lookalike domains, issue links and unsafe numbers', () => {
     for (const url of [
       'http://github.com/acme/app/pull/42',
@@ -467,31 +472,6 @@ describe('review state, auto-merge and merge settings', () => {
     });
 
   const enabled = { data: { data: { enablePullRequestAutoMerge: { pullRequest: { autoMergeRequest: { mergeMethod: 'SQUASH' } } } } } };
-  const cleanStatus = { data: { errors: [{ message: 'Pull request is in clean status' }] } };
-  const merged = { data: { merged: true, message: 'Merged' } };
-  for (const [name, state, autoMerge, responses, result, paths] of [
-    ['merges a clean PR directly', 'clean', true, [merged], 'merged', ['PUT /repos/acme/app/pulls/42/merge']],
-    ['queues auto-merge while mergeability is unknown', 'unknown', true, [enabled], 'queued', ['POST /graphql']],
-    [
-      'merges directly when GitHub says the PR is already clean',
-      'unknown',
-      true,
-      [cleanStatus, merged],
-      'merged',
-      ['POST /graphql', 'PUT /repos/acme/app/pulls/42/merge'],
-    ],
-    ['merges directly without auto-merge enabled', 'blocked', false, [merged], 'merged', ['PUT /repos/acme/app/pulls/42/merge']],
-  ] as const)
-    it(`${name}`, async () => {
-      const calls = fake([...responses]);
-      const outcome = await new GitHub('test-only-token').mergeOrAutoMerge(ref, pullRequest(state), 'squash', autoMerge);
-      assert.equal(outcome, result);
-      assert.deepEqual(
-        calls.map(call => `${call.init.method ?? 'GET'} ${new URL(call.url).pathname}`),
-        paths,
-      );
-    });
-
   for (const [name, method, response, mutation, input] of [
     [
       'enables auto-merge with the chosen method pinned to the head commit',

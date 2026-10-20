@@ -1,3 +1,5 @@
+import type { PeopleKind, Person } from './people';
+
 export interface User {
   id: number;
   login: string;
@@ -308,6 +310,8 @@ export function parsePRUrl(value: string): PRRef {
   return { owner: match[1], repo: match[2], number: Number(match[3]) };
 }
 
+// The app's PR route mirrors GitHub's path, so prefixing a GitHub origin parses it back with parsePRUrl.
+export const prPath = (ref: PRRef) => `/${ref.owner}/${ref.repo}/pull/${ref.number}`;
 export const repoPath = (ref: Pick<PRRef, 'owner' | 'repo'>) => `/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}`;
 export const refPath = (ref: PRRef) => `${repoPath(ref)}/pulls/${ref.number}`;
 export const mergeReady = (pr: PullRequest) =>
@@ -1191,19 +1195,6 @@ export class GitHub {
       throw new Error('GitHub did not confirm the auto-merge change. Refresh before trying again.');
   }
 
-  async mergeOrAutoMerge(ref: PRRef, pr: PullRequest, method: MergeMethod, autoMerge: boolean): Promise<'merged' | 'queued'> {
-    if (!mergeReady(pr) && autoMerge) {
-      try {
-        await this.setAutoMerge(pr, method);
-        return 'queued';
-      } catch (error) {
-        if (!(error instanceof Error && /clean status/i.test(error.message))) throw error;
-      }
-    }
-    await this.merge(ref, pr.head.sha, method);
-    return 'merged';
-  }
-
   async rerunChecks(ref: PRRef, checks: StatusCheck[], failedOnly: boolean) {
     const runs = new Set(
       checks.flatMap(check => (check.job && (!failedOnly || blockingStates.includes(check.state)) ? [check.job.run] : [])),
@@ -1230,8 +1221,21 @@ export class GitHub {
     ).data;
   }
 
-  async assignableUsers(ref: PRRef) {
-    return (await this.pages<User>(`${repoPath(ref)}/assignees`, undefined, maxPages.pickers)).items;
+  // GitHub searches logins and names server-side; REST assignees would need every page of large orgs.
+  async people(ref: Pick<PRRef, 'owner' | 'repo'>, kind: PeopleKind, search: string, first: number, signal?: AbortSignal) {
+    const field = `${kind}Users`;
+    const operation = `${field[0].toUpperCase()}${field.slice(1)}`;
+    const data = await this.graphql<{ repository: { people: { nodes: Person[] } } | null }>(
+      `query ${operation}($owner: String!, $name: String!, $search: String!, $first: Int!) { repository(owner: $owner, name: $name) { people: ${field}(query: $search, first: $first) { nodes { login name avatarUrl(size: 40) } } } }`,
+      { owner: ref.owner, name: ref.repo, search, first },
+      signal,
+    );
+    return data?.repository?.people.nodes ?? [];
+  }
+
+  async user(login: string): Promise<Person> {
+    const { data } = await this.request<User & { name: string | null }>(`/users/${encodeURIComponent(login)}`);
+    return { login: data.login, name: data.name, avatarUrl: data.avatar_url };
   }
 
   async repoTeams(ref: PRRef) {

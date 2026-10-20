@@ -49,12 +49,12 @@ test.describe('inbox', () => {
       /Recently merged\s*1/,
     ])
       await expect(group(name)).toBeVisible();
-    await expect(page.getByRole('button', { name: /Retry the sync backoff/ })).toBeVisible();
-    await expect(page.getByRole('button', { name: /Tighten cache keys/ })).toBeVisible();
-    await expect(page.getByRole('button', { name: /Speed up CI cache/ })).toBeVisible();
-    await expect(page.getByRole('button', { name: /Sketch retry dashboard/ })).toBeVisible();
+    await expect(page.getByRole('link', { name: /Retry the sync backoff/ })).toBeVisible();
+    await expect(page.getByRole('link', { name: /Tighten cache keys/ })).toBeVisible();
+    await expect(page.getByRole('link', { name: /Speed up CI cache/ })).toBeVisible();
+    await expect(page.getByRole('link', { name: /Sketch retry dashboard/ })).toBeVisible();
     await group(/Reviewed by you/).click();
-    await expect(page.getByRole('button', { name: /Draft reviewed earlier/ })).toBeVisible();
+    await expect(page.getByRole('link', { name: /Draft reviewed earlier/ })).toBeVisible();
   });
 
   test('filters pull requests by search text and repository', async ({ page }) => {
@@ -62,13 +62,13 @@ test.describe('inbox', () => {
     await seedInbox(page, { repos: [] });
     await page.goto('/');
     await page.getByRole('textbox', { name: 'Search loaded pull requests' }).fill('cache');
-    await expect(page.getByRole('button', { name: /Tune cache eviction/ })).toBeVisible();
-    await expect(page.getByRole('button', { name: /Improve worker retries/ })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: /Tune cache eviction/ })).toBeVisible();
+    await expect(page.getByRole('link', { name: /Improve worker retries/ })).toHaveCount(0);
     await page.getByRole('textbox', { name: 'Search loaded pull requests' }).fill('');
     await page.getByRole('button', { name: 'All repositories' }).click();
     await page.getByRole('checkbox', { name: 'acme/infra' }).check();
-    await expect(page.getByRole('button', { name: /Rotate infra credentials/ })).toBeVisible();
-    await expect(page.getByRole('button', { name: /Tune cache eviction/ })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: /Rotate infra credentials/ })).toBeVisible();
+    await expect(page.getByRole('link', { name: /Tune cache eviction/ })).toHaveCount(0);
   });
 
   test('a merged filter in the collapsed section bar expands the section and queries all, yours, or review requests', async ({ page }) => {
@@ -76,7 +76,7 @@ test.describe('inbox', () => {
     await page.goto('/');
     const merged = page.getByRole('main').getByRole('button', { name: /Recently merged/ });
     const radios = page.getByRole('radiogroup', { name: 'Merged pull requests' });
-    const row = (title: RegExp) => page.getByRole('button', { name: title });
+    const row = (title: RegExp) => page.getByRole('link', { name: title });
     // Inbox sections search concurrently, so only the latest merged query reflects the chosen filter.
     const mergedSearch = () => fake.searches.filter(search => search.q.includes('is:merged')).at(-1);
     await expect(merged).toHaveAttribute('aria-expanded', 'false');
@@ -109,7 +109,7 @@ test.describe('inbox', () => {
     const radios = page.getByRole('radiogroup', { name: 'Merged pull requests' });
     await expect(radios.getByRole('radio', { name: 'All' })).toBeDisabled();
     await expect(radios.getByRole('radio', { name: 'By me' })).toHaveAttribute('aria-checked', 'true');
-    await expect(page.getByRole('button', { name: /Ship metrics exporter/ })).toBeVisible();
+    await expect(page.getByRole('link', { name: /Ship metrics exporter/ })).toBeVisible();
   });
 
   test('starts on the most-used repository and keeps a later choice across reloads', async ({ page }) => {
@@ -146,11 +146,79 @@ test.describe('inbox', () => {
   test('shows changes, checks, and people involved on each inbox row', async ({ page }) => {
     await mockGitHub(page);
     await page.goto('/');
-    const row = page.getByRole('button', { name: /Retry the sync backoff/ });
+    const row = page.getByRole('link', { name: /Retry the sync backoff/ });
     await expect(row.getByText('+12')).toBeVisible();
     await expect(row.getByText('−3')).toBeVisible();
     await expect(row.getByRole('img', { name: 'Checks passed' })).toBeVisible();
     await expect(row.getByTitle('bob, carol')).toBeVisible();
+  });
+});
+
+test.describe('routing', () => {
+  const prRoute = /\/acme\/app\/pull\/42$/;
+  const prHeading = (page: Page) => page.getByRole('heading', { name: 'Improve worker retries', level: 1 });
+
+  test('an inbox row links to its PR page, and back and forward keep the inbox as it was', async ({ page }) => {
+    const fake = await mockGitHub(page);
+    await seedInbox(page, { repos: [] });
+    await page.goto('/');
+    await page
+      .getByRole('main')
+      .getByRole('button', { name: /Reviewed by you/ })
+      .click();
+    await expect(page.getByRole('link', { name: /Draft reviewed earlier/ })).toBeVisible();
+    await page.waitForLoadState('networkidle');
+    const searches = fake.searches.length;
+    const row = page.getByRole('link', { name: /Improve worker retries/ });
+    await expect(row).toHaveAttribute('href', '/acme/app/pull/42');
+    await row.click();
+    await expect(page).toHaveURL(prRoute);
+    await expect(prHeading(page)).toBeVisible();
+    await expect(page).toHaveTitle('#42 Improve worker retries · acme/app');
+    await page.goBack();
+    await expect(page).toHaveURL(/\/$/);
+    // toBeVisible ignores opacity, and rows used to stay faded out after returning to the kept-alive inbox.
+    await expect(page.getByRole('link', { name: /Draft reviewed earlier/ })).toHaveCSS('opacity', '1');
+    await expect(row).toHaveCSS('opacity', '1');
+    await expect(page).toHaveTitle(/^Review — /);
+    expect(fake.searches.length).toBe(searches);
+    await page.goForward();
+    await expect(page).toHaveURL(prRoute);
+    await expect(prHeading(page)).toBeVisible();
+  });
+
+  test('opening a PR page directly, then the inbox, shows the inbox rows', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    await page.getByRole('button', { name: 'Inbox', exact: true }).click();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByRole('link', { name: /Improve worker retries/ })).toHaveCSS('opacity', '1');
+  });
+
+  for (const host of ['github.com', 'diffshub.com'])
+    test(`a legacy ?pr= link to ${host} redirects to the PR page`, async ({ page }) => {
+      await mockGitHub(page);
+      await page.goto(`/?pr=${encodeURIComponent(`https://${host}/acme/app/pull/42`)}`);
+      await expect(page).toHaveURL(prRoute);
+      await expect(prHeading(page)).toBeVisible();
+    });
+
+  test('a PR page opened signed out loads after connecting', async ({ page }) => {
+    await mockGitHub(page, { signedOut: true });
+    await page.goto('/acme/app/pull/42');
+    await expect(page.getByRole('heading', { name: 'Connect GitHub to start reviewing' })).toBeVisible();
+    await page.getByRole('button', { name: 'Connect GitHub' }).first().click();
+    const dialog = page.getByRole('dialog', { name: 'Connect to GitHub' });
+    await dialog.getByLabel('GitHub access token').fill('ghp_valid');
+    await dialog.getByRole('button', { name: 'Connect GitHub' }).click();
+    await expect(prHeading(page)).toBeVisible();
+    await expect(page).toHaveURL(prRoute);
+  });
+
+  test('an invalid PR number shows the load error', async ({ page }) => {
+    await mockGitHub(page);
+    await page.goto('/acme/app/pull/abc');
+    await expect(page.getByRole('alert')).toContainText('does not identify a pull request');
   });
 });
 
@@ -248,7 +316,7 @@ test.describe('keyboard shortcuts', () => {
   test('moves through inbox rows and focuses search', async ({ page }) => {
     await mockGitHub(page);
     await page.goto('/');
-    const rows = page.getByRole('main').locator('button[title^="Review "]');
+    const rows = page.getByRole('main').locator('a[title^="Review "]');
     await expect(rows.first()).toBeVisible();
     // Inbox sections load independently, so later ones can shift row indexes until every request settles.
     await page.waitForLoadState('networkidle');
@@ -312,11 +380,12 @@ test.describe('keyboard shortcuts', () => {
     await page.keyboard.press('r');
     const review = page.getByRole('dialog', { name: 'Submit your review' });
     await expect(review).toBeVisible();
-    await page.keyboard.press('j');
+    await expect(review.getByRole('textbox')).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(review).toHaveCount(0);
     await page.keyboard.press('ControlOrMeta+K');
     await expect(page.getByRole('dialog', { name: 'Open a pull request' })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'GitHub pull request URL' })).toBeFocused();
   });
 });
 
@@ -378,10 +447,21 @@ test.describe('sequence shortcuts', () => {
       await expect(dialog.getByRole('textbox')).toBeFocused();
     });
 
-  test('r then y approves immediately', async ({ page }) => {
+  test('r then y approves immediately and holds navigation until GitHub answers', async ({ page }) => {
+    let release = () => {};
+    const gate = new Promise<void>(resolve => (release = resolve));
+    await page.route('https://api.github.com/repos/acme/app/pulls/42/reviews', async route => {
+      if (route.request().method() === 'POST') await gate;
+      await route.fallback();
+    });
     await page.keyboard.press('r');
     await page.keyboard.press('y');
+    await expect(page.getByRole('button', { name: 'Review home' })).toBeDisabled();
+    await page.keyboard.press('g');
+    await page.keyboard.press('i');
+    release();
     await expect(page.getByRole('status').getByText('Approval submitted to GitHub.')).toBeVisible();
+    await expect(page).toHaveURL(/\/acme\/app\/pull\/42$/);
   });
 
   test('r then c focuses the conversation comment box', async ({ page }) => {
@@ -400,6 +480,7 @@ test.describe('sequence shortcuts', () => {
     await page.keyboard.press('g');
     await page.keyboard.press('i');
     await expect(page.getByRole('heading', { name: 'Inbox.' })).toBeVisible();
+    await expect(page).toHaveURL(/\/$/);
   });
 
   for (const [direction, number] of [
@@ -410,6 +491,7 @@ test.describe('sequence shortcuts', () => {
       const request = page.waitForRequest(new RegExp(`/repos/acme/app/pulls/${number}$`));
       await page.keyboard.press(`Shift+ControlOrMeta+Arrow${direction}`);
       await request;
+      await expect(page).toHaveURL(new RegExp(`/acme/app/pull/${number}$`));
     });
 });
 
@@ -490,43 +572,53 @@ test.describe('details panel', () => {
     await expect.poll(() => lastWrite(fake, '/repos/acme/app/pulls/42/merge')).toMatchObject({ merge_method: 'squash' });
   });
 
-  test('queues auto-merge while GitHub is still computing mergeability, then turns it off from the toggle', async ({ page }) => {
-    const fake = await mockGitHub(page, { mergeStates: ['unknown'] });
+  test('a blocked pull request offers no merge methods, only auto-merge from the switch', async ({ page }) => {
+    const fake = await mockGitHub(page, { mergeStates: ['blocked'] });
     await openPR(page);
-    await page.getByRole('button', { name: 'Merge', exact: true }).click();
+    const notReady = page.getByRole('button', { name: 'Not ready to merge' });
+    await expect(notReady).toHaveAttribute('title', 'This PR needs more approvals');
+    await notReady.click();
     const menu = page.getByRole('menu', { name: 'Merge options' });
-    await menu.getByRole('menuitem', { name: 'Squash and merge' }).click();
-    await menu.getByRole('menuitem', { name: 'Confirm squash and merge' }).click();
-    await expect(page.getByText('Auto-merge enabled. GitHub will merge once requirements pass.')).toBeVisible();
-    expect(lastWrite(fake, '/repos/acme/app/pulls/42/merge')).toBeUndefined();
+    await expect(menu.getByRole('menuitem')).toHaveText(['Open in GitHub']);
+    await expect(menu).toContainText('Turn on auto-merge to merge once requirements pass.');
+    await notReady.click();
+    const toggle = page.getByRole('switch', { name: 'Auto-merge' });
+    await toggle.click();
     await expect
       .poll(() => lastWrite(fake, 'EnablePullRequestAutoMerge'))
       .toEqual({ input: { pullRequestId: 'PR42', mergeMethod: 'SQUASH', expectedHeadOid: HEAD } });
-    const toggle = page.getByRole('switch', { name: 'Auto-merge' });
     await expect(toggle).toBeChecked();
     await toggle.click();
     await expect.poll(() => fake.writes.at(-1)?.operation).toBe('DisablePullRequestAutoMerge');
     await expect(toggle).not.toBeChecked();
+    expect(lastWrite(fake, '/repos/acme/app/pulls/42/merge')).toBeUndefined();
   });
 
-  test('picks up mergeability that GitHub finishes computing, without a manual refresh', async ({ page }) => {
+  for (const approved of [true, false])
+    test(`${approved ? 'offers' : 'withholds'} merge methods while GitHub keeps computing mergeability on ${approved ? 'an approved' : 'an unapproved'} PR`, async ({
+      page,
+    }) => {
+      const fake = await mockGitHub(page, { mergeStates: ['unknown'], approved });
+      await openPR(page);
+      await page.getByRole('button', { name: approved ? 'Merge' : 'Not ready to merge', exact: true }).click();
+      const menu = page.getByRole('menu', { name: 'Merge options' });
+      if (!approved) {
+        await expect(menu.getByRole('menuitem')).toHaveText(['Open in GitHub']);
+        await expect(menu).toContainText('This PR needs more approvals');
+        return;
+      }
+      await menu.getByRole('menuitem', { name: 'Squash and merge' }).click();
+      await menu.getByRole('menuitem', { name: 'Confirm squash and merge' }).click();
+      await expect.poll(() => lastWrite(fake, '/repos/acme/app/pulls/42/merge')).toMatchObject({ merge_method: 'squash', sha: HEAD });
+    });
+
+  test('offers merge methods once GitHub finishes computing mergeability, without a manual refresh', async ({ page }) => {
     await mockGitHub(page, { mergeStates: ['unknown', 'clean'] });
     await openPR(page);
-    await page.getByRole('button', { name: 'Merge', exact: true }).click();
-    const merge = page.getByRole('menu', { name: 'Merge options' }).getByRole('menuitem', { name: 'Squash and merge' });
-    await expect(merge).toHaveAttribute('title', 'GitHub will merge this once required checks and reviews pass.');
-    await expect(merge).not.toHaveAttribute('title');
-  });
-
-  test('Merge falls back to merging directly when GitHub refuses auto-merge on a clean pull request', async ({ page }) => {
-    const fake = await mockGitHub(page, { mergeStates: ['unknown'], autoMergeClean: true });
-    await openPR(page);
-    await page.getByRole('button', { name: 'Merge', exact: true }).click();
+    await page.getByRole('button', { name: 'Not ready to merge' }).click();
     const menu = page.getByRole('menu', { name: 'Merge options' });
-    await menu.getByRole('menuitem', { name: 'Squash and merge' }).click();
-    await menu.getByRole('menuitem', { name: 'Confirm squash and merge' }).click();
-    await expect.poll(() => lastWrite(fake, '/repos/acme/app/pulls/42/merge')).toMatchObject({ merge_method: 'squash' });
-    await expect(page.getByText('Pull request merged')).toBeVisible();
+    await expect(menu.getByRole('menuitem', { name: 'Squash and merge' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Merge', exact: true })).toBeVisible();
   });
 
   test('the auto-merge toggle asks for Merge when the pull request is already clean', async ({ page }) => {
@@ -541,7 +633,6 @@ test.describe('details panel', () => {
   for (const [name, steps, path, method, body] of [
     ['adds a label', ['Edit labels', 'bug'], '/repos/acme/app/issues/42/labels', 'PUT', { labels: ['retry', 'bug'] }],
     ['removes a label', ['Remove label retry'], '/repos/acme/app/issues/42/labels', 'PUT', { labels: [] }],
-    ['requests a reviewer', ['Request reviewer', 'dave'], reviewRequests, 'POST', { reviewers: ['dave'], team_reviewers: [] }],
     ['requests a team', ['Request reviewer', 'acme/frontend'], reviewRequests, 'POST', { reviewers: [], team_reviewers: ['frontend'] }],
     [
       'removes a review request',
@@ -574,6 +665,52 @@ test.describe('details panel', () => {
       await expect.poll(() => fake.writes.filter(write => write.path === path).at(-1)).toEqual({ method, path, body });
       await expect(page.getByRole('status').filter({ hasText: /Labels updated|Review request/ })).toBeVisible();
     });
+
+  test('the reviewer picker finds people by name on GitHub, reuses a complete prefix, and requests the match', async ({ page }) => {
+    const fake = await mockGitHub(page);
+    await openPR(page);
+    const panel = page.getByRole('complementary', { name: 'Pull request details' });
+    await panel.getByRole('button', { name: 'Request reviewer', exact: true }).click();
+    const picker = panel.getByRole('dialog', { name: 'Request reviewer' });
+    const dave = picker.getByRole('button', { name: 'dave', exact: true });
+    await expect(picker.getByRole('button', { name: 'carol', exact: true })).toBeVisible();
+    await expect(dave).toHaveCount(0);
+    const filter = picker.getByRole('textbox', { name: 'Filter: Request reviewer' });
+    await filter.fill('du');
+    await expect(dave).toContainText('Dave Dunn');
+    await expect(dave).toContainText('dave');
+    await filter.fill('dunn');
+    await page.waitForTimeout(500);
+    await expect(dave).toBeVisible();
+    expect(fake.peopleSearches).toEqual([{ kind: 'assignable', query: 'du', first: 20 }]);
+    await dave.click();
+    await expect.poll(() => lastWrite(fake, reviewRequests)).toEqual({ reviewers: ['dave'], team_reviewers: [] });
+  });
+
+  test('remembers people searches across reloads and forgets them on disconnect', async ({ page }) => {
+    const fake = await mockGitHub(page);
+    const stored = () => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('review.people.')));
+    const search = async () => {
+      const panel = page.getByRole('complementary', { name: 'Pull request details' });
+      await panel.getByRole('button', { name: 'Request reviewer', exact: true }).click();
+      await panel.getByRole('textbox', { name: 'Filter: Request reviewer' }).fill('du');
+      await expect(panel.getByRole('button', { name: 'dave', exact: true })).toContainText('Dave Dunn');
+    };
+    await openPR(page);
+    await search();
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('review.people.acme/app') ?? '')).toContain('assignable:du');
+    await page.reload();
+    await page.locator('.review-layout[aria-busy="false"]').waitFor();
+    await search();
+    await page.waitForTimeout(500);
+    expect(fake.peopleSearches).toHaveLength(1);
+    await page
+      .getByRole('button', { name: /reviewer/ })
+      .first()
+      .click();
+    await page.getByRole('button', { name: 'Disconnect and clear token' }).click();
+    expect(await stored()).toEqual([]);
+  });
 
   test('shows the succinct Information section when the side panel is hidden', async ({ page }) => {
     await page.setViewportSize({ width: 1100, height: 800 });
@@ -1052,7 +1189,7 @@ test.describe('inline comments and reviews', () => {
     ['merged', 'merged 2 commits into'],
     ['closed', 'wanted to merge 2 commits into'],
   ] as const)
-    test(`replies to review threads on a ${prState} pull request`, async ({ page }) => {
+    test(`replies to threads and adds single line comments on a ${prState} pull request`, async ({ page }) => {
       const fake = await mockGitHub(page, { prState });
       await openPR(page);
       await expect(page.locator('.pr-details')).toContainText(header);
@@ -1066,6 +1203,15 @@ test.describe('inline comments and reviews', () => {
         .poll(() => fake.writes.at(-1))
         .toMatchObject({ method: 'POST', path: '/repos/acme/app/pulls/42/comments/101/replies', body: { body: 'Reply after close' } });
       await expect(page.getByText('Reply posted to GitHub.')).toBeVisible();
+      await lineNumber(page, 'src/worker.py', 10, 'addition').click();
+      const form = page.getByRole('group', { name: 'Line comment' });
+      await composer(page).fill('Note after close');
+      await expect(form.getByRole('alert')).toHaveCount(0);
+      await expect(form.getByRole('button', { name: 'Start a review' })).toHaveCount(0);
+      await form.getByRole('button', { name: 'Add single comment' }).click();
+      await expect
+        .poll(() => lastWrite(fake, '/repos/acme/app/pulls/42/comments'))
+        .toMatchObject({ body: 'Note after close', path: 'src/worker.py', line: 10, side: 'RIGHT' });
     });
 
   test('resolves and reopens threads', async ({ page }) => {
@@ -1202,6 +1348,58 @@ test('commit history opens a single commit read-only and returns to all commits'
     .and(page.getByTitle(/Restore the full PR diff/))
     .click();
   await expect(page.locator('article')).toHaveCount(6);
+});
+
+test.describe('mentions', () => {
+  const box = (page: Page) => page.getByRole('textbox', { name: 'Leave a comment' });
+  const openConversation = async (page: Page) => {
+    await openPR(page);
+    await page.getByRole('button', { name: /^Conversation/ }).click();
+  };
+
+  test('@ completes people in the conversation box, Escape dismisses, and the mention is posted', async ({ page }) => {
+    const fake = await mockGitHub(page);
+    await openConversation(page);
+    const list = page.getByRole('listbox', { name: 'Mention suggestions' });
+    await box(page).fill('Thanks @ali');
+    await expect(list.getByRole('option', { name: 'Alice Liddell alice' })).toBeVisible();
+    await expect(list.getByRole('option', { name: 'Alice Liddell alice' })).toHaveAttribute('aria-selected', 'true');
+    await expect(box(page)).toHaveAttribute('aria-activedescendant', /option-0$/);
+    await box(page).press('ArrowDown');
+    await box(page).press('Enter');
+    await expect(box(page)).toHaveValue('Thanks @alice ');
+    await expect(box(page)).toBeFocused();
+    await expect(list).toBeHidden();
+    await box(page).pressSequentially('and @bo');
+    await expect(list.getByRole('option', { name: /bob/ })).toBeVisible();
+    await box(page).press('Escape');
+    await expect(list).toBeHidden();
+    await expect(box(page)).toHaveValue('Thanks @alice and @bo');
+    await page.getByRole('button', { name: 'Comment', exact: true }).click();
+    await expect.poll(() => lastWrite(fake, '/repos/acme/app/issues/42/comments')).toEqual({ body: 'Thanks @alice and @bo' });
+    expect(fake.peopleSearches).toContainEqual({ kind: 'mentionable', query: 'ali', first: 10 });
+  });
+
+  test('a rendered @mention links to the profile and its hover card loads the name once', async ({ page }) => {
+    const fake = await mockGitHub(page);
+    await openConversation(page);
+    await box(page).fill('Thanks @alice for the retries');
+    await page.getByRole('button', { name: 'Comment', exact: true }).click();
+    const mention = page.getByRole('link', { name: '@alice', exact: true });
+    await expect(mention).toHaveAttribute('href', 'https://github.com/alice');
+    const card = page.getByRole('tooltip');
+    for (let hover = 0; hover < 2; hover++) {
+      await mention.hover();
+      await expect(card).toContainText('Alice Liddell');
+      await page.mouse.move(0, 0);
+      await expect(card).toBeHidden();
+    }
+    await mention.focus();
+    await expect(card).toContainText('Alice Liddell');
+    await page.keyboard.press('Escape');
+    await expect(card).toBeHidden();
+    expect(fake.userReads).toEqual(['alice']);
+  });
 });
 
 test.describe('editing your comments', () => {

@@ -152,7 +152,7 @@ export default defineComponent(
             <strong>Changed files</strong>
             <span class="text-xs text-muted">{props.files.length}</span>
             <div class="spacer" />
-            <div class={`popover-anchor ${styles['file-filter-anchor']}`}>
+            <div class="popover-anchor">
               <button
                 ref={filterButton}
                 type="button"

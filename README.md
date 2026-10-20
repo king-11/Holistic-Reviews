@@ -11,7 +11,7 @@ pnpm install
 pnpm dev
 ```
 
-Open the local Nuxt address (http://localhost:5173). The initial workspace is a clearly labeled demo; no demo actions are sent to GitHub.
+Open the local Nuxt address (http://localhost:5173) and connect GitHub to see your inbox. Each pull request has its own page at `/<owner>/<repo>/pull/<number>`, mirroring its GitHub URL, so PRs can be bookmarked, shared, or opened in a new tab.
 
 ## Connect GitHub
 
@@ -66,4 +66,4 @@ pnpm build
 
 `pnpm fmt` formats with Oxfmt; `pnpm lint` runs Oxlint. Tests use Node's built-in runner and mocked GitHub requests; they do not post anything to GitHub.
 
-`pnpm build` runs `nuxt generate` with `ssr: false`, writing a static single-page app to `.output/public/`; it needs no server. GitHub calls stay in the browser because they need the user's token, so there is nothing to prerender per user; a future webhook or hosted mode would be a separate server alongside this static app. All review state except display preferences and the session token is in memory or on GitHub.
+`pnpm build` runs `nuxt generate` with `ssr: false`, writing a static single-page app to `.output/public/`; it needs no server. GitHub calls stay in the browser because they need the user's token, so there is nothing to prerender per user; a future webhook or hosted mode would be a separate server alongside this static app. Only `/` is generated, so for deep links such as PR pages the static host must serve the SPA fallback for unknown paths: `nuxt generate` emits `200.html` and `404.html`, both copies of the same app shell as `index.html` (for example, configure the host's single-page fallback to `200.html`, or rely on hosts that serve `404.html` for missing paths, such as GitHub Pages). All review state except display preferences and the session token is in memory or on GitHub.

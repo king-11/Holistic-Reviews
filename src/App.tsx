@@ -1,217 +1,49 @@
-import { computed, defineComponent, onMounted, onUnmounted, shallowRef } from 'vue';
+import { defineComponent, onMounted, onUnmounted, shallowRef } from 'vue';
 import { AnimatePresence } from 'motion-v';
 import { ArrowRight, Check, ChevronDown, Command, Keyboard, KeyRound, LogOut, Palette, Search, ShieldCheck, X } from '@lucide/vue';
-import { GitHub, errorMessage, mergeabilityPending, parsePRUrl, type PRRef, type TokenInfo, type Workspace } from './github';
+import { navigateTo, useRouter } from 'nuxt/app';
 import AuthDialog from './AuthDialog';
 import { comboKeys, eventCombo, modalOpen, shortcutGroups } from './shortcuts';
-import Inbox from './Inbox';
-import ReviewWorkspace from './ReviewWorkspace';
-import { type DiffSettings } from './DiffView';
-import { Avatar, Github, IconButton, Loader, Modal, Spinner, inputValue, tryStorage, useTheme, Dismiss } from './ui';
-import { isTheme, themes } from './themes';
+import { Avatar, Github, IconButton, Modal, Spinner, inputValue, useTheme, Dismiss } from './ui';
+import { themes } from './themes';
+import {
+  api,
+  authOpen,
+  changeSettings,
+  connect,
+  disconnect,
+  info,
+  mutationBusy,
+  openDialog,
+  openError,
+  openPR,
+  prUrl,
+  restoreSession,
+  restoring,
+  settings,
+  showOpenDialog,
+  storageNotice,
+} from './session';
 import '@fontsource-variable/geist';
 import '@fontsource-variable/geist-mono';
 import './styles.css';
 import styles from './App.module.css';
 import logoUrl from './assets/hermes-logo.png';
 
-const defaults: DiffSettings = {
-  layout: 'unified',
-  theme: 'paper',
-  backgrounds: true,
-  lineNumbers: true,
-  wordWrap: false,
-  indicators: 'classic',
-  commentPlacement: 'inline',
-  hideBotComments: false,
-};
-// Blocked browser storage must not break the app; state then stays in memory.
-function readSettings(): DiffSettings {
-  try {
-    const saved = JSON.parse(localStorage.getItem('review.preferences') || '{}');
-    return {
-      layout: ['split', 'unified'].includes(saved.layout) ? saved.layout : defaults.layout,
-      theme: isTheme(saved.theme) ? saved.theme : defaults.theme,
-      backgrounds: typeof saved.backgrounds === 'boolean' ? saved.backgrounds : defaults.backgrounds,
-      lineNumbers: typeof saved.lineNumbers === 'boolean' ? saved.lineNumbers : defaults.lineNumbers,
-      wordWrap: typeof saved.wordWrap === 'boolean' ? saved.wordWrap : defaults.wordWrap,
-      indicators: ['classic', 'bars', 'none'].includes(saved.indicators) ? saved.indicators : defaults.indicators,
-      commentPlacement: saved.commentPlacement === 'below' ? 'below' : 'inline',
-      hideBotComments: saved.hideBotComments === true,
-    };
-  } catch {
-    return defaults;
-  }
-}
-
-export default defineComponent(() => {
-  const token = shallowRef('');
-  const info = shallowRef<TokenInfo | null>(null);
-  const page = shallowRef<'inbox' | 'review'>('inbox');
-  const workspace = shallowRef<Workspace | null>(null);
-  const authOpen = shallowRef(false);
-  const openDialog = shallowRef(false);
+// The shell stays mounted across routes; the current page renders in its default slot once GitHub is connected.
+export default defineComponent((_, { slots }) => {
   const shortcutsOpen = shallowRef(false);
   const accountOpen = shallowRef(false);
   const themeOpen = shallowRef(false);
-  const settings = shallowRef<DiffSettings>(readSettings());
-  const prUrl = shallowRef('');
-  const openError = shallowRef('');
-  const loading = shallowRef(false);
-  const restoring = shallowRef(false);
-  const error = shallowRef('');
-  const mutationBusy = shallowRef(false);
-  const storageNotice = shallowRef('');
-  const api = computed(() => (token.value ? new GitHub(token.value) : null));
-  let controller: AbortController | undefined;
-  let loadVersion = 0;
-  let mergeTimer: ReturnType<typeof setTimeout> | undefined;
-  const mergeRecheckDelays = [2000, 4000, 8000, 16000, 30000];
-  // Only the PR is refetched; GitHub finishes computing mergeability in the background.
-  function recheckMergeability(ref: PRRef, version: number, attempt = 0) {
-    clearTimeout(mergeTimer);
-    const delay = mergeRecheckDelays[attempt];
-    if (delay === undefined || !workspace.value || !mergeabilityPending(workspace.value.pr)) return;
-    mergeTimer = setTimeout(async () => {
-      const client = api.value;
-      if (!client || version !== loadVersion) return;
-      try {
-        const pr = await client.fresh().pullRequest(ref);
-        if (version !== loadVersion || !workspace.value) return;
-        workspace.value = { ...workspace.value, pr };
-        recheckMergeability(ref, version, attempt + 1);
-      } catch {
-        return;
-      }
-    }, delay);
-  }
   useTheme(() => settings.value.theme);
-  const changeSettings = (value: DiffSettings) => {
-    settings.value = value;
-    tryStorage(() => localStorage.setItem('review.preferences', JSON.stringify(value)));
-  };
-  function back() {
-    if (mutationBusy.value) return;
-    controller?.abort();
-    clearTimeout(mergeTimer);
-    loadVersion++;
-    page.value = 'inbox';
-    workspace.value = null;
-    error.value = '';
-    loading.value = false;
-    window.history.replaceState(null, '', window.location.pathname);
-  }
-  async function openPR(url: string, refresh = false) {
-    if (mutationBusy.value) return;
-    let ref;
-    try {
-      ref = parsePRUrl(url);
-    } catch (error) {
-      openError.value = errorMessage(error, 'Invalid URL.');
-      return;
-    }
-    openDialog.value = false;
-    openError.value = '';
-    error.value = '';
-    // connect() opens the remembered PR once a token is in place.
-    const live = api.value;
-    if (!live) {
-      window.history.replaceState(null, '', `${window.location.pathname}?pr=${encodeURIComponent(url)}`);
-      authOpen.value = true;
-      return;
-    }
-    controller?.abort();
-    controller = new AbortController();
-    const version = ++loadVersion;
-    page.value = 'review';
-    if (!refresh) {
-      workspace.value = null;
-      loading.value = true;
-    }
-    // A refresh follows a write or a manual click, so it must not reuse a cached read.
-    const client = refresh ? live.fresh() : live;
-    try {
-      const result = await client.workspace(ref, controller.signal, value => {
-        if (version !== loadVersion) return;
-        workspace.value = value;
-        loading.value = false;
-      });
-      if (version !== loadVersion) return;
-      workspace.value = result;
-      recheckMergeability(ref, version);
-      window.history.replaceState(
-        null,
-        '',
-        `${window.location.pathname}?pr=${encodeURIComponent(`https://github.com/${ref.owner}/${ref.repo}/pull/${ref.number}`)}`,
-      );
-    } catch (failure) {
-      if (version === loadVersion && !controller.signal.aborted) {
-        workspace.value = null;
-        error.value = errorMessage(failure, 'Unable to load the pull request.');
-      }
-    } finally {
-      if (version === loadVersion) loading.value = false;
-    }
-  }
-  function connect(value: string, details: TokenInfo) {
-    controller?.abort();
-    loadVersion++;
-    {
-      token.value = value;
-      info.value = details;
-      authOpen.value = false;
-      accountOpen.value = false;
-    }
-    workspace.value = null;
-    page.value = 'inbox';
-    loading.value = false;
-    error.value = '';
-    if (
-      !tryStorage(() => {
-        sessionStorage.setItem('review.github-token', value);
-        return true;
-      })
-    )
-      storageNotice.value = 'Browser storage is unavailable. Your token is kept in memory only.';
-    const desired = new URLSearchParams(window.location.search).get('pr');
-    if (desired) void openPR(desired);
-  }
-  function disconnect() {
-    if (mutationBusy.value) return;
-    controller?.abort();
-    loadVersion++;
-    tryStorage(() => sessionStorage.removeItem('review.github-token'));
-    {
-      token.value = '';
-      info.value = null;
-      accountOpen.value = false;
-    }
-    back();
-  }
+  // Leaving mid-write would drop the response that reconciles local review state, matching the disabled header controls.
+  onUnmounted(useRouter().beforeEach(() => !mutationBusy.value));
   onMounted(() => {
-    const saved = tryStorage(() => sessionStorage.getItem('review.github-token')) || '';
-    if (saved) {
-      restoring.value = true;
-      const restore = new AbortController();
-      controller = restore;
-      new GitHub(saved)
-        .validate(restore.signal)
-        .then(details => {
-          if (!restore.signal.aborted) connect(saved, details);
-        })
-        .catch(error => {
-          if (restore.signal.aborted) return;
-          tryStorage(() => sessionStorage.removeItem('review.github-token'));
-          storageNotice.value = errorMessage(error, 'Reconnect to GitHub.');
-        })
-        .finally(() => (restoring.value = false));
-    }
+    restoreSession();
     const keyHandler = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k' && !mutationBusy.value) {
         event.preventDefault();
-        prUrl.value = '';
-        openError.value = '';
-        openDialog.value = true;
+        showOpenDialog();
       }
       if (eventCombo(event, modalOpen()) === '?') {
         event.preventDefault();
@@ -223,11 +55,7 @@ export default defineComponent(() => {
       }
     };
     document.addEventListener('keydown', keyHandler);
-    onUnmounted(() => {
-      controller?.abort();
-      clearTimeout(mergeTimer);
-      document.removeEventListener('keydown', keyHandler);
-    });
+    onUnmounted(() => document.removeEventListener('keydown', keyHandler));
   });
   const connectButton = (variant: string) => (
     <button
@@ -252,7 +80,7 @@ export default defineComponent(() => {
         <button
           class="brand"
           title="Return to your pull request inbox"
-          onClick={back}
+          onClick={() => void navigateTo('/')}
           disabled={mutationBusy.value}
           aria-label="Review home"
         >
@@ -267,13 +95,7 @@ export default defineComponent(() => {
           <button
             class="quick-open"
             title="Open a GitHub pull request by URL (⌘K or Ctrl+K)"
-            onClick={() => {
-              if (!mutationBusy.value) {
-                prUrl.value = '';
-                openError.value = '';
-                openDialog.value = true;
-              }
-            }}
+            onClick={showOpenDialog}
             disabled={mutationBusy.value}
           >
             <Search size={14} />
@@ -330,7 +152,7 @@ export default defineComponent(() => {
                   disabled={mutationBusy.value}
                   onClick={() => (accountOpen.value = !accountOpen.value)}
                 >
-                  <Avatar login={info.value!.user.login} small />
+                  <Avatar login={info.value!.user.login} src={info.value!.user.avatar_url} small />
                   <span>{info.value!.user.login}</span>
                   <ChevronDown size={12} />
                 </button>
@@ -367,7 +189,10 @@ export default defineComponent(() => {
                         <button
                           class={`${styles['menu-option']} ${styles['disconnect-button']}`}
                           title="Disconnect and remove the token from this browser session"
-                          onClick={disconnect}
+                          onClick={() => {
+                            accountOpen.value = false;
+                            disconnect();
+                          }}
                         >
                           <LogOut size={15} />
                           Disconnect and clear token
@@ -400,62 +225,8 @@ export default defineComponent(() => {
           <p>Your review requests, authored PRs, and drafts load straight from GitHub.</p>
           {connectButton('primary')}
         </main>
-      ) : page.value === 'review' ? (
-        <>
-          {!loading.value ? (
-            <>
-              {workspace.value ? (
-                <>
-                  <ReviewWorkspace
-                    workspace={workspace.value!}
-                    api={api.value}
-                    info={info.value}
-                    settings={settings.value}
-                    onSettings={changeSettings}
-                    onOpen={url => void openPR(url)}
-                    onBack={back}
-                    onRefresh={() => void openPR(workspace.value!.pr.html_url, true)}
-                    onBusy={value => {
-                      mutationBusy.value = value;
-                    }}
-                  />
-                </>
-              ) : (
-                <main class="empty-state">
-                  <Github size={35} />
-                  <h2>Couldn’t open this pull request</h2>
-                  <p class="load-error" role="alert">
-                    {error.value}
-                  </p>
-                  <button class="button" title="Return to your pull request inbox" onClick={back}>
-                    Back to inbox
-                  </button>
-                  <button class="text-button" title="Enter a different GitHub pull request URL" onClick={() => (openDialog.value = true)}>
-                    Try another URL
-                  </button>
-                </main>
-              )}
-            </>
-          ) : (
-            <main class="workspace-loading">
-              <Loader label="Loading pull request…" />
-              <button class="button small" title="Return to your inbox while this PR is loading" onClick={back}>
-                Back to inbox
-              </button>
-            </main>
-          )}
-        </>
       ) : (
-        <Inbox
-          api={api.value}
-          info={info.value}
-          onOpen={url => void openPR(url)}
-          onOpenDialog={() => {
-            prUrl.value = '';
-            openError.value = '';
-            openDialog.value = true;
-          }}
-        />
+        slots.default?.()
       )}
       <AnimatePresence>
         {!!authOpen.value && <AuthDialog key="auth" onClose={() => (authOpen.value = false)} onConnect={connect} />}
@@ -469,7 +240,7 @@ export default defineComponent(() => {
             <form
               onSubmit={event => {
                 event.preventDefault();
-                void openPR(prUrl.value);
+                openPR(prUrl.value);
               }}
             >
               <label class="input-label" for="pr-url">

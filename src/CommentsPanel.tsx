@@ -183,7 +183,7 @@ export default defineComponent(
                   </div>
                   <div class="comments-panel-conversation">
                     <div class="thread-author">
-                      <Avatar login={entry.comment.user.login} small />
+                      <Avatar login={entry.comment.user.login} src={entry.comment.user.avatar_url} small />
                       <strong>{entry.comment.user.login}</strong>
                       <span>{timeAgo(entry.comment.created_at)}</span>
                     </div>

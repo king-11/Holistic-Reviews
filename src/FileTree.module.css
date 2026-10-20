@@ -10,9 +10,6 @@
 .pb-2 {
   padding-bottom: 8px;
 }
-.file-filter-anchor {
-  position: static;
-}
 .status-filter-option {
   display: flex;
   align-items: center;

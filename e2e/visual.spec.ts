@@ -28,7 +28,7 @@ for (const theme of ['paper', 'pierre-light', 'solarized-light'] as const) {
 
     test('inbox', async ({ page }) => {
       await page.goto('/');
-      await page.getByRole('button', { name: /Improve worker retries/ }).waitFor();
+      await page.getByRole('link', { name: /Improve worker retries/ }).waitFor();
       await settle(page);
       await expect(page).toHaveScreenshot(`inbox-${theme}.png`);
     });

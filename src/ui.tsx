@@ -127,7 +127,8 @@ export const Modal = defineComponent(
     let previous: HTMLElement | null = null;
     onMounted(() => {
       previous = document.activeElement as HTMLElement;
-      node()?.querySelector<HTMLElement>('input, textarea, button')?.focus();
+      // The close button comes first in the markup; a dialog with a field should open ready to type.
+      (node()?.querySelector<HTMLElement>('input, textarea') ?? node()?.querySelector<HTMLElement>('button'))?.focus();
     });
     onUnmounted(() => previous?.focus());
     const keydown = (event: KeyboardEvent) => {
@@ -219,8 +220,12 @@ export function Spinner(props: { text?: string }) {
   );
 }
 
+// GitHub serves full-size avatars by default; asking for a small one keeps lists light.
+const sizedAvatar = (src: string) =>
+  src.startsWith('https://avatars.githubusercontent.com/') ? `${src}${src.includes('?') ? '&' : '?'}s=64` : src;
 export function Avatar(props: { login: string; small?: boolean; src?: string }) {
-  if (props.src) return <img class={`avatar ${props.small ? 'small' : ''}`} src={props.src} alt={props.login} title={props.login} />;
+  if (props.src)
+    return <img class={`avatar ${props.small ? 'small' : ''}`} src={sizedAvatar(props.src)} alt={props.login} title={props.login} />;
   return (
     <span
       title={props.login}
@@ -232,13 +237,17 @@ export function Avatar(props: { login: string; small?: boolean; src?: string }) 
   );
 }
 
-// Storage can be unavailable (private mode, quota); preferences must never break the app.
-export function tryStorage<T>(action: () => T) {
-  try {
-    return action();
-  } catch {
-    return undefined;
-  }
+// People rows lead with the name and mute the login, as GitHub's pickers do.
+export function PersonLabel(props: { login: string; name?: string | null; avatar?: string }) {
+  return (
+    <>
+      <Avatar login={props.login} src={props.avatar || undefined} small />
+      <span class="person-label">
+        <span>{props.name || props.login}</span>
+        {!!props.name && <span class="muted">{props.login}</span>}
+      </span>
+    </>
+  );
 }
 
 export const fullDate = (date: string) => new Date(date).toLocaleString(undefined, { dateStyle: 'long', timeStyle: 'long' });

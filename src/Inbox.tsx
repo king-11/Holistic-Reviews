@@ -1,5 +1,4 @@
-import { computed, defineComponent, onUnmounted, shallowRef, watch } from 'vue';
-import { AnimatePresence } from 'motion-v';
+import { computed, defineComponent, onActivated, onDeactivated, onUnmounted, shallowRef, watch } from 'vue';
 import {
   ArrowDownWideNarrow,
   ArrowUpRight,
@@ -118,7 +117,6 @@ const effectiveMerged = (repos: string[], filter: MergedFilter): MergedFilter =>
 type Props = {
   api: GitHub;
   info: TokenInfo;
-  onOpen: (url: string) => void;
   onOpenDialog: () => void;
 };
 
@@ -131,8 +129,13 @@ export default defineComponent(
     const move = (delta: 1 | -1) =>
       step([...document.querySelectorAll<HTMLElement>('.pr-row')], document.activeElement as HTMLElement, delta)?.focus();
     const keydown = createShortcuts(() => ({ '/': () => search.value?.focus(), j: () => move(1), k: () => move(-1) }), modalOpen);
-    document.addEventListener('keydown', keydown);
-    onUnmounted(() => document.removeEventListener('keydown', keydown));
+    // The inbox stays alive behind a PR page, so its keys must stop while it is hidden; re-adding the same listener is a no-op.
+    const listen = () => document.addEventListener('keydown', keydown);
+    const unlisten = () => document.removeEventListener('keydown', keydown);
+    listen();
+    onActivated(listen);
+    onDeactivated(unlisten);
+    onUnmounted(unlisten);
 
     const selected = shallowRef<string[]>(preferences.repos ?? []);
     // Until a first unfiltered load picks the most-used repository, the choice is not saved, so it can still default.
@@ -342,9 +345,7 @@ export default defineComponent(
       <div class="inbox-layout">
         <aside class="app-sidebar">
           <div class={`${styles['workspace-label']}`}>
-            <span
-              class={`grid place-items-center w-7 h-7 bg-accent-soft text-indigo ${styles['font-display']} text-xs rounded-lg border ${styles['border-border-strong']}`}
-            >
+            <span class={`grid place-items-center w-7 h-7 bg-accent-soft text-indigo ${styles['font-display']} text-xs rounded-lg border`}>
               {props.info.user.login.slice(0, 1).toUpperCase()}
             </span>
             <span>
@@ -527,7 +528,7 @@ export default defineComponent(
                   {sortMenu.value && (
                     <>
                       <Dismiss onClose={() => (sortMenu.value = false)} />
-                      <div class={`popover ${styles['sort-popover']}`} role="menu" aria-label="Sort by">
+                      <div class="popover" role="menu" aria-label="Sort by">
                         <div class="popover-title">Sort by</div>
                         {sortOptions.map(option => {
                           const checked = sortChoice.value === option.value;
@@ -636,17 +637,9 @@ export default defineComponent(
                         ) : (
                           <>
                             {shown.length ? (
-                              <AnimatePresence initial={false}>
-                                {shown.map(item => (
-                                  <InboxRow
-                                    key={item.id}
-                                    item={item}
-                                    group={section.group}
-                                    viewerLogin={props.info.user.login}
-                                    onOpen={props.onOpen}
-                                  />
-                                ))}
-                              </AnimatePresence>
+                              shown.map(item => (
+                                <InboxRow key={item.id} item={item} group={section.group} viewerLogin={props.info.user.login} />
+                              ))
                             ) : (
                               <div class={`${styles['group-empty']}`}>
                                 <Check size={16} />
@@ -696,5 +689,5 @@ export default defineComponent(
       </div>
     );
   },
-  { props: ['api', 'info', 'onOpen', 'onOpenDialog'] },
+  { props: ['api', 'info', 'onOpenDialog'] },
 );

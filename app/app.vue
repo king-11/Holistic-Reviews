@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import App from '../src/App';
 
-const home = () => window.location.assign(window.location.pathname);
+const home = () => window.location.assign('/');
 </script>
 
 <template>
   <NuxtErrorBoundary>
-    <App />
+    <App>
+      <NuxtPage :keepalive="{ include: ['InboxPage'] }" />
+    </App>
     <template #error="{ error, clearError }">
       <main class="empty-state">
         <h1>Something went wrong</h1>

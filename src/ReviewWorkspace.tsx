@@ -1,4 +1,4 @@
-import { computed, defineComponent, onMounted, onUnmounted, shallowRef, watch, watchEffect } from 'vue';
+import { computed, defineComponent, onMounted, onUnmounted, provide, shallowRef, watch, watchEffect } from 'vue';
 import { createShortcuts, modalOpen, step } from './shortcuts';
 import { AnimatePresence, motion } from 'motion-v';
 import { drop, rise } from './motion';
@@ -51,7 +51,7 @@ import {
 } from './github';
 import FileTree from './FileTree';
 import Checks from './Checks';
-import DetailsPanel, { Information, MergeControls, MoreMenu, ReviewIcon, reviewerStates, useDetails, type Run } from './DetailsPanel';
+import DetailsPanel, { Information, MergeControls, MoreMenu, ReviewIcon, reviewApproved, useDetails, type Run } from './DetailsPanel';
 import DiffView, { type ContextLoader, type DiffSettings } from './DiffView';
 import {
   Avatar,
@@ -69,6 +69,8 @@ import {
   Dismiss,
 } from './ui';
 import Markdown from './MarkdownView';
+import MentionField from './MentionField';
+import { peopleDirectory, peopleKey } from './people';
 import { toggleViewedFile, verifiedContextLines } from './diff';
 import {
   commentEntries,
@@ -135,6 +137,20 @@ export default defineComponent(
     const reviews = mirror(() => props.workspace.reviews);
     const threads = mirror(() => props.workspace.reviewThreads);
     const draftComments = shallowRef<Comment[]>([]);
+    const people = computed(() => peopleDirectory(ref(), props.api));
+    provide(peopleKey, () => people.value);
+    // Everyone already on this PR is who reviewers and mentions most likely want, before any search.
+    watchEffect(() =>
+      people.value.seed(
+        [
+          pr().user,
+          ...(pr().requested_reviewers ?? []),
+          ...(pr().assignees ?? []),
+          ...[...comments.value, ...inlineComments.value, ...reviews.value].map(item => item.user),
+          viewer(),
+        ].map(user => ({ login: user.login, avatarUrl: user.avatar_url })),
+      ),
+    );
     const pending = computed(() => reviews.value.find(review => review.user.id === viewer().id && review.state === 'PENDING'));
     const stalePending = () => !!pending.value && pending.value?.commit_id !== pr().head.sha;
     const canReview = () => props.workspace.reviewsLoaded && pr().state === 'open';
@@ -181,7 +197,7 @@ export default defineComponent(
       acting.value = true;
       try {
         const result = await work(props.api);
-        showToast(typeof label === 'function' ? label(result) : label);
+        showToast(label);
         if (refresh) props.onRefresh();
         return result;
       } catch (failure) {
@@ -428,7 +444,7 @@ export default defineComponent(
       dialog.value = 'inline';
     }
     async function postInline(start = false) {
-      if (!inlineBody.value.trim() || !canReview() || stalePending()) return;
+      if (!inlineBody.value.trim() || !canReply() || (start && !pending.value && !canReview())) return;
       await action(async () => {
         if (selectedRange.value || comparing.value) throw new Error('Switch to All commits before adding a review comment.');
         const location = inlineLocation.value;
@@ -506,20 +522,15 @@ export default defineComponent(
     const saveBody = async () => {
       if (await run('Description updated', api => api.editPR(ref(), { body: bodyDraft.value ?? '' }))) bodyDraft.value = null;
     };
+    const approved = () => reviewApproved(pr(), reviews.value, props.workspace.onBehalfOf);
     const prStatus = () => {
       const current = pr();
       const checks = props.workspace.checks ?? [];
-      const states = reviewerStates(current, reviews.value, props.workspace.onBehalfOf).map(([, state]) => state);
       if (current.merged) return ['Merged', GitMerge, 'merged'] as const;
       if (current.state === 'closed') return ['Closed', GitPullRequestClosed, 'blocked'] as const;
       if (current.draft) return ['Draft', CircleX, 'blocked'] as const;
       if (checks.some(check => blockingStates.includes(check.state))) return ['Checks failed', CircleX, 'blocked'] as const;
-      if (
-        mergeReady(current) &&
-        !checks.some(check => check.state === 'pending') &&
-        states.includes('APPROVED') &&
-        !states.includes('CHANGES_REQUESTED')
-      )
+      if (mergeReady(current) && !checks.some(check => check.state === 'pending') && approved())
         return ['Ready to merge', CircleCheck, 'open'] as const;
       return ['Open', GitPullRequest, 'open'] as const;
     };
@@ -924,7 +935,7 @@ export default defineComponent(
       return (
         <div class="conversation-comment reveal" data-review-state={review.state}>
           <div class="comment-author">
-            <Avatar login={review.user.login} small />
+            <Avatar login={review.user.login} src={review.user.avatar_url} small />
             <strong>{review.user.id === viewer().id ? 'You' : review.user.login}</strong>
             {review.state === 'PENDING' ? <span class="pending-badge">Pending</span> : <ReviewIcon review={review.state} />}
             {!!review.submitted_at && <Timestamp date={review.submitted_at} />}
@@ -1021,6 +1032,7 @@ export default defineComponent(
                 prRef={ref()}
                 methods={props.workspace.mergeMethods ?? []}
                 autoMerge={!!props.workspace.autoMerge}
+                approved={approved()}
                 disabled={acting.value}
                 onRun={run}
               />
@@ -1084,7 +1096,7 @@ export default defineComponent(
                     })()}
                   </div>
                   <div class="pr-details">
-                    <Avatar login={pr().user.login} small />
+                    <Avatar login={pr().user.login} src={pr().user.avatar_url} small />
                     <strong>{pr().user.login}</strong>
                     <span>
                       {pr().merged ? 'merged' : pr().state === 'closed' ? 'wanted to merge' : 'wants to merge'} {pr().commits}{' '}
@@ -1231,13 +1243,13 @@ export default defineComponent(
                   </div>
                   {bodyDraft.value !== null ? (
                     <div class="description-editor">
-                      <textarea
+                      <MentionField
                         aria-label="Pull request description"
                         value={bodyDraft.value}
                         maxlength={65000}
                         disabled={busy.value}
-                        ref={focusOnce}
-                        onInput={e => (bodyDraft.value = inputValue(e))}
+                        inputRef={focusOnce}
+                        onInput={value => (bodyDraft.value = value)}
                       />
                       <div class={styles['comment-form-footer']}>
                         <span>Markdown supported</span>
@@ -1362,7 +1374,7 @@ export default defineComponent(
                   .map(comment => (
                     <div class="conversation-comment">
                       <div class="comment-author">
-                        <Avatar login={comment.user.login} small />
+                        <Avatar login={comment.user.login} src={comment.user.avatar_url} small />
                         <strong>You</strong>
                         <Timestamp date={comment.created_at} />
                       </div>
@@ -1388,7 +1400,7 @@ export default defineComponent(
                 {visibleConversation.value.map(comment => (
                   <div id={`conversation-comment-${comment.id}`} class="conversation-comment reveal">
                     <div class="comment-author">
-                      <Avatar login={comment.user.login} small />
+                      <Avatar login={comment.user.login} src={comment.user.avatar_url} small />
                       <strong>{comment.user.login}</strong>
                       <Timestamp date={comment.created_at} prefix="commented" />
                       <CommentActions item={comment} actions={edits} />
@@ -1400,11 +1412,11 @@ export default defineComponent(
                 {visibleReviews.value.filter(review => review.state !== 'PENDING').map(reviewCard)}
                 <form class={styles['comment-form']} onSubmit={postComment}>
                   <label for="pr-comment">Leave a comment</label>
-                  <textarea
+                  <MentionField
                     id="pr-comment"
                     placeholder="Share your thoughts on this pull request…"
                     value={body.value}
-                    onInput={e => (body.value = inputValue(e))}
+                    onInput={value => (body.value = value)}
                     maxlength={65000}
                     disabled={busy.value}
                   />
@@ -1590,7 +1602,7 @@ export default defineComponent(
                     </button>
                   </div>
                 )}
-                <div class={`diff-list ${focusedFile.value ? styles['focused-diff-list'] : ''}`}>
+                <div class="diff-list">
                   {pendingSection('files') ? (
                     <Loader label="Loading changed files…" />
                   ) : visibleFiles.value.length ? (
@@ -1630,7 +1642,8 @@ export default defineComponent(
                                       pending={!!pending.value}
                                       busy={busy.value}
                                       error={error.value}
-                                      canReview={canReview()}
+                                      canComment={canReply()}
+                                      canStartReview={canReview()}
                                       stale={stalePending()}
                                       onBody={value => (inlineBody.value = value)}
                                       onClose={safeClose}
@@ -1701,12 +1714,12 @@ export default defineComponent(
                 <label class="input-label" for="review-body">
                   Review summary <span class="muted">{event.value === 'APPROVE' ? '(optional)' : ''}</span>
                 </label>
-                <textarea
+                <MentionField
                   id="review-body"
                   class="review-textarea"
                   placeholder="What would you like the author to know?"
                   value={reviewBody.value}
-                  onInput={e => (reviewBody.value = inputValue(e))}
+                  onInput={value => (reviewBody.value = value)}
                   maxlength={65000}
                   disabled={busy.value}
                 />

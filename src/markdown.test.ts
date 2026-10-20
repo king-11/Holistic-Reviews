@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderMarkdown } from './markdown.ts';
+import { mentionQuery, renderMarkdown } from './markdown.ts';
 
 describe('safe GitHub-flavored Markdown', () => {
   it('renders GitHub emoji shortcodes and native emoji without modifying code or link destinations', () => {
@@ -87,4 +87,45 @@ describe('safe GitHub-flavored Markdown', () => {
     assert.doesNotMatch(renderMarkdown('<a href="javascript:alert(1)"><strong>Test'), /javascript/);
     assert.match(renderMarkdown('<img src=x><p>Still readable'), /Still readable/);
   });
+});
+
+const person = (login: string) =>
+  `<a class="user-mention" href="https://github.com/${login}" data-login="${login}" target="_blank" rel="noopener noreferrer">@${login}</a>`;
+describe('mentions', () => {
+  const long = 'a'.repeat(39);
+  for (const [name, body, expected] of [
+    ['at the start of a line', '@alice ships', [person('alice')]],
+    ['after punctuation', 'Thanks (@bob), @carol!', [person('bob'), person('carol')]],
+    ['in lists, tables and emphasis', '- @dave\n\n| a |\n|---|\n| **@erin** |', [person('dave'), person('erin')]],
+    [
+      'for teams',
+      'cc @acme/frontend',
+      [
+        '<a class="user-mention" href="https://github.com/orgs/acme/teams/frontend" data-team="acme/frontend" target="_blank" rel="noopener noreferrer">@acme/frontend</a>',
+      ],
+    ],
+    ['up to 39 characters', `@${long} @${long}a`, [person(long)]],
+    ['not in emails', 'mail a@b.com or foo@bar', []],
+    ['not in inline or fenced code', '`@alice`\n\n```\n@bob\n```', []],
+    ['not inside existing links', '[@alice](https://x.test) <a href="https://y.test">@bob</a>', []],
+    ['not for invalid logins', '@-bad @bad- @two--hyphens @under_score', []],
+  ] as const)
+    it(`links mentions ${name}`, () => {
+      assert.deepEqual(renderMarkdown(body).match(/<a class="user-mention"[^>]*>[^<]*<\/a>/g) ?? [], expected);
+    });
+
+  for (const [text, caret, expected] of [
+    ['hi @al', 6, { start: 3, query: 'al' }],
+    ['@', 1, { start: 0, query: '' }],
+    ['(@bo', 4, { start: 1, query: 'bo' }],
+    ['hi @al there', 6, { start: 3, query: 'al' }],
+    ['hi @al there', 12, null],
+    ['mail a@b', 8, null],
+    ['`@code', 6, null],
+    ['```\n@fenced', 11, null],
+    ['```\nx\n```\n@after', 16, { start: 10, query: 'after' }],
+  ] as const)
+    it(`completes ${JSON.stringify(text)} at ${caret} as ${JSON.stringify(expected)}`, () => {
+      assert.deepEqual(mentionQuery(text, caret), expected);
+    });
 });

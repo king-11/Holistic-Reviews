@@ -54,6 +54,13 @@
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+.markdown-body a.user-mention {
+  font-weight: 500;
+  text-decoration: none;
+}
+.markdown-body a.user-mention:hover {
+  text-decoration: underline;
+}
 .markdown-body ul,
 .markdown-body ol {
   padding-left: 24px;
@@ -75,13 +82,14 @@
   appearance: none;
   display: inline-grid;
   place-content: center;
-  width: 12px;
-  height: 12px;
+  /* 14px leaves about a pixel of breathing room around the 8px tick. */
+  width: 14px;
+  height: 14px;
   padding: 0;
   position: absolute;
-  left: -20px;
+  left: -21px;
   /* Centre on the first line box; baseline alignment shifts with the font and the tick. */
-  top: calc(0.5lh - 6px);
+  top: calc(0.5lh - 7px);
   margin: 0;
   font: inherit;
   border: 1px solid var(--color-border-strong);

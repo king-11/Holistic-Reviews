@@ -17,8 +17,15 @@ const viewer = user(700, 'reviewer');
 const alice = user(701, 'alice'),
   bob = user(702, 'bob'),
   carol = user(703, 'carol'),
-  bot = user(704, 'ci-helper[bot]', 'Bot'),
-  dave = user(705, 'dave');
+  bot = user(704, 'ci-helper[bot]', 'Bot');
+// Answers the assignable and mentionable searches, which GitHub matches on login and name; dave is on no PR, so only a search finds him.
+const directory = [
+  ['alice', 'Alice Liddell'],
+  ['bob', 'Bob Stone'],
+  ['carol', 'Carol Jones'],
+  ['dave', 'Dave Dunn'],
+  ['reviewer', 'Rae Viewer'],
+].map(([login, name]) => ({ login, name, avatarUrl: '' }));
 
 const workerLines = 80;
 const changedWorkerLines = [10, 60];
@@ -203,6 +210,8 @@ export async function mockGitHub(
     prState?: 'merged' | 'closed';
     mergeStates?: PullRequest['mergeable_state'][];
     autoMergeClean?: boolean;
+    signedOut?: boolean;
+    approved?: boolean;
   } = {},
 ) {
   let release = () => {};
@@ -229,7 +238,8 @@ export async function mockGitHub(
         id: 502,
         node_id: 'R502',
         user: bob,
-        state: 'CHANGES_REQUESTED',
+        // Without the change request, alice's approval leaves the PR approved.
+        state: options.approved ? 'COMMENTED' : 'CHANGES_REQUESTED',
         body: 'Please add retry tests.',
         commit_id: HEAD,
         submitted_at: at,
@@ -239,6 +249,8 @@ export async function mockGitHub(
     restReactions: new Map<string, { id: number; content: string; user: typeof viewer }[]>(),
     writes: [] as { method: string; path: string; body: Record<string, unknown> | undefined; operation?: string }[],
     searches: [] as { q: string; advanced: boolean; sort: string | null; order: string | null }[],
+    peopleSearches: [] as { kind: string; query: string; first: number }[],
+    userReads: [] as string[],
     nextId: 1000,
     prEdits: {} as Record<string, unknown>,
     prReads: 0,
@@ -300,6 +312,13 @@ export async function mockGitHub(
       case 'MarkPullRequestReadyForReview': {
         const name = query.match(/\{ (\w+)\(input/)![1];
         return { [name]: { pullRequest: { isDraft: name === 'convertPullRequestToDraft' } } };
+      }
+      case 'AssignableUsers':
+      case 'MentionableUsers': {
+        const query = variables.search.toLowerCase();
+        state.peopleSearches.push({ kind: operation === 'AssignableUsers' ? 'assignable' : 'mentionable', query, first: variables.first });
+        const nodes = directory.filter(person => `${person.login} ${person.name}`.toLowerCase().includes(query)).slice(0, variables.first);
+        return { repository: { people: { nodes } } };
       }
       case 'ReviewStack':
         return { repository: { pullRequest: { stack: null } } };
@@ -406,6 +425,12 @@ export async function mockGitHub(
     body: Payload | undefined,
   ): [number, unknown, Record<string, string>?] {
     const prPath = `${repoPath}/pulls/42`;
+    const profile = path.match(/^\/users\/([^/]+)$/);
+    if (profile) {
+      state.userReads.push(profile[1]);
+      const person = directory.find(person => person.login === profile[1]);
+      return person ? [200, { login: person.login, name: person.name, avatar_url: '' }] : [404, { message: 'Not Found' }];
+    }
     if (path === '/user') return [200, viewer, { 'access-control-expose-headers': 'X-OAuth-Scopes', 'x-oauth-scopes': 'repo, read:org' }];
     if (path === '/search/issues') {
       const q = query.get('q') || '';
@@ -552,7 +577,6 @@ export async function mockGitHub(
         ],
       ];
     if (path === `${repoPath}/issues/42/labels`) return [200, (body!.labels as string[]).map(name => ({ name, color: 'ededed' }))];
-    if (path === `${repoPath}/assignees`) return [200, [pr.user, bob, dave]];
     if (path === `${repoPath}/teams`)
       return [
         200,
@@ -628,8 +652,9 @@ export async function mockGitHub(
     }
     return [404, { message: `Unhandled ${method} ${path}` }];
   }
-  await page.clock.setFixedTime(NOW);
-  await page.addInitScript(() => sessionStorage.setItem('review.github-token', 'github_pat_test'));
+  // Time must keep moving: Vue drops a parent's handler when Date.now() hasn't advanced past when it was attached.
+  await page.clock.setSystemTime(NOW);
+  if (!options.signedOut) await page.addInitScript(() => sessionStorage.setItem('review.github-token', 'github_pat_test'));
   await page.route('https://api.github.com/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -655,8 +680,7 @@ export async function mockGitHub(
 
 // Sections load after the header, so most tests wait for every request to settle before interacting.
 export async function openPR(page: Page, { settled = true } = {}) {
-  await page.goto('/');
-  await page.getByRole('button', { name: /Improve worker retries/ }).click();
+  await page.goto('/acme/app/pull/42');
   await page.getByRole('heading', { name: 'Improve worker retries', level: 1 }).waitFor();
   if (settled) await page.locator('.review-layout[aria-busy="false"]').waitFor();
 }

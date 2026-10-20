@@ -199,7 +199,7 @@ export function CommitHistory(props: CommitProps) {
           <div class="commit-card-info">
             <strong>{commit.commit.message.split('\n')[0]}</strong>
             <div class={`flex items-center gap-2 flex-wrap mt-2 text-muted text-xs`}>
-              <Avatar login={commit.author?.login || commit.commit.author?.name || 'unknown'} small />
+              <Avatar login={commit.author?.login || commit.commit.author?.name || 'unknown'} src={commit.author?.avatar_url} small />
               <span>{commit.author?.login || commit.commit.author?.name || 'Unknown author'}</span>
               <time datetime={commit.commit.author?.date}>
                 {commit.commit.author ? new Date(commit.commit.author.date).toLocaleString() : ''}

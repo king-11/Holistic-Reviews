@@ -2,7 +2,8 @@ import { defineComponent, shallowRef } from 'vue';
 import { Pencil, Trash2 } from '@lucide/vue';
 import type { Comment, Review } from './github';
 import Markdown from './MarkdownView';
-import { IconButton, inputValue } from './ui';
+import { IconButton } from './ui';
+import MentionField from './MentionField';
 
 export type Editable = Comment | Review;
 export interface EditActions {
@@ -62,13 +63,13 @@ export const CommentBody = defineComponent(
       const draft = editing.value?.key === key(props.item) ? editing.value : null;
       return draft ? (
         <div class="description-editor comment-editor">
-          <textarea
+          <MentionField
             aria-label="Edit comment"
             value={draft.body}
             maxlength={65000}
             disabled={props.actions.disabled()}
-            ref={element => (element as HTMLTextAreaElement | null)?.focus()}
-            onInput={event => (editing.value = { ...draft, body: inputValue(event) })}
+            inputRef={element => (element as HTMLTextAreaElement | null)?.focus()}
+            onInput={body => (editing.value = { ...draft, body })}
           />
           <div>
             <button class="button small" onClick={() => (editing.value = null)}>

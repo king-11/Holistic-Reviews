@@ -1,9 +1,8 @@
 import { defineComponent } from 'vue';
-import { motion } from 'motion-v';
 import { ChevronRight, FilePenLine, GitMerge, GitPullRequest } from '@lucide/vue';
-import { itemRepository, type InboxGroup, type InboxItem } from './github';
+import { navigateTo } from 'nuxt/app';
+import { itemRepository, prPath, type InboxGroup, type InboxItem } from './github';
 import { checkIcons } from './Checks';
-import { fade } from './motion';
 import { Avatar, timeAgo } from './ui';
 import styles from './Inbox.module.css';
 
@@ -52,17 +51,24 @@ function RowIndicators(props: { item: InboxItem }) {
   );
 }
 
-type Props = { item: InboxItem; group: InboxGroup; viewerLogin: string; onOpen: (url: string) => void };
+type Props = { item: InboxItem; group: InboxGroup; viewerLogin: string };
 
 export default defineComponent(
   (props: Props) => () => {
     const { item, group } = props;
+    const [owner, repo] = itemRepository(item).split('/');
+    const href = prPath({ owner, repo, number: item.number });
     return (
-      <motion.button
-        {...fade()}
-        class="pr-row"
+      <a
+        class="pr-row fade-in"
+        href={href}
         title={`Review ${itemRepository(item)}#${item.number}: ${item.title}${item.draft ? ' (draft)' : ''}`}
-        onClick={() => props.onOpen(item.html_url)}
+        onClick={(event: MouseEvent) => {
+          // Modified and middle clicks keep the browser's open-in-new-tab behaviour.
+          if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+          event.preventDefault();
+          void navigateTo(href);
+        }}
       >
         <span class={`pr-row-status ${item.draft ? 'draft' : group === 'merged' ? 'merged' : ''}`}>
           {item.draft ? <FilePenLine size={17} /> : group === 'merged' ? <GitMerge size={17} /> : <GitPullRequest size={17} />}
@@ -85,10 +91,10 @@ export default defineComponent(
         </div>
         <RowIndicators item={item} />
         <span class="row-time">{timeAgo(item.updated_at)}</span>
-        <Avatar login={item.user.login} small />
+        <Avatar login={item.user.login} src={item.user.avatar_url} small />
         <ChevronRight class="row-arrow" size={15} />
-      </motion.button>
+      </a>
     );
   },
-  { props: ['item', 'group', 'viewerLogin', 'onOpen'] },
+  { props: ['item', 'group', 'viewerLogin'] },
 );
