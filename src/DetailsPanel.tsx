@@ -26,6 +26,9 @@ import {
 } from '@lucide/vue';
 import {
   errorMessage,
+  pullRequestReviewers,
+  reviewDecision,
+  teamKey,
   mergeabilityPending,
   mergeReady,
   type GitHub,
@@ -95,21 +98,8 @@ const describeChecks = (checks?: StatusCheck[]) =>
     .filter(([, count]) => count)
     .map(([kind, count]) => `${count} ${checkWords[kind]}`)
     .join(', ') || 'No checks';
-// A review given on behalf of a requested team stands in for that team's request.
-export function reviewerStates(pr: PullRequest, reviews: Review[], onBehalfOf: Record<string, string[]> = {}) {
-  const covered = new Set(Object.values(onBehalfOf).flat());
-  const latest = new Map<string, string>();
-  for (const review of reviews) if (review.state !== 'PENDING') latest.set(review.user.login, review.state);
-  for (const user of pr.requested_reviewers ?? []) latest.set(user.login, 'REQUESTED');
-  for (const team of pr.requested_teams ?? []) if (!covered.has(teamKey(pr, team.slug))) latest.set(teamKey(pr, team.slug), 'REQUESTED');
-  return [...latest];
-}
-// Approved means someone approved and nobody's latest review still requests changes.
-export const reviewApproved = (pr: PullRequest, reviews: Review[], onBehalfOf?: Record<string, string[]>) => {
-  const states = reviewerStates(pr, reviews, onBehalfOf).map(([, state]) => state);
-  return states.includes('APPROVED') && !states.includes('CHANGES_REQUESTED');
-};
-const teamKey = (pr: PullRequest, slug: string) => `${pr.base.repo?.full_name.split('/')[0]}/${slug}`;
+export const reviewApproved = (pr: PullRequest, reviews: Review[], onBehalfOf?: Record<string, string[]>) =>
+  reviewDecision(pullRequestReviewers(pr, reviews, onBehalfOf)) === 'APPROVED';
 // GitHub rejects review requests for the PR author and for bots.
 const requestable = (pr: PullRequest, login: string) => login !== pr.user.login && !login.endsWith('[bot]');
 
@@ -444,7 +434,11 @@ export function useDetails(input: () => DetailsInput) {
     };
   };
   const pr = () => source().pr;
-  const reviewers = computed(() => reviewerStates(pr(), source().reviews, source().onBehalfOf));
+  const reviewers = computed(() =>
+    pullRequestReviewers(pr(), source().reviews, source().onBehalfOf).map(
+      row => [row.login, row.requested ? 'REQUESTED' : row.review!] as const,
+    ),
+  );
   const labels = () => pr().labels ?? [];
   // Label and reviewer writes return the new values, so they patch the PR instead of rereading it.
   const setPR = (change: Partial<PullRequest>) => input().store.edit('pr', current => ({ ...current, ...change }));

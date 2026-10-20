@@ -338,19 +338,58 @@ export type ReviewSummary = {
   latestReviews: { state: string; author: { __typename: string; login: string } | null }[];
   requested: string[];
 };
-// Bots and the author's own comments never count as reviewer feedback.
-export function classifyReview(summary: ReviewSummary, author: string): ReviewState {
-  const humans = summary.latestReviews.flatMap(review =>
-    review.author?.__typename === 'User' && review.author.login !== author ? [{ state: review.state, login: review.author.login }] : [],
+// One row per reviewer: their latest submitted review and whether a request is still open. The sidebar, Merge button
+// and inbox all read review state from these rows, so they cannot disagree.
+export interface Reviewer {
+  login: string;
+  review?: string;
+  requested: boolean;
+  human: boolean;
+}
+export function reviewerStates(reviews: { login: string; state: string; human: boolean }[], requested: string[]): Reviewer[] {
+  const rows = new Map<string, Reviewer>();
+  for (const { login, state, human } of reviews)
+    if (state !== 'PENDING') rows.set(login, { login, review: state, requested: false, human });
+  for (const login of requested) rows.set(login, { login, human: true, ...rows.get(login), requested: true });
+  return [...rows.values()];
+}
+// A team request is satisfied once a member reviews on the team's behalf.
+export function pullRequestReviewers(pr: PullRequest, reviews: Review[], onBehalfOf: Record<string, string[]> = {}) {
+  const covered = new Set(Object.values(onBehalfOf).flat());
+  const teams = (pr.requested_teams ?? []).map(team => teamKey(pr, team.slug)).filter(key => !covered.has(key));
+  return reviewerStates(
+    reviews.map(review => ({ login: review.user.login, state: review.state, human: (review.user.type ?? 'User') === 'User' })),
+    [...(pr.requested_reviewers ?? []).map(user => user.login), ...teams],
   );
-  if (summary.reviewDecision === 'CHANGES_REQUESTED') return 'returned';
-  if (summary.reviewDecision === 'APPROVED' || (summary.reviewDecision === null && humans.some(review => review.state === 'APPROVED')))
-    return 'approved';
+}
+export const teamKey = (pr: PullRequest, slug: string) => `${pr.base.repo?.full_name.split('/')[0]}/${slug}`;
+// Bots never count as reviewer feedback; GitHub never records an author approval, but authors comment on their own PRs.
+const humans = (reviewers: Reviewer[]) => reviewers.filter(row => row.human);
+// What GitHub's reviewDecision would say: a request for changes blocks until that reviewer approves or it is dismissed.
+export function reviewDecision(reviewers: Reviewer[]): ReviewSummary['reviewDecision'] {
+  const states = humans(reviewers).map(row => row.review);
+  return states.includes('CHANGES_REQUESTED') ? 'CHANGES_REQUESTED' : states.includes('APPROVED') ? 'APPROVED' : null;
+}
+// GitHub's own decision wins when known; null means the repository requires no reviews, so any approval counts.
+export function reviewOutcome(reviewers: Reviewer[], author: string, decision = reviewDecision(reviewers)): ReviewState {
+  const rows = humans(reviewers).filter(row => row.login !== author);
+  if (decision === 'CHANGES_REQUESTED') return 'returned';
+  if (decision === 'APPROVED' || (decision === null && rows.some(row => row.review === 'APPROVED'))) return 'approved';
   // Re-requesting a reviewer hands the PR back to them, so it is waiting again.
-  if (humans.some(review => ['COMMENTED', 'CHANGES_REQUESTED'].includes(review.state) && !summary.requested.includes(review.login)))
-    return 'returned';
+  if (rows.some(row => !row.requested && (row.review === 'COMMENTED' || row.review === 'CHANGES_REQUESTED'))) return 'returned';
   return 'waiting';
 }
+export const classifyReview = (summary: ReviewSummary, author: string) =>
+  reviewOutcome(
+    reviewerStates(
+      summary.latestReviews.flatMap(review =>
+        review.author ? [{ login: review.author.login, state: review.state, human: review.author.__typename === 'User' }] : [],
+      ),
+      summary.requested,
+    ),
+    author,
+    summary.reviewDecision,
+  );
 
 export function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
