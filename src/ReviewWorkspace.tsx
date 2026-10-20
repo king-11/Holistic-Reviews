@@ -71,6 +71,7 @@ import {
 import Markdown from './MarkdownView';
 import MentionField from './MentionField';
 import { peopleDirectory, peopleKey } from './people';
+import { markInboxStale, recordPR } from './inboxUpdates';
 import { toggleViewedFile, verifiedContextLines } from './diff';
 import {
   commentEntries,
@@ -104,6 +105,7 @@ type Props = {
   onOpen: (url: string) => void;
   onBack: () => void;
   onRefresh: () => void;
+  onRefreshPR: () => void;
   onBusy: (busy: boolean) => void;
 };
 
@@ -155,6 +157,10 @@ export default defineComponent(
     const stalePending = () => !!pending.value && pending.value?.commit_id !== pr().head.sha;
     const canReview = () => props.workspace.reviewsLoaded && pr().state === 'open';
     const canReply = () => props.workspace.reviewsLoaded && !stalePending();
+    // The kept-alive inbox corrects this PR's row from what this page knows, ahead of GitHub search catching up.
+    watchEffect(() => {
+      if (props.workspace.reviewsLoaded) recordPR(pr(), reviews.value, inlineComments.value, viewer().login);
+    });
 
     const busy = shallowRef(false);
     const error = shallowRef('');
@@ -168,6 +174,8 @@ export default defineComponent(
       notice.value = '';
       try {
         await work();
+        markInboxStale();
+        if (active) props.onRefreshPR();
         return true;
       } catch (failure) {
         if (active) error.value = errorMessage(failure, 'GitHub could not complete this action.');
@@ -204,6 +212,7 @@ export default defineComponent(
       acting.value = true;
       try {
         const result = await work(props.api);
+        markInboxStale();
         showToast(label);
         if (refresh) props.onRefresh();
         return result;
@@ -1901,7 +1910,7 @@ export default defineComponent(
       </div>
     );
   },
-  { props: ['workspace', 'api', 'info', 'settings', 'onSettings', 'onOpen', 'onBack', 'onRefresh', 'onBusy'] },
+  { props: ['workspace', 'api', 'info', 'settings', 'onSettings', 'onOpen', 'onBack', 'onRefresh', 'onRefreshPR', 'onBusy'] },
 );
 
 function FileCodeIcon() {

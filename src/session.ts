@@ -4,6 +4,7 @@ import { GitHub, errorMessage, parsePRUrl, prPath, type TokenInfo } from './gith
 import { type DiffSettings } from './DiffView';
 import { isTheme } from './themes';
 import { clearPeople } from './people';
+import { clearInboxSnapshots } from './inboxUpdates';
 import { tryStorage } from './storage';
 
 // The app is a client-only SPA, so module state is one session shared by the shell and every page.
@@ -96,6 +97,7 @@ export function disconnect() {
   restore?.abort();
   tryStorage(() => sessionStorage.removeItem(tokenKey));
   clearPeople();
+  clearInboxSnapshots();
   token.value = '';
   info.value = null;
   void navigateTo('/');

@@ -136,6 +136,7 @@ const inbox = (
   repository_url: `https://api.github.com/repos/${repository}`,
   draft,
   state: 'open',
+  created_at: at,
   updated_at: at,
   comments: 1,
   labels: [],
@@ -212,6 +213,7 @@ export async function mockGitHub(
     autoMergeClean?: boolean;
     signedOut?: boolean;
     approved?: boolean;
+    blockedUntilApproved?: boolean;
   } = {},
 ) {
   let release = () => {};
@@ -445,7 +447,12 @@ export async function mockGitHub(
     if (path === prPath && method === 'PATCH') Object.assign(state.prEdits, body);
     if (path === prPath) {
       const reads = options.mergeStates ?? [];
-      const mergeable_state = reads[Math.min(state.prReads, reads.length - 1)] ?? pr.mergeable_state;
+      const approvedByViewer = state.reviews.some(review => review.user.login === viewer.login && review.state === 'APPROVED');
+      const mergeable_state = options.blockedUntilApproved
+        ? approvedByViewer
+          ? 'clean'
+          : 'blocked'
+        : (reads[Math.min(state.prReads, reads.length - 1)] ?? pr.mergeable_state);
       if (method === 'GET') state.prReads++;
       return [
         200,

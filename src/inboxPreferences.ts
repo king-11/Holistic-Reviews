@@ -22,7 +22,7 @@ export const sortOptions: { value: SortChoice; label: string; detail: string }[]
   { value: 'created-desc', label: 'Created', detail: 'Latest first' },
   { value: 'created-asc', label: 'Created', detail: 'Oldest first' },
 ];
-// Updated and created are GitHub's own ordering, so they re-query; the rest reorder what is loaded.
+// Updated and created also re-query, since only GitHub can order pages that aren't loaded yet.
 export const serverOrder = (choice: SortChoice): SearchOrder => ({
   sort: choice.startsWith('created') ? 'created' : 'updated',
   order: choice.endsWith('asc') ? 'asc' : 'desc',
@@ -34,11 +34,18 @@ const bySize = (direction: 1 | -1) => (a: InboxItem, b: InboxItem) => {
   if (sizeA === undefined || sizeB === undefined) return Number(sizeA === undefined) - Number(sizeB === undefined);
   return direction * (sizeA - sizeB);
 };
-export const clientOrders: Partial<Record<SortChoice, (a: InboxItem, b: InboxItem) => number>> = {
+const byDate = (key: 'updated_at' | 'created_at', direction: 1 | -1) => (a: InboxItem, b: InboxItem) =>
+  direction * a[key].localeCompare(b[key]);
+// Server-ordered choices also sort what is loaded, so rows corrected after an action land where search will put them.
+export const clientOrders: Record<SortChoice, (a: InboxItem, b: InboxItem) => number> = {
   'title-asc': (a, b) => a.title.localeCompare(b.title),
   'title-desc': (a, b) => b.title.localeCompare(a.title),
   'size-asc': bySize(1),
   'size-desc': bySize(-1),
+  'updated-desc': byDate('updated_at', -1),
+  'updated-asc': byDate('updated_at', 1),
+  'created-desc': byDate('created_at', -1),
+  'created-asc': byDate('created_at', 1),
 };
 
 type InboxPreferences = { repos?: string[]; sort?: SortChoice; known?: string[] };

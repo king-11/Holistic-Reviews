@@ -455,6 +455,9 @@ const DiffRenderer = defineComponent(
       ),
     );
     let hadComposer = false;
+    // Rebuilding annotations remounts every thread card and line composer, dropping focus and cutting animations short.
+    // Cards read thread status and settings reactively, so only a change in what they were built from needs a rebuild.
+    let rendered: { instance: FileDiff<Annotation>; signature: string } | null = null;
     watchEffect(
       () => {
         const instance = renderer.value;
@@ -478,6 +481,16 @@ const DiffRenderer = defineComponent(
               metadata: { comments, composer: key === composerKey ? composer : undefined },
             };
           });
+        const signature = JSON.stringify(
+          annotations.map(({ side, lineNumber, metadata }) => [
+            side,
+            lineNumber,
+            !!metadata.composer,
+            metadata.comments.map(comment => [comment.id, comment.body, comment.pull_request_review_id]),
+          ]),
+        );
+        if (rendered?.instance === instance && rendered.signature === signature) return;
+        rendered = { instance, signature };
         const keys = new Set(annotations.map(annotation => `${annotation.side}:${annotation.lineNumber}`));
         for (const [key, dispose] of disposers)
           if (!keys.has(key)) {

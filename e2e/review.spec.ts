@@ -154,6 +154,62 @@ test.describe('inbox', () => {
   });
 });
 
+test.describe('inbox after acting on a pull request', () => {
+  // Fake search keeps returning the old results, like GitHub's index does for up to a minute after a write.
+  const openFromInbox = async (page: Page) => {
+    await seedInbox(page, { repos: ['acme/app'] });
+    await page.goto('/');
+    await page
+      .locator('section.requested')
+      .getByRole('link', { name: /Improve worker retries/ })
+      .click();
+    await expect(page.getByRole('heading', { name: 'Improve worker retries', level: 1 })).toBeVisible();
+  };
+  const backToInbox = async (page: Page) => {
+    await page.getByRole('button', { name: 'Inbox', exact: true }).click();
+    await expect(page).toHaveURL(/\/$/);
+  };
+  const row = (page: Page, section: string) => page.locator(`section.${section}`).getByRole('link', { name: /Improve worker retries/ });
+
+  test('approving moves the PR from review requests to reviewed by you, then refetches in the background', async ({ page }) => {
+    const fake = await mockGitHub(page);
+    await openFromInbox(page);
+    await page.waitForLoadState('networkidle');
+    const searches = fake.searches.length;
+    await page.keyboard.press('r');
+    await page.keyboard.press('y');
+    await expect(page.getByRole('status').getByText('Approval submitted to GitHub.')).toBeVisible();
+    await backToInbox(page);
+    await expect(row(page, 'requested')).toHaveCount(0);
+    await expect(page.getByRole('main').getByRole('button', { name: /Needs your review\s*1/ })).toBeVisible();
+    await page
+      .getByRole('main')
+      .getByRole('button', { name: /Reviewed by you/ })
+      .click();
+    await expect(row(page, 'reviewed')).toBeVisible();
+    await expect.poll(() => fake.searches.length).toBeGreaterThan(searches);
+    await expect(page.getByRole('link', { name: /Tune cache eviction/ })).toBeVisible();
+    await expect(row(page, 'requested')).toHaveCount(0);
+  });
+
+  test('merging moves the PR to recently merged', async ({ page }) => {
+    await mockGitHub(page);
+    await openFromInbox(page);
+    await page.getByRole('button', { name: 'Merge', exact: true }).click();
+    const menu = page.getByRole('menu', { name: 'Merge options' });
+    await menu.getByRole('menuitem', { name: 'Squash and merge' }).click();
+    await menu.getByRole('menuitem', { name: 'Confirm squash and merge' }).click();
+    await expect(page.getByRole('img', { name: 'Merged' })).toBeVisible();
+    await backToInbox(page);
+    await expect(row(page, 'requested')).toHaveCount(0);
+    await page
+      .getByRole('main')
+      .getByRole('button', { name: /Recently merged/ })
+      .click();
+    await expect(row(page, 'merged')).toBeVisible();
+  });
+});
+
 test.describe('routing', () => {
   const prRoute = /\/acme\/app\/pull\/42$/;
   const prHeading = (page: Page) => page.getByRole('heading', { name: 'Improve worker retries', level: 1 });
@@ -856,6 +912,19 @@ test.describe('details panel', () => {
     expect(lastWrite(fake, '/repos/acme/app/pulls/42/merge')).toBeUndefined();
     await menu.getByRole('menuitem', { name: 'Confirm squash and merge' }).click();
     await expect.poll(() => lastWrite(fake, '/repos/acme/app/pulls/42/merge')).toMatchObject({ merge_method: 'squash' });
+  });
+
+  test('approving a PR blocked on approval refreshes it so Merge appears without a manual refresh', async ({ page }) => {
+    const fake = await mockGitHub(page, { blockedUntilApproved: true });
+    await openPR(page);
+    await expect(page.getByRole('button', { name: /Not ready to merge/ })).toBeVisible();
+    await page.waitForLoadState('networkidle');
+    const reads = fake.prReads;
+    await page.keyboard.press('r');
+    await page.keyboard.press('y');
+    await expect(page.getByRole('status').getByText('Approval submitted to GitHub.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Merge', exact: true })).toBeVisible();
+    expect(fake.prReads).toBeGreaterThan(reads);
   });
 
   test('a blocked pull request offers no merge methods, only auto-merge from the switch', async ({ page }) => {

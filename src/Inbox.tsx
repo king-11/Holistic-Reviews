@@ -36,6 +36,7 @@ import {
 } from './github';
 import { clientOrders, rankCounts, readPreferences, savePreferences, serverOrder, sortOptions, type SortChoice } from './inboxPreferences';
 import InboxRow from './InboxRow';
+import { inboxChangedAt, inboxSnapshots, withSnapshots } from './inboxUpdates';
 import { createShortcuts, modalOpen, step } from './shortcuts';
 import { Dismiss, IconButton, SearchField, Spinner, inputValue } from './ui';
 import styles from './Inbox.module.css';
@@ -198,11 +199,19 @@ export default defineComponent(
     const moreBusy = shallowRef<InboxGroup | null>(null);
     let request = 0;
     let forceFresh = false;
+    // A quiet reload keeps the current rows on screen and swaps each section in as its fresh results arrive.
+    let quiet = false;
+    let fetchedAt = 0;
     let controller: AbortController | undefined;
-    const reload = () => {
+    const reload = (background = false) => {
       forceFresh = true;
+      quiet = background;
       refresh.value++;
     };
+    // Returning from a PR you changed refetches, since the inbox stayed alive with results from before the change.
+    onActivated(() => {
+      if (inboxChangedAt.value > fetchedAt) reload(true);
+    });
     const stale = (group: InboxGroup, version: number, stamp: number) =>
       version !== request || (group === 'merged' && stamp !== mergedVersion);
     watch(
@@ -213,12 +222,16 @@ export default defineComponent(
         if (!repos.length) repoCounts.value = new Map();
         const signal = (controller = new AbortController()).signal;
         const client = forceFresh ? api.fresh() : api;
-        forceFresh = false;
+        const background = quiet;
+        forceFresh = quiet = false;
+        fetchedAt = Date.now();
         const mergedStamp = ++mergedVersion;
         mergedLoading.value = false;
-        loading.value = true;
-        errors.value = {};
-        data.value = {};
+        if (!background) {
+          loading.value = true;
+          errors.value = {};
+          data.value = {};
+        }
         void Promise.all(
           fetchedGroups.map(async group => {
             try {
@@ -229,9 +242,11 @@ export default defineComponent(
               );
               if (stale(group, version, mergedStamp)) return;
               data.value = { ...data.value, [group]: result };
+              errors.value = { ...errors.value, [group]: undefined };
               countRepos(result.items, !repos.length);
             } catch (error) {
-              if (version === request && !signal.aborted)
+              // A failed background refetch keeps the rows already shown rather than replacing them with an error.
+              if (version === request && !signal.aborted && !(background && data.value[group]))
                 errors.value = { ...errors.value, [group]: errorMessage(error, 'Could not load this section.') };
             }
           }),
@@ -300,23 +315,35 @@ export default defineComponent(
 
     const active = shallowRef('all');
     const visibleSections = computed(() => sections.filter(section => active.value === 'all' || section.id === active.value));
+    // Search lags writes, so each group's rows are corrected with what PR pages saw since it loaded.
+    const corrected = computed(() => {
+      const loaded = Object.values(data.value).flatMap(result => result?.items ?? []);
+      const known = new Map(loaded.map(item => [item.html_url, item]));
+      const view = { login: props.info.user.login, repos: selected.value, merged: mergedFilter.value, now: Date.now() };
+      return Object.fromEntries(
+        fetchedGroups.flatMap(group => {
+          const result = data.value[group];
+          return result ? [[group, withSnapshots(group, result.items, inboxSnapshots(), view, known)]] : [];
+        }),
+      ) as Partial<Record<InboxGroup, ReturnType<typeof withSnapshots>>>;
+    });
+    const sectionItems = (section: Section) =>
+      (corrected.value[section.group]?.items ?? []).filter(item => !section.review || reviewOf(item) === section.review);
     const items = (section: Section) => {
       const q = query.value.toLowerCase();
-      const shown = (data.value[section.group]?.items || []).filter(
-        item =>
-          (!section.review || reviewOf(item) === section.review) &&
-          `${item.title} ${item.number} ${item.user.login} ${itemRepository(item)}`.toLowerCase().includes(q),
-      );
-      const compare = clientOrders[sortChoice.value];
-      return compare ? shown.sort(compare) : shown;
+      return sectionItems(section)
+        .filter(item => `${item.title} ${item.number} ${item.user.login} ${itemRepository(item)}`.toLowerCase().includes(q))
+        .sort(clientOrders[sortChoice.value]);
     };
-    const groupTotal = (group: InboxGroup) => data.value[group]?.total_count ?? '–';
+    const groupTotal = (group: InboxGroup) => {
+      const result = data.value[group];
+      return result ? result.total_count + (corrected.value[group]?.delta ?? 0) : '–';
+    };
     // Review sections count loaded items; a trailing + means more authored pages can still arrive.
     const sectionCount = (section: Section) => {
       const result = data.value[section.group];
       if (!result || !section.review) return groupTotal(section.group);
-      const loaded = result.items.filter(item => reviewOf(item) === section.review).length;
-      return `${loaded}${result.items.length < result.total_count ? '+' : ''}`;
+      return `${sectionItems(section).length}${result.items.length < result.total_count ? '+' : ''}`;
     };
 
     const collapsed = shallowRef<Set<string>>(new Set(['reviewed', 'merged']));
@@ -418,7 +445,7 @@ export default defineComponent(
             <ChevronRight size={13} />
             <strong>Inbox</strong>
             <div class="breadcrumb-actions">
-              <IconButton label="Refresh inbox" onClick={reload} disabled={loading.value}>
+              <IconButton label="Refresh inbox" onClick={() => reload()} disabled={loading.value}>
                 <RefreshCw size={15} class={loading.value ? 'spin' : ''} />
               </IconButton>
               <span class="divider" />
@@ -668,7 +695,7 @@ export default defineComponent(
                         {errors.value[section.group] && (
                           <div class="group-error" role="alert">
                             {errors.value[section.group]}
-                            <button class="text-button" title="Refresh the inbox to retry loading pull requests" onClick={reload}>
+                            <button class="text-button" title="Refresh the inbox to retry loading pull requests" onClick={() => reload()}>
                               Retry
                             </button>
                           </div>

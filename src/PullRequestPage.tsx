@@ -41,6 +41,22 @@ export default defineComponent(() => {
       }
     }, delay);
   }
+  // Reviews, comments and threads update in place after a write, but the PR's review requests and mergeability are
+  // GitHub's to recompute, so only the PR is reread.
+  async function refreshPR() {
+    const client = api.value;
+    if (!client || !workspace.value) return;
+    const version = loadVersion;
+    try {
+      const ref = parsePRUrl(`https://github.com${route.path}`);
+      const pr = await client.fresh().pullRequest(ref);
+      if (version !== loadVersion || !workspace.value) return;
+      workspace.value = { ...workspace.value, pr };
+      recheckMergeability(ref, version);
+    } catch {
+      return;
+    }
+  }
   async function load(refresh = false) {
     const live = api.value;
     if (!live) return;
@@ -98,6 +114,7 @@ export default defineComponent(() => {
         onOpen={openPR}
         onBack={home}
         onRefresh={() => void load(true)}
+        onRefreshPR={() => void refreshPR()}
         onBusy={value => {
           mutationBusy.value = value;
         }}
