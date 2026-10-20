@@ -69,6 +69,22 @@ test.describe('inbox', () => {
     }
   });
 
+  test('defaults to priority lanes with reasons for requested reviews', async ({ page }) => {
+    await mockGitHub(page);
+    await seedInbox(page, { repos: [] });
+    await page.goto('/');
+    const now = page.locator('[data-priority-lane="now"]');
+    await expect(now.locator('strong')).toHaveText('Now');
+    await expect(now.getByRole('link', { name: /Improve worker retries/ })).toBeVisible();
+    await expect(now).toContainText('1 ready stacked on this');
+    await expect(now).toContainText('code owner');
+    await expect(now).toContainText('checks green');
+    const soon = page.locator('[data-priority-lane="soon"]');
+    await expect(soon).toBeVisible();
+    await expect(soon.locator('a.pr-row').first()).toHaveAttribute('title', /Rotate infra credentials/);
+    await expect(page.locator('[data-priority-lane="later"]')).toBeVisible();
+  });
+
   test('filters pull requests by search text and repository', async ({ page }) => {
     await mockGitHub(page);
     await seedInbox(page, { repos: [] });

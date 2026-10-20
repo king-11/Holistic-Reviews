@@ -2,6 +2,7 @@ import type { InboxItem, SearchOrder } from './github';
 import { tryStorage } from './storage';
 
 const sortChoices = [
+  'priority',
   'title-asc',
   'title-desc',
   'size-desc',
@@ -13,6 +14,7 @@ const sortChoices = [
 ] as const;
 export type SortChoice = (typeof sortChoices)[number];
 export const sortOptions: { value: SortChoice; label: string; detail: string }[] = [
+  { value: 'priority', label: 'Priority', detail: 'Waiting on you first' },
   { value: 'title-asc', label: 'Title', detail: 'A–Z' },
   { value: 'title-desc', label: 'Title', detail: 'Z–A' },
   { value: 'size-desc', label: 'Size of change', detail: 'Largest first' },
@@ -38,6 +40,7 @@ const byDate = (key: 'updated_at' | 'created_at', direction: 1 | -1) => (a: Inbo
   direction * a[key].localeCompare(b[key]);
 // Server-ordered choices also sort what is loaded, so rows corrected after an action land where search will put them.
 export const clientOrders: Record<SortChoice, (a: InboxItem, b: InboxItem) => number> = {
+  priority: byDate('updated_at', -1),
   'title-asc': (a, b) => a.title.localeCompare(b.title),
   'title-desc': (a, b) => b.title.localeCompare(a.title),
   'size-asc': bySize(1),

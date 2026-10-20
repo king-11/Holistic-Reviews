@@ -38,15 +38,15 @@
   - Queue writes per PR so they stay in order, and show pending / failed / retry states inline. On failure, roll back only the affected item.
   - Make writes idempotent (client IDs on comments) so a retry never posts twice.
 
-- [ ] Rank "Needs your review" by priority
+- [x] Rank "Needs your review" by priority
   - Compute a score in one pure function and show the reasons as chips on each row, never a bare number. Sort rows into Now (≥ 50) / Soon (≥ 20) / Later lanes; nothing is hidden. Priority is the default sort, with a toggle back to "Updated".
   - Signals:
     - Stack: count only ready-for-review PRs stacked on top; drafts add nothing. `min(30, 15·log₂(1 + n))`, so it levels off instead of growing with every PR someone opens.
     - Waiting on you: since the PR was marked ready for review, or since the first commit after your last review. `min(30, 30·ln(1 + h) / ln 17)`, levelling off at 16 working hours. `h` counts only 9–5 on weekdays in the viewer's local time zone; the chip still shows the real elapsed time.
     - You are a code owner (`reviewRequests { asCodeOwner }`): fixed +20.
     - Checks green: fixed +15. Failing checks go to Later.
-  - Commits since your review: in the same `InboxDetails` batch, swap `commits(last: 1)` for `commits(last: 20) { nodes { commit { oid committedDate } } }` and add `viewerLatestReview { commit { oid } }`. Count the commits after the reviewed oid, and show "20+" when it isn't among them. If it's no longer in the PR's history, show "force-pushed since your review". No extra requests.
-  - Show a size tag from lines changed: XS < 42, S < 100, M < 250, L < 500, XL < 1,000, XXL ≥ 1,000. Size only breaks ties (smaller first).
+  - Commits since your review: in the same `InboxDetails` batch, keep `commits(last: 1)` for checks and add `recentCommits: commits(last: 20) { nodes { commit { oid committedDate } } }` plus `viewerLatestReview { submittedAt commit { oid } }`. Count the commits after the reviewed oid; if it's outside the recent 20, show "20+" and start waiting at the oldest listed commit. No extra detail requests.
+  - Use total additions and deletions only as the size tie-breaker (smaller first).
   - Ignore labels; they mean different things in every repo.
 
 - [x] Pending review comments

@@ -358,10 +358,25 @@ describe('review state, auto-merge and merge settings', () => {
     deletions: 1,
     reviewDecision: decision,
     commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+    recentCommits: { nodes: [{ commit: { oid: 'head', committedDate: '2026-01-01T00:00:00Z' } }] },
+    viewerLatestReview: null,
+    readyEvents: { nodes: [] },
     pendingReviews: { nodes: [] },
     participants: { totalCount: 0, nodes: [] },
     latestReviews: { nodes: latestReviews },
     reviewRequests: { nodes: [] },
+  });
+  const stackResponse = (entries: unknown[] = []) => ({
+    data: {
+      data: {
+        pr0: {
+          pullRequest: {
+            number: 1,
+            stack: { entries: { nodes: entries } },
+          },
+        },
+      },
+    },
   });
 
   for (const [name, input, expected] of [
@@ -383,6 +398,7 @@ describe('review state, auto-merge and merge settings', () => {
       fake([
         { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
         { data: { errors: [{ message: 'Something went wrong' }] } },
+        stackResponse(),
       ]);
       const result = await new GitHub('test-only-token').inbox(group, { login: 'me' });
       assert.equal(result.items.length, 1);
@@ -412,6 +428,7 @@ describe('review state, auto-merge and merge settings', () => {
             },
           },
         },
+        stackResponse(),
       ]);
       const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
       assert.equal(item.details?.checks, checks);
@@ -432,10 +449,125 @@ describe('review state, auto-merge and merge settings', () => {
           },
         },
       },
+      stackResponse(),
     ]);
     const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
     assert.equal(item.details?.pendingComments, 3);
     assert.match(String(calls[1].body?.query), /pendingReviews:\s*reviews\(states: PENDING, first: 1\)/);
+    assert.match(String(calls[2].body?.query), /stack \{ entries\(first: 100\)/);
+    assert.match(String(calls[2].body?.query), /pullRequest \{ number state isDraft \}/);
+  });
+  it('uses recent commits, code-owner requests, and only ready non-draft stack entries for priority', async () => {
+    const calls = fake([
+      { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
+      {
+        data: {
+          data: {
+            pr0: {
+              pullRequest: {
+                ...reviewData(null),
+                readyEvents: { nodes: [{ createdAt: '2026-01-02T00:00:00Z' }] },
+                recentCommits: {
+                  nodes: [
+                    { commit: { oid: 'reviewed', committedDate: '2026-01-01T00:00:00Z' } },
+                    { commit: { oid: 'new-1', committedDate: '2026-01-03T00:00:00Z' } },
+                    { commit: { oid: 'new-2', committedDate: '2026-01-04T00:00:00Z' } },
+                  ],
+                },
+                viewerLatestReview: { submittedAt: '2026-01-01T00:00:00Z', commit: { oid: 'reviewed' } },
+                reviewRequests: {
+                  nodes: [
+                    { asCodeOwner: true, requestedReviewer: { __typename: 'User', login: 'me' } },
+                    { asCodeOwner: false, requestedReviewer: { __typename: 'Team', slug: 'backend' } },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+      stackResponse([
+        { position: 1, pullRequest: { number: 99, state: 'OPEN', isDraft: false } },
+        { position: 2, pullRequest: { number: 98, state: 'OPEN', isDraft: true } },
+        { position: 3, pullRequest: { number: 1, state: 'OPEN', isDraft: false } },
+        { position: 4, pullRequest: { number: 2, state: 'OPEN', isDraft: false } },
+        { position: 5, pullRequest: { number: 4, state: 'CLOSED', isDraft: false } },
+      ]),
+    ]);
+    const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
+    assert.deepEqual(item.details?.priority, {
+      waitStart: '2026-01-03T00:00:00Z',
+      newCommits: 2,
+      moreThanTwentyNewCommits: false,
+      reviewedWithoutNewCommits: false,
+      stackedReady: 1,
+      codeOwner: true,
+      checks: 'success',
+    });
+    assert.doesNotMatch(String(calls[1].body?.query), /\bstack\s*\{/);
+    assert.match(String(calls[1].body?.query), /recentCommits: commits\(last: 20\)/);
+    assert.match(String(calls[1].body?.query), /viewerLatestReview \{ submittedAt commit \{ oid \} \}/);
+    assert.match(String(calls[1].body?.query), /asCodeOwner/);
+  });
+  it('does not award waiting after a review with no new commits', async () => {
+    fake([
+      { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
+      {
+        data: {
+          data: {
+            pr0: {
+              pullRequest: {
+                ...reviewData(null),
+                viewerLatestReview: { submittedAt: '2026-01-02T00:00:00Z', commit: { oid: 'head' } },
+              },
+            },
+          },
+        },
+      },
+      stackResponse(),
+    ]);
+    const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
+    assert.equal(item.details?.priority.reviewedWithoutNewCommits, true);
+    assert.equal(item.details?.priority.newCommits, 0);
+  });
+  it('uses 20+ commits and the oldest listed commit when the reviewed OID is missing', async () => {
+    fake([
+      { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
+      {
+        data: {
+          data: {
+            pr0: {
+              pullRequest: {
+                ...reviewData(null),
+                recentCommits: {
+                  nodes: [
+                    { commit: { oid: 'oldest', committedDate: '2026-01-01T00:00:00Z' } },
+                    { commit: { oid: 'newest', committedDate: '2026-01-02T00:00:00Z' } },
+                  ],
+                },
+                viewerLatestReview: { submittedAt: '2025-12-01T00:00:00Z', commit: { oid: 'outside-recent-20' } },
+              },
+            },
+          },
+        },
+      },
+      stackResponse(),
+    ]);
+    const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
+    assert.equal(item.details?.priority.moreThanTwentyNewCommits, true);
+    assert.equal(item.details?.priority.newCommits, 20);
+    assert.equal(item.details?.priority.waitStart, '2026-01-01T00:00:00Z');
+  });
+  it('falls back to createdAt without a ready event and treats stack query failures as zero points', async () => {
+    const calls = fake([
+      { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
+      { data: { data: { pr0: { pullRequest: reviewData(null) } } } },
+      { data: { errors: [{ message: 'Stack is unavailable' }] } },
+    ]);
+    const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
+    assert.equal(item.details?.priority.waitStart, '2026-01-01T00:00:00Z');
+    assert.equal(item.details?.priority.stackedReady, 0);
+    assert.equal(calls.length, 3);
   });
   for (const [group, reviews] of [
     ['reviewed', [undefined, undefined]],

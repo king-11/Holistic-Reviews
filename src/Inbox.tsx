@@ -36,6 +36,7 @@ import {
 } from './github';
 import { clientOrders, rankCounts, readPreferences, savePreferences, serverOrder, sortOptions, type SortChoice } from './inboxPreferences';
 import InboxRow from './InboxRow';
+import { priority, type PriorityResult } from './priority';
 import { inboxChangedAt, inboxSnapshots, withSnapshots } from './inboxUpdates';
 import { createShortcuts, modalOpen, step } from './shortcuts';
 import { Dismiss, IconButton, SearchField, Spinner, inputValue } from './ui';
@@ -100,6 +101,11 @@ const sections: Section[] = [
 ];
 const fetchedGroups = [...new Set(sections.map(section => section.group))];
 const sectionById = (id: string) => sections.find(section => section.id === id)!;
+const priorityLanes: { id: PriorityResult['lane']; label: string }[] = [
+  { id: 'now', label: 'Now' },
+  { id: 'soon', label: 'Soon' },
+  { id: 'later', label: 'Later' },
+];
 // Items GitHub search returns before review data arrives count as waiting.
 const reviewOf = (item: InboxItem) => item.review ?? 'waiting';
 
@@ -180,7 +186,7 @@ export default defineComponent(
       repoError.value = '';
     }
 
-    const sortChoice = shallowRef<SortChoice>(preferences.sort ?? 'updated-desc');
+    const sortChoice = shallowRef<SortChoice>(preferences.sort ?? 'priority');
     const sortMenu = shallowRef(false);
     const serverSort = computed(() => serverOrder(sortChoice.value));
     watch([selected, sortChoice, repoOptions], ([repos, sort, known]) =>
@@ -329,11 +335,32 @@ export default defineComponent(
     });
     const sectionItems = (section: Section) =>
       (corrected.value[section.group]?.items ?? []).filter(item => !section.review || reviewOf(item) === section.review);
-    const items = (section: Section) => {
+    const items = (section: Section): { item: InboxItem; priority?: PriorityResult }[] => {
       const q = query.value.toLowerCase();
-      return sectionItems(section)
-        .filter(item => `${item.title} ${item.number} ${item.user.login} ${itemRepository(item)}`.toLowerCase().includes(q))
-        .sort(clientOrders[sortChoice.value]);
+      const filtered = sectionItems(section).filter(item =>
+        `${item.title} ${item.number} ${item.user.login} ${itemRepository(item)}`.toLowerCase().includes(q),
+      );
+      if (section.id === 'requested' && sortChoice.value === 'priority') {
+        const now = new Date();
+        return filtered
+          .map(item => ({
+            item,
+            priority: priority(
+              item.details?.priority ?? {
+                waitStart: item.details?.createdAt ?? item.created_at,
+                newCommits: 0,
+                moreThanTwentyNewCommits: false,
+                reviewedWithoutNewCommits: false,
+                stackedReady: 0,
+                codeOwner: false,
+                checks: item.details?.checks ?? null,
+              },
+              now,
+            ),
+          }))
+          .sort((a, b) => b.priority.score - a.priority.score || clientOrders['size-asc'](a.item, b.item));
+      }
+      return filtered.sort(clientOrders[sortChoice.value]).map(item => ({ item }));
     };
     const groupTotal = (group: InboxGroup) => {
       const result = data.value[group];
@@ -603,7 +630,8 @@ export default defineComponent(
                 const GroupIcon = section.icon,
                   result = data.value[section.group],
                   open = !collapsed.value.has(section.id),
-                  shown = items(section);
+                  shown = items(section),
+                  prioritized = section.id === 'requested' && sortChoice.value === 'priority';
                 return (
                   <section key={section.id} class={`mb-5 ${section.group}`}>
                     <div class={styles['group-row']}>
@@ -663,9 +691,33 @@ export default defineComponent(
                           </div>
                         ) : (
                           <>
-                            {shown.length ? (
-                              shown.map(item => (
-                                <InboxRow key={item.id} item={item} group={section.group} viewerLogin={props.info.user.login} />
+                            {prioritized ? (
+                              priorityLanes.map(lane => {
+                                const laneRows = shown.filter(row => row.priority?.lane === lane.id);
+                                return (
+                                  <div key={lane.id} class={styles['priority-lane']} data-priority-lane={lane.id}>
+                                    <div class={styles['priority-lane-heading']}>
+                                      <strong>{lane.label}</strong>
+                                      <span>{laneRows.length}</span>
+                                    </div>
+                                    {laneRows.map(row => (
+                                      <InboxRow
+                                        key={row.item.id}
+                                        item={row.item}
+                                        group={section.group}
+                                        viewerLogin={props.info.user.login}
+                                        priority={row.priority}
+                                      />
+                                    ))}
+                                    {lane.id === 'now' && !laneRows.length && (
+                                      <div class={styles['priority-empty']}>Nothing is waiting on you.</div>
+                                    )}
+                                  </div>
+                                );
+                              })
+                            ) : shown.length ? (
+                              shown.map(row => (
+                                <InboxRow key={row.item.id} item={row.item} group={section.group} viewerLogin={props.info.user.login} />
                               ))
                             ) : (
                               <div class={`${styles['group-empty']}`}>

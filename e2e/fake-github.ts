@@ -175,6 +175,9 @@ const basePullRequest: Payload = {
   deletions: 1,
   reviewDecision: null,
   commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+  recentCommits: { nodes: [{ commit: { oid: HEAD, committedDate: at } }] },
+  viewerLatestReview: null,
+  readyEvents: { nodes: [{ createdAt: at }] },
   pendingReviews: { nodes: [] },
   participants: { totalCount: 0, nodes: [] },
   latestReviews: { nodes: [] },
@@ -184,6 +187,9 @@ const basePullRequest: Payload = {
 const reviewSummaries: Record<number, Payload> = {
   42: {
     pendingReviews: { nodes: [{ comments: { totalCount: 1 } }] },
+    reviewRequests: {
+      nodes: [{ asCodeOwner: true, requestedReviewer: { __typename: 'Team', slug: 'backend' } }],
+    },
   },
   90: {
     pendingReviews: { nodes: [{ comments: { totalCount: 1 } }] },
@@ -196,6 +202,22 @@ const reviewSummaries: Record<number, Payload> = {
   },
   93: {
     pendingReviews: { nodes: [{ comments: { totalCount: 1 } }] },
+  },
+  77: {
+    additions: 200,
+    deletions: 20,
+    commits: { nodes: [{ commit: { statusCheckRollup: { state: 'PENDING' } } }] },
+    recentCommits: { nodes: [{ commit: { oid: 'oid-77', committedDate: at } }] },
+    viewerLatestReview: { submittedAt: at, commit: { oid: 'oid-77' } },
+    reviewRequests: { nodes: [{ asCodeOwner: true, requestedReviewer: { __typename: 'Team', slug: 'backend' } }] },
+  },
+  88: {
+    additions: 10,
+    deletions: 1,
+    commits: { nodes: [{ commit: { statusCheckRollup: { state: 'PENDING' } } }] },
+    recentCommits: { nodes: [{ commit: { oid: 'oid-88', committedDate: at } }] },
+    viewerLatestReview: { submittedAt: at, commit: { oid: 'oid-88' } },
+    reviewRequests: { nodes: [{ asCodeOwner: true, requestedReviewer: { __typename: 'Team', slug: 'backend' } }] },
   },
   94: {
     additions: 12,
@@ -391,6 +413,31 @@ export async function mockGitHub(
           Object.keys(variables)
             .filter(key => key.startsWith('number'))
             .map(key => [`pr${key.slice('number'.length)}`, { pullRequest: { ...basePullRequest, ...reviewSummaries[variables[key]] } }]),
+        );
+      case 'InboxStacks':
+        return Object.fromEntries(
+          Object.keys(variables)
+            .filter(key => key.startsWith('number'))
+            .map(key => {
+              const number = variables[key];
+              return [
+                `pr${key.slice('number'.length)}`,
+                {
+                  pullRequest: {
+                    number,
+                    stack: {
+                      entries: {
+                        nodes: [
+                          { position: 1, pullRequest: { number: number + 1, state: 'OPEN', isDraft: false } },
+                          { position: 2, pullRequest: { number, state: 'OPEN', isDraft: false } },
+                          { position: 3, pullRequest: { number: number + 2, state: 'OPEN', isDraft: true } },
+                        ],
+                      },
+                    },
+                  },
+                },
+              ];
+            }),
         );
       case 'ResolveReviewThread':
       case 'UnresolveReviewThread': {

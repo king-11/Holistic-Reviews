@@ -317,12 +317,22 @@ function inboxItem(
 function demoDetails(number: number, login: string): PullRequestDetails {
   const people = ['alexchen', 'sarahkim', 'davidpark', 'maya', 'jordan'].filter(name => name !== login);
   const participants = people.slice(0, (number % people.length) + 1).map(name => ({ login: name, avatarUrl: '' }));
+  const checks = ['success', 'pending', 'failure', null][number % 4] as PullRequestDetails['checks'];
   return {
     additions: 14 + (number % 180),
     deletions: number % 45,
     createdAt: now,
-    checks: ['success', 'pending', 'failure', null][number % 4] as PullRequestDetails['checks'],
+    checks,
     pendingComments: 0,
+    priority: {
+      waitStart: now,
+      newCommits: 0,
+      moreThanTwentyNewCommits: false,
+      reviewedWithoutNewCommits: false,
+      stackedReady: 0,
+      codeOwner: false,
+      checks,
+    },
     participants,
     participantCount: participants.length + (number % 3 === 0 ? 2 : 0),
   };

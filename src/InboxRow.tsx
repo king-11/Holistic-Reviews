@@ -4,6 +4,7 @@ import { navigateTo } from 'nuxt/app';
 import { itemRepository, prPath, type InboxGroup, type InboxItem } from './github';
 import { checkIcons } from './Checks';
 import { Avatar, timeAgo } from './ui';
+import type { PriorityResult } from './priority';
 import styles from './Inbox.module.css';
 
 type Mark = { icon: typeof GitMerge; tone: 'green' | 'red' | 'amber' | 'muted'; label: string };
@@ -41,17 +42,19 @@ function RowIndicators(props: { item: InboxItem }) {
       <MarkCell name="checks" mark={details?.checks ? checkMarks[details.checks] : undefined} />
       <span class={`${styles.cell} ${styles['cell-changes']}`}>
         {!!details && (
-          <span class={styles.changes} aria-label={`${details.additions} lines added, ${details.deletions} removed`}>
-            <span class={styles['tone-green']}>+{details.additions}</span>
-            <span class={styles['tone-red']}>−{details.deletions}</span>
-          </span>
+          <>
+            <span class={styles.changes} aria-label={`${details.additions} lines added, ${details.deletions} removed`}>
+              <span class={styles['tone-green']}>+{details.additions}</span>
+              <span class={styles['tone-red']}>−{details.deletions}</span>
+            </span>
+          </>
         )}
       </span>
     </>
   );
 }
 
-type Props = { item: InboxItem; group: InboxGroup; viewerLogin: string };
+type Props = { item: InboxItem; group: InboxGroup; viewerLogin: string; priority?: PriorityResult };
 
 export default defineComponent(
   (props: Props) => () => {
@@ -89,6 +92,15 @@ export default defineComponent(
             <span class="text-xs">·</span>
             <span>{item.user.login === props.viewerLogin ? 'you' : item.user.login}</span>
           </div>
+          {props.priority && (
+            <div class={styles['priority-reasons']}>
+              {props.priority.reasons.map(reason => (
+                <span key={reason.label} class={styles['priority-reason']} title={reason.title}>
+                  {reason.label}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
         <RowIndicators item={item} />
         <span class="row-time">{timeAgo(item.updated_at)}</span>
@@ -97,5 +109,5 @@ export default defineComponent(
       </a>
     );
   },
-  { props: ['item', 'group', 'viewerLogin'] },
+  { props: ['item', 'group', 'viewerLogin', 'priority'] },
 );

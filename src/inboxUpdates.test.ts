@@ -122,6 +122,15 @@ describe('withSnapshots', () => {
       createdAt: '',
       checks: 'success' as const,
       pendingComments: 0,
+      priority: {
+        waitStart: '',
+        newCommits: 0,
+        moreThanTwentyNewCommits: false,
+        reviewedWithoutNewCommits: false,
+        stackedReady: 0,
+        codeOwner: false,
+        checks: 'success' as const,
+      },
       participants: [],
       participantCount: 0,
     };

@@ -1,4 +1,5 @@
 import type { PeopleKind, Person } from './people';
+import type { PriorityInput } from './priority';
 
 export interface User {
   id: number;
@@ -170,6 +171,7 @@ export interface PullRequestDetails {
   createdAt: string;
   checks: 'success' | 'failure' | 'pending' | null;
   pendingComments: number;
+  priority: PriorityInput;
   participants: { login: string; avatarUrl: string }[];
   participantCount: number;
 }
@@ -208,7 +210,7 @@ const maxTextFileBytes = 1_048_576;
 const contentCacheSize = 32;
 // Review fields feed the authored classification; they are fetched for every page so one query serves all groups.
 const pullRequestDetailFields =
-  'createdAt additions deletions commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } pendingReviews: reviews(states: PENDING, first: 1) { nodes { comments { totalCount } } } participants(first: 10) { totalCount nodes { login avatarUrl(size: 40) } } reviewDecision latestReviews(first: 50) { nodes { state author { __typename login } } } reviewRequests(first: 50) { nodes { requestedReviewer { ... on User { login } } } }';
+  'createdAt additions deletions commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } recentCommits: commits(last: 20) { nodes { commit { oid committedDate } } } viewerLatestReview { submittedAt commit { oid } } readyEvents: timelineItems(itemTypes: [READY_FOR_REVIEW_EVENT], last: 1) { nodes { ... on ReadyForReviewEvent { createdAt } } } pendingReviews: reviews(states: PENDING, first: 1) { nodes { comments { totalCount } } } participants(first: 10) { totalCount nodes { login avatarUrl(size: 40) } } reviewDecision latestReviews(first: 50) { nodes { state author { __typename login } } } reviewRequests(first: 50) { nodes { asCodeOwner requestedReviewer { __typename ... on User { login } } } }';
 // Pending and expected checks both mean the outcome is still open; absent rollups mean there are no checks.
 const rollupChecks: Record<string, 'success' | 'failure' | 'pending'> = {
   SUCCESS: 'success',
@@ -899,24 +901,27 @@ export class GitHub {
     );
     if (!result.items.length) return result;
     try {
-      return { ...result, items: await this.withPullRequestDetails(group, result.items, signal) };
+      return { ...result, items: await this.withPullRequestDetails(group, result.items, login, signal) };
     } catch {
       return result;
     }
   }
 
   // One aliased query per page enriches every group; items the batch misses stay as search returned them.
-  private async withPullRequestDetails(group: InboxGroup, items: InboxItem[], signal?: AbortSignal): Promise<InboxItem[]> {
+  private async withPullRequestDetails(group: InboxGroup, items: InboxItem[], login: string, signal?: AbortSignal): Promise<InboxItem[]> {
     type PullRequestData = {
       createdAt: string;
       additions: number;
       deletions: number;
       reviewDecision: ReviewSummary['reviewDecision'];
       commits: { nodes: { commit: { statusCheckRollup: { state: string } | null } }[] };
+      recentCommits: { nodes: { commit: { oid: string; committedDate: string } }[] };
+      viewerLatestReview: { submittedAt: string; commit: { oid: string } | null } | null;
+      readyEvents: { nodes: { createdAt?: string }[] };
       pendingReviews: { nodes: { comments: { totalCount: number } }[] };
       participants: { totalCount: number; nodes: { login: string; avatarUrl: string }[] };
       latestReviews: { nodes: ReviewSummary['latestReviews'] };
-      reviewRequests: { nodes: { requestedReviewer: { login?: string } | null }[] };
+      reviewRequests: { nodes: { asCodeOwner: boolean; requestedReviewer: { __typename: string; login?: string } | null }[] };
     };
     const variables: Record<string, string | number> = {};
     const declarations: string[] = [];
@@ -928,28 +933,90 @@ export class GitHub {
       declarations.push(`$owner${index}: String!, $name${index}: String!, $number${index}: Int!`);
       return `pr${index}: repository(owner: $owner${index}, name: $name${index}) { pullRequest(number: $number${index}) { ${pullRequestDetailFields} } }`;
     });
-    const data = await this.graphql<Record<string, { pullRequest: PullRequestData | null } | null>>(
-      `query InboxDetails(${declarations.join(', ')}) { ${selections.join(' ')} }`,
-      variables,
-      signal,
-    );
+    const [data, stackCounts] = await Promise.all([
+      this.graphql<Record<string, { pullRequest: PullRequestData | null } | null>>(
+        `query InboxDetails(${declarations.join(', ')}) { ${selections.join(' ')} }`,
+        variables,
+        signal,
+      ),
+      group === 'requested'
+        ? this.requestedStackCounts(items, signal).catch(() => items.map(() => 0))
+        : Promise.resolve(items.map(() => 0)),
+    ]);
     return items.map((item, index) => {
       const pr = data?.[`pr${index}`]?.pullRequest;
       if (!pr) return item;
       const requested = pr.reviewRequests.nodes.flatMap(node => (node.requestedReviewer?.login ? [node.requestedReviewer.login] : []));
       const participants = pr.participants.nodes.filter(user => user.login !== item.user.login);
+      const waitReadyAt = pr.readyEvents.nodes[0]?.createdAt ?? pr.createdAt;
+      const reviewedOid = pr.viewerLatestReview?.commit?.oid;
+      const reviewedIndex = reviewedOid ? pr.recentCommits.nodes.findIndex(({ commit }) => commit.oid === reviewedOid) : -1;
+      const moreThanTwentyNewCommits = !!pr.viewerLatestReview && !!reviewedOid && reviewedIndex < 0;
+      const newCommits = moreThanTwentyNewCommits ? 20 : reviewedIndex >= 0 ? pr.recentCommits.nodes.length - reviewedIndex - 1 : 0;
+      const reviewedWithoutNewCommits = !!pr.viewerLatestReview && newCommits === 0 && !moreThanTwentyNewCommits;
+      const firstNewCommit = moreThanTwentyNewCommits
+        ? pr.recentCommits.nodes[0]?.commit.committedDate
+        : reviewedIndex >= 0
+          ? pr.recentCommits.nodes[reviewedIndex + 1]?.commit.committedDate
+          : undefined;
+      const waitStart = firstNewCommit ?? waitReadyAt;
+      const checks = rollupChecks[pr.commits.nodes[0]?.commit.statusCheckRollup?.state ?? ''] ?? null;
+      const codeOwner = pr.reviewRequests.nodes.some(
+        request =>
+          request.asCodeOwner &&
+          (request.requestedReviewer?.__typename === 'Team' ||
+            (request.requestedReviewer?.__typename === 'User' && request.requestedReviewer.login === login)),
+      );
       const details: PullRequestDetails = {
         additions: pr.additions,
         deletions: pr.deletions,
         createdAt: pr.createdAt,
-        checks: rollupChecks[pr.commits.nodes[0]?.commit.statusCheckRollup?.state ?? ''] ?? null,
+        checks,
         pendingComments: pr.pendingReviews.nodes.reduce((total, review) => total + review.comments.totalCount, 0),
+        priority: {
+          waitStart,
+          newCommits,
+          moreThanTwentyNewCommits,
+          reviewedWithoutNewCommits,
+          stackedReady: stackCounts[index] ?? 0,
+          codeOwner,
+          checks,
+        },
         participants,
         participantCount: pr.participants.totalCount - (participants.length < pr.participants.nodes.length ? 1 : 0),
       };
       const review =
         group === 'authored' ? classifyReview({ ...pr, latestReviews: pr.latestReviews.nodes, requested }, item.user.login) : undefined;
       return { ...item, details, ...(review ? { review } : {}) };
+    });
+  }
+
+  private async requestedStackCounts(items: InboxItem[], signal?: AbortSignal): Promise<number[]> {
+    const variables: Record<string, string | number> = {};
+    const declarations: string[] = [];
+    const selections = items.map((item, index) => {
+      const [owner, name] = itemRepository(item).split('/');
+      variables[`owner${index}`] = owner;
+      variables[`name${index}`] = name;
+      variables[`number${index}`] = item.number;
+      declarations.push(`$owner${index}: String!, $name${index}: String!, $number${index}: Int!`);
+      return `pr${index}: repository(owner: $owner${index}, name: $name${index}) { pullRequest(number: $number${index}) { number stack { entries(first: 100) { nodes { position pullRequest { number state isDraft } } } } } }`;
+    });
+    type StackPR = {
+      number: number;
+      stack: { entries: { nodes: { position: number; pullRequest: { number: number; state: string; isDraft: boolean } | null }[] } } | null;
+    };
+    const data = await this.graphql<Record<string, { pullRequest: StackPR | null } | null>>(
+      `query InboxStacks(${declarations.join(', ')}) { ${selections.join(' ')} }`,
+      variables,
+      signal,
+    );
+    return items.map((_, index) => {
+      const pr = data?.[`pr${index}`]?.pullRequest;
+      const entries = pr?.stack?.entries.nodes ?? [];
+      const position = entries.find(entry => entry.pullRequest?.number === pr?.number)?.position;
+      if (position === undefined) return 0;
+      return entries.filter(entry => entry.position < position && entry.pullRequest?.state === 'OPEN' && !entry.pullRequest.isDraft).length;
     });
   }
 
