@@ -769,6 +769,8 @@ test.describe('sequence shortcuts', () => {
     await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(page.url());
     const toast = page.getByRole('status').filter({ hasText: 'Copied link to PR' });
     await expect(toast).toBeVisible();
+    await expect(toast).toHaveAttribute('data-tone', 'ok');
+    expect(await toast.evaluate(node => getComputedStyle(node).color !== getComputedStyle(document.body).backgroundColor)).toBe(true);
     const box = (await toast.boundingBox())!;
     const viewport = page.viewportSize()!;
     expect(box.x).toBeLessThan(32);
@@ -938,11 +940,14 @@ test.describe('details panel', () => {
     await expect(menu).toContainText('Turn on auto-merge to merge once requirements pass.');
     await notReady.click();
     const toggle = page.getByRole('switch', { name: 'Auto-merge' });
+    const switchEl = await toggle.elementHandle();
     await toggle.click();
+    await expect(page.getByRole('status').filter({ hasText: 'Auto-merge enabled' })).toBeVisible();
     await expect
       .poll(() => lastWrite(fake, 'EnablePullRequestAutoMerge'))
       .toEqual({ input: { pullRequestId: 'PR42', mergeMethod: 'SQUASH', expectedHeadOid: HEAD } });
     await expect(toggle).toBeChecked();
+    expect(await switchEl!.evaluate(node => node.isConnected)).toBe(true);
     await toggle.click();
     await expect.poll(() => fake.writes.at(-1)?.operation).toBe('DisablePullRequestAutoMerge');
     await expect(toggle).not.toBeChecked();
@@ -980,7 +985,8 @@ test.describe('details panel', () => {
     const fake = await mockGitHub(page, { autoMergeClean: true });
     await openPR(page);
     await page.getByRole('switch', { name: 'Auto-merge' }).click();
-    await expect(page.getByText('This pull request is already mergeable. Use Merge.')).toBeVisible();
+    const errorToast = page.getByRole('status').filter({ hasText: 'This pull request is already mergeable. Use Merge.' });
+    await expect(errorToast).toHaveAttribute('data-tone', 'error');
     await expect(page.getByRole('switch', { name: 'Auto-merge' })).not.toBeChecked();
     expect(lastWrite(fake, '/repos/acme/app/pulls/42/merge')).toBeUndefined();
   });

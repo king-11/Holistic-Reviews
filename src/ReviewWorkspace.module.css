@@ -122,11 +122,34 @@
   z-index: 60;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: var(--radius-lg);
-  background: var(--color-strong);
-  color: var(--color-surface);
+  gap: 10px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 8px 14px 8px 10px;
+  border-radius: var(--radius-xl);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 24%, var(--color-border-strong));
+  background: color-mix(in srgb, var(--color-surface) 92%, var(--color-accent-soft));
+  color: var(--color-strong);
   font-size: var(--text-xs);
-  box-shadow: var(--shadow-md);
+  font-weight: 500;
+  line-height: 1.4;
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: blur(10px);
+}
+.toast > span {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-md);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+.toast[data-tone='error'] {
+  border-color: color-mix(in srgb, var(--color-red) 32%, var(--color-border-strong));
+  background: color-mix(in srgb, var(--color-surface) 92%, var(--color-red-soft));
+}
+.toast[data-tone='error'] > span {
+  background: var(--color-red-soft);
+  color: var(--color-red);
 }

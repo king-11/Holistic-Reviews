@@ -73,11 +73,16 @@ export default defineComponent(() => {
     const client = refresh ? live.fresh() : live;
     try {
       const ref = parsePRUrl(`https://github.com${route.path}`);
-      const result = await client.workspace(ref, signal, value => {
-        if (version !== loadVersion) return;
-        workspace.value = value;
-        loading.value = false;
-      });
+      const result = await client.workspace(
+        ref,
+        signal,
+        value => {
+          if (version !== loadVersion) return;
+          workspace.value = value;
+          loading.value = false;
+        },
+        refresh ? (workspace.value ?? undefined) : undefined,
+      );
       if (version !== loadVersion) return;
       workspace.value = result;
       recheckMergeability(ref, version);

@@ -810,6 +810,13 @@ describe('GitHub data loading', () => {
     assert.ok(result.warnings.some(warning => warning.includes('incomplete file list')));
     assert.ok(result.warnings.some(warning => warning.includes('Reviews could not')));
     assert.ok(result.warnings.some(warning => warning.includes('branch-based dependencies')));
+    let firstRefreshAutoMerge: boolean | undefined;
+    await new GitHub('test-only-token').workspace(ref, undefined, update => (firstRefreshAutoMerge ??= update.autoMerge), {
+      ...result,
+      autoMerge: true,
+      mergeMethods: ['squash'],
+    });
+    assert.equal(firstRefreshAutoMerge, true);
   });
 });
 

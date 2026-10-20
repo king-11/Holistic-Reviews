@@ -509,20 +509,27 @@ export class GitHub {
   }
 
   // Publishes the PR as soon as it arrives, then each section as it settles, so the page never waits on the slowest request.
-  async workspace(ref: PRRef, signal?: AbortSignal, onUpdate: (workspace: Workspace) => void = () => {}): Promise<Workspace> {
+  // Passing `previous` refreshes in place: settled sections stay on screen until their replacement arrives.
+  async workspace(
+    ref: PRRef,
+    signal?: AbortSignal,
+    onUpdate: (workspace: Workspace) => void = () => {},
+    previous?: Workspace,
+  ): Promise<Workspace> {
     const path = refPath(ref);
     const { data: pr } = await this.request<PullRequest>(path, { signal });
     let current: Workspace = {
-      pr,
       files: [],
       comments: [],
       inlineComments: [],
       reviews: [],
       related: [],
       reviewThreads: [],
-      warnings: [],
       reviewsLoaded: false,
-      pending: [...workspaceSections],
+      ...previous,
+      pr,
+      warnings: [],
+      pending: previous ? previous.pending : [...workspaceSections],
     };
     onUpdate(current);
     const settle = (section: WorkspaceSection, patch: Partial<Workspace>, warnings: string[] = []) => {

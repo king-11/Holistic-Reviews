@@ -185,11 +185,11 @@ export default defineComponent(
       }
     }
 
-    const toast = shallowRef({ id: 0, message: '' });
+    const toast = shallowRef({ id: 0, message: '', tone: 'ok' as 'ok' | 'error' });
     let toastTimer: ReturnType<typeof setTimeout> | undefined;
-    const showToast = (message: string) => {
+    const showToast = (message: string, tone: 'ok' | 'error' = 'ok') => {
       // A fresh key per message makes each one enter again, so a repeated action visibly registers.
-      toast.value = { id: toast.value.id + 1, message };
+      toast.value = { id: toast.value.id + 1, message, tone };
       clearTimeout(toastTimer);
       toastTimer = setTimeout(() => (toast.value = { ...toast.value, message: '' }), Math.max(2000, message.length * 60));
     };
@@ -203,7 +203,7 @@ export default defineComponent(
     const copy = (label: string, text: string) =>
       navigator.clipboard.writeText(text).then(
         () => showToast(`Copied ${label}`),
-        () => showToast('Clipboard unavailable in this browser'),
+        () => showToast('Clipboard unavailable in this browser', 'error'),
       );
     // Kept apart from `busy`, which also blocks App from reloading the PR after the write.
     const acting = shallowRef(false);
@@ -217,7 +217,7 @@ export default defineComponent(
         if (refresh) props.onRefresh();
         return result;
       } catch (failure) {
-        showToast(errorMessage(failure, 'GitHub could not complete this action.'));
+        showToast(errorMessage(failure, 'GitHub could not complete this action.'), 'error');
       } finally {
         acting.value = false;
       }
@@ -1759,8 +1759,8 @@ export default defineComponent(
         )}
         <AnimatePresence>
           {!!toast.value.message && (
-            <motion.div key={`toast-${toast.value.id}`} {...rise()} class={styles.toast} role="status">
-              <Check size={14} />
+            <motion.div key={`toast-${toast.value.id}`} {...rise()} class={styles.toast} data-tone={toast.value.tone} role="status">
+              <span aria-hidden="true">{toast.value.tone === 'error' ? <CircleX size={13} /> : <Check size={13} />}</span>
               {toast.value.message}
             </motion.div>
           )}
