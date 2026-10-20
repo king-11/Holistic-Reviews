@@ -1,4 +1,4 @@
-import { FileCode2 } from '@lucide/vue';
+import { ArrowRight, FileCode2, Plus } from '@lucide/vue';
 import { fileIcon } from './file_icons';
 
 export default function FileIcon(props: { filename: string }) {
@@ -15,5 +15,15 @@ export default function FileIcon(props: { filename: string }) {
     />
   ) : (
     <FileCode2 size={16} data-file-type="unknown" aria-hidden="true" />
+  );
+}
+
+// The Changes tab's mark, also used where a comment links back to its diff.
+export function FileCodeIcon() {
+  return (
+    <span class="changes-icon">
+      <ArrowRight size={12} />
+      <Plus size={9} />
+    </span>
   );
 }

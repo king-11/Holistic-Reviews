@@ -1,10 +1,20 @@
-import { computed, defineComponent, onMounted, onUnmounted, provide, shallowRef, watch, watchEffect } from 'vue';
+import {
+  computed,
+  defineComponent,
+  onMounted,
+  onUnmounted,
+  provide,
+  shallowRef,
+  watch,
+  watchEffect,
+  type ComputedRef,
+  type ShallowRef,
+} from 'vue';
 import { createShortcuts, modalOpen, step } from './shortcuts';
 import { AnimatePresence, motion } from 'motion-v';
-import { drop, reduced, rise } from './motion';
+import { drop, rise } from './motion';
 import {
   ArrowLeft,
-  ArrowRight,
   Check,
   CheckCheck,
   ChevronRight,
@@ -13,18 +23,11 @@ import {
   CircleCheck,
   CircleX,
   Columns2,
-  GitBranch,
   GitCommitHorizontal,
-  GitMerge,
-  GitPullRequest,
-  GitPullRequestClosed,
-  Layers,
   List,
   MessageSquare,
   MessagesSquare,
   PanelLeftOpen,
-  Pencil,
-  Plus,
   RefreshCw,
   Search,
   Settings2,
@@ -32,16 +35,16 @@ import {
   X,
 } from '@lucide/vue';
 import {
-  blockingStates,
   branchRelations,
   errorMessage,
-  mergeReady,
   type ChangedFile,
   type Comment,
   type Commit,
   type Comparison,
   type GitHub,
   type PRRef,
+  type PullRequest,
+  type Workspace,
   type Review,
   type ReviewCommentInput,
   type TokenInfo,
@@ -50,45 +53,24 @@ import {
 } from './github';
 import FileTree from './FileTree';
 import Checks from './Checks';
-import DetailsPanel, { Information, MergeControls, MoreMenu, ReviewIcon, reviewApproved, useDetails, type Mutate } from './DetailsPanel';
+import DetailsPanel, { MergeControls, MoreMenu, reviewApproved, useDetails, type Details, type Mutate } from './DetailsPanel';
 import DiffView, { type ContextLoader, type DiffSettings } from './DiffView';
-import {
-  Avatar,
-  CodeSnippet,
-  IconButton,
-  Loader,
-  Modal,
-  SearchField,
-  Spinner,
-  Timestamp,
-  inputValue,
-  timeAgo,
-  fullDate,
-  update,
-  Dismiss,
-} from './ui';
-import Markdown from './MarkdownView';
+import { IconButton, Loader, Modal, SearchField, Spinner, inputValue, update, Dismiss } from './ui';
 import MentionField from './MentionField';
 import { peopleDirectory, peopleKey } from './people';
 import { markInboxStale, recordPR } from './inboxUpdates';
 import { toggleViewedFile, verifiedContextLines } from './diff';
-import {
-  commentEntries,
-  commentRange,
-  commentSnippet,
-  diffLinePreview,
-  isBot,
-  withThreadLocations,
-  type CommentEntry,
-  type LinePoint,
-} from './comments';
+import { commentEntries, commentRange, diffLinePreview, isBot, withThreadLocations, type CommentEntry, type LinePoint } from './comments';
 import CommentsPanel from './CommentsPanel';
 import InlineComposer, { type InlineLocation } from './InlineComposer';
 import type { ReplyActions } from './ReviewThread';
 import type { PRWorkspace } from './prWorkspace';
-import { CommentActions, CommentBody, isReview, type EditActions, type Editable } from './CommentEditor';
-import ReactionBar, { createReactionActions } from './Reactions';
+import { isReview, type EditActions, type Editable } from './CommentEditor';
+import { createReactionActions, type ReactionActions } from './Reactions';
+import PRHeader from './PRHeader';
+import ConversationTab from './ConversationTab';
 import { CommitHistory, CommitPicker, type CommitRange } from './Commits';
+import { FileCodeIcon } from './FileIcon';
 import { filterFiles, type FileStatus } from './file_filters';
 import { mutationBusy } from './session';
 import styles from './ReviewWorkspace.module.css';
@@ -96,6 +78,38 @@ import switchStyles from './switch.module.css';
 
 type ReviewEvent = 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES';
 type Dialog = 'review' | 'inline' | 'discard' | null;
+
+// What the layout shell shares with the header and tabs it renders; all PR data reads through `store`.
+export interface PRView {
+  store: PRWorkspace;
+  api: GitHub;
+  ws: () => Workspace;
+  pr: () => PullRequest;
+  ref: () => PRRef;
+  prUrl: (number: number) => string;
+  markdownBase: () => string;
+  viewer: () => User;
+  busy: ShallowRef<boolean>;
+  mutate: Mutate;
+  done: (message: string, warning?: string) => void;
+  copy: (label: string, text: string) => Promise<void>;
+  entered: Map<string, string>;
+  entrance: (key: string) => string;
+  details: Details;
+  approved: () => boolean;
+  relations: ComputedRef<ReturnType<typeof branchRelations>>;
+  stalePending: () => boolean;
+  pendingSection: (...sections: WorkspaceSection[]) => boolean;
+  pending: ComputedRef<Review | undefined>;
+  allComments: ComputedRef<Comment[]>;
+  visibleConversation: ComputedRef<Comment[]>;
+  visibleReviews: ComputedRef<Review[]>;
+  shown: (item: { user: User }) => boolean;
+  edits: EditActions;
+  reactions: ReactionActions;
+  displayFiles: ComputedRef<ChangedFile[]>;
+  selectFile: (filename: string) => void;
+}
 
 type Props = {
   store: PRWorkspace;
@@ -485,65 +499,8 @@ export default defineComponent(
     }
 
     const body = shallowRef('');
-    async function postComment(e: SubmitEvent) {
-      e.preventDefault();
-      if (!body.value.trim()) return;
-      await mutate(async () => {
-        const result = await props.api.comment(ref(), body.value.trim());
-        entered.set(`comment-${result.id}`, 'grow-in');
-        props.store.edit('comments', prev => [...prev, result]);
-        body.value = '';
-        done('Comment posted to GitHub.');
-      });
-    }
-
-    const focused = new WeakSet<Element>();
-    // Function refs rerun on every patch; focus each editor only when it first mounts.
-    const focusOnce = (el: unknown) => {
-      if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) || focused.has(el)) return;
-      focused.add(el);
-      if (el instanceof HTMLInputElement) el.select();
-      else el.focus();
-    };
-    const titleDraft = shallowRef<string | null>(null);
-    const saveTitle = () => {
-      const title = titleDraft.value?.trim();
-      titleDraft.value = null;
-      if (title && title !== pr().title) void mutate(api => api.editPR(ref(), { title }), { toast: 'Title updated', refresh: 'all' });
-    };
-    const bodyDraft = shallowRef<string | null>(null);
-    const descriptionOpen = shallowRef(true);
-    const saveBody = async () => {
-      if (await mutate(api => api.editPR(ref(), { body: bodyDraft.value ?? '' }), { toast: 'Description updated', refresh: 'all' }))
-        bodyDraft.value = null;
-    };
     const approved = () => reviewApproved(pr(), ws().reviews, ws().onBehalfOf);
-    const prStatus = () => {
-      const current = pr();
-      const checks = ws().checks ?? [];
-      if (current.merged) return ['Merged', GitMerge, 'merged'] as const;
-      if (current.state === 'closed') return ['Closed', GitPullRequestClosed, 'blocked'] as const;
-      if (current.draft) return ['Draft', CircleX, 'blocked'] as const;
-      if (checks.some(check => blockingStates.includes(check.state))) return ['Checks failed', CircleX, 'blocked'] as const;
-      if (mergeReady(current) && !checks.some(check => check.state === 'pending') && approved())
-        return ['Ready to merge', CircleCheck, 'open'] as const;
-      return ['Open', GitPullRequest, 'open'] as const;
-    };
-    // Celebrates a merge that happens while you watch, never one that was already done when the PR opened.
-    const celebrating = shallowRef(false);
-    let celebrationTimer: ReturnType<typeof setTimeout> | undefined;
-    watch(
-      () => pr().merged,
-      (merged, was) => {
-        if (!merged || was !== false) return;
-        celebrating.value = true;
-        clearTimeout(celebrationTimer);
-        celebrationTimer = setTimeout(() => (celebrating.value = false), 900);
-      },
-    );
-    onUnmounted(() => clearTimeout(celebrationTimer));
 
-    const stackOpen = shallowRef(false);
     const relations = computed(() => branchRelations(pr(), ws().related));
     const stack = () =>
       ws().nativeStack
@@ -905,57 +862,35 @@ export default defineComponent(
     window.addEventListener('beforeunload', unsaved);
     onUnmounted(() => window.removeEventListener('beforeunload', unsaved));
 
-    const codeComment = (comment: Comment) => (
-      <section class={styles['review-code-comment']}>
-        <div class="flex items-center">
-          <button
-            class={styles['review-comment-location']}
-            title={`Show the changed file ${comment.path || '(unavailable)'}`}
-            onClick={() => selectFile(comment.path || '')}
-          >
-            <FileCodeIcon />
-            {comment.path?.split('/').at(-1)}
-            {comment.line ? `:${comment.line}` : ' · outdated'}
-          </button>
-          <CommentActions item={comment} actions={edits} />
-        </div>
-        <CodeSnippet
-          rows={commentSnippet(
-            comment,
-            displayFiles.value.find(file => file.filename === comment.path),
-          )}
-        />
-        <CommentBody item={comment} actions={edits} baseUrl={markdownBase()} />
-        <ReactionBar
-          comment={comment}
-          actions={reactions}
-          pending={!!pending.value && comment.pull_request_review_id === pending.value.id}
-        />
-      </section>
-    );
-    const reviewCard = (review: Review) => {
-      const code = allComments.value.filter(comment => comment.pull_request_review_id === review.id && shown(comment));
-      return (
-        <div class={`conversation-comment ${entrance(`review-${review.id}`)}`} data-review-state={review.state}>
-          <div class="comment-author">
-            <Avatar login={review.user.login} src={review.user.avatar_url} small />
-            <strong>{review.user.id === viewer().id ? 'You' : review.user.login}</strong>
-            {review.state === 'PENDING' ? <span class="pending-badge">Pending</span> : <ReviewIcon review={review.state} />}
-            {!!review.submitted_at && <Timestamp date={review.submitted_at} />}
-            <CommentActions item={review} actions={edits} />
-          </div>
-          {(review.body || '').trim() ? (
-            <>
-              <CommentBody item={review} actions={edits} baseUrl={markdownBase()} />
-              <ReactionBar comment={review} actions={reactions} pending={review.state === 'PENDING'} />
-            </>
-          ) : (
-            review.state === 'PENDING' &&
-            !code.length && <Markdown body="Review in progress. Add comments from the diff, then finish your review." />
-          )}
-          {code.map(codeComment)}
-        </div>
-      );
+    const view: PRView = {
+      store: props.store,
+      api: props.api,
+      ws,
+      pr,
+      ref,
+      prUrl,
+      markdownBase,
+      viewer,
+      busy,
+      mutate,
+      done,
+      copy,
+      entered,
+      entrance,
+      details,
+      approved,
+      relations,
+      stalePending,
+      pendingSection,
+      pending,
+      allComments,
+      visibleConversation,
+      visibleReviews,
+      shown,
+      edits,
+      reactions,
+      displayFiles,
+      selectFile,
     };
 
     return () => (
@@ -1064,234 +999,7 @@ export default defineComponent(
           </div>
           <div class={styles['review-scroll']}>
             <div class="pr-top">
-              <section class="pr-heading-section">
-                <div class="pr-heading-inner">
-                  <div class="pr-title-row">
-                    {titleDraft.value !== null ? (
-                      <input
-                        class="pr-title-input"
-                        aria-label="Pull request title"
-                        value={titleDraft.value}
-                        maxlength={256}
-                        ref={focusOnce}
-                        onInput={e => (titleDraft.value = inputValue(e))}
-                        onBlur={saveTitle}
-                        onKeydown={(e: KeyboardEvent) => {
-                          if (e.key === 'Enter') saveTitle();
-                          if (e.key === 'Escape') titleDraft.value = null;
-                        }}
-                      />
-                    ) : (
-                      <h1>
-                        <button
-                          class="pr-title-button"
-                          title="Edit title"
-                          disabled={busy.value}
-                          onClick={() => (titleDraft.value = pr().title)}
-                        >
-                          {pr().title}
-                        </button>
-                      </h1>
-                    )}
-                    {(() => {
-                      const [label, Icon, tone] = prStatus();
-                      return (
-                        <span
-                          class="pr-state"
-                          data-tone={tone}
-                          data-celebrate={celebrating.value ? '' : undefined}
-                          role="img"
-                          aria-label={label}
-                          title={label}
-                        >
-                          <Icon size={18} />
-                          {celebrating.value && !reduced() && (
-                            <span class="merge-burst" aria-hidden="true">
-                              {Array.from({ length: 10 }, (_, index) => (
-                                <i key={index} style={`--angle: ${index * 36}deg`} />
-                              ))}
-                            </span>
-                          )}
-                        </span>
-                      );
-                    })()}
-                  </div>
-                  <div class="pr-details">
-                    <Avatar login={pr().user.login} src={pr().user.avatar_url} small />
-                    <strong>{pr().user.login}</strong>
-                    <span>
-                      {pr().merged ? 'merged' : pr().state === 'closed' ? 'wanted to merge' : 'wants to merge'} {pr().commits}{' '}
-                      {pr().commits === 1 ? 'commit' : 'commits'} into
-                    </span>
-                    {[pr().base.ref, null, pr().head.ref].map(branch =>
-                      branch === null ? (
-                        <ArrowLeft key="arrow" size={12} />
-                      ) : (
-                        <button key={branch} class="pr-branch" title={`Copy ${branch}`} onClick={() => copy('branch name', branch)}>
-                          {branch}
-                        </button>
-                      ),
-                    )}
-                  </div>
-                  <div class="pr-meta">
-                    <time title={fullDate(pr().created_at)}>Opened {timeAgo(pr().created_at)}</time>·
-                    <time title={fullDate(pr().updated_at)}>Updated {timeAgo(pr().updated_at)}</time>·
-                    <span>
-                      {pr().changed_files} {pr().changed_files === 1 ? 'file' : 'files'}
-                    </span>
-                    <span class="additions">+{pr().additions}</span>
-                    <span class="deletions">−{pr().deletions}</span>
-                  </div>
-                  {!!(ws().nativeStack || relations.value.parents.length || relations.value.children.length) && (
-                    <div class={`reveal border border-border rounded-lg mt-5 ${styles['overflow-hidden']}`}>
-                      <div class="dependency-heading">
-                        <Layers size={14} />
-                        <button
-                          class="flex items-center gap-2 py-0.5 px-0 text-left"
-                          title={stackOpen.value ? 'Hide dependent pull requests' : 'Show the PR stack or branch-based dependencies'}
-                          aria-expanded={stackOpen.value}
-                          aria-controls="dependency-entries"
-                          onClick={() => (stackOpen.value = !stackOpen.value)}
-                        >
-                          <strong>{ws().nativeStack ? `GitHub stack #${ws().nativeStack!.number}` : 'Dependent pull requests'}</strong>
-                          <ChevronRight size={13} class={`chevron ${stackOpen.value ? 'rotated' : ''}`} />
-                        </button>
-                        <span>{ws().nativeStack ? `${ws().nativeStack!.size} pull requests` : 'Linked by branch'}</span>
-                        {!!stackOpen.value && (
-                          <IconButton label="Close stack panel" onClick={() => (stackOpen.value = false)}>
-                            <X size={15} />
-                          </IconButton>
-                        )}
-                      </div>
-                      {!!stackOpen.value && (
-                        <div id="dependency-entries">
-                          {ws().nativeStack ? (
-                            <>
-                              {(ws().nativeStack?.entries ?? []).map(entry => (
-                                <button
-                                  class={`dependency-row ${entry.number === pr().number ? styles['current-entry'] : ''}`}
-                                  title={`${entry.number === pr().number ? 'Current PR' : 'Open stacked PR'} #${entry.number}: ${entry.title}`}
-                                  disabled={busy.value || entry.number === pr().number}
-                                  onClick={() => props.onOpen(entry.url)}
-                                >
-                                  <span class="dependency-kind">
-                                    {entry.position}.<GitPullRequest size={13} />
-                                  </span>
-                                  <span>#{entry.number}</span>
-                                  <strong>{entry.title}</strong>
-                                  {entry.number === pr().number ? <span>Current</span> : <ChevronRight size={13} />}
-                                </button>
-                              ))}
-                              {!!ws().nativeStack?.truncated && (
-                                <p class="group-warning">Showing the first 100 stack entries. Open GitHub for the full stack.</p>
-                              )}
-                            </>
-                          ) : (
-                            <>
-                              {relations.value.parents.map(parent => (
-                                <button
-                                  class="dependency-row"
-                                  title={`Open parent PR #${parent.number}: ${parent.title}`}
-                                  disabled={busy.value}
-                                  onClick={() => props.onOpen(prUrl(parent.number))}
-                                >
-                                  <span class="dependency-kind">
-                                    <GitBranch size={13} />
-                                    Parent
-                                  </span>
-                                  <span>#{parent.number}</span>
-                                  <strong>{parent.title}</strong>
-                                  <ChevronRight size={13} />
-                                </button>
-                              ))}
-                              <div class="dependency-current">
-                                <span class="dependency-node" />
-                                <span>#{pr().number}</span>
-                                <strong>{pr().title}</strong>
-                                <span>Current</span>
-                              </div>
-                              {relations.value.children.map(child => (
-                                <button
-                                  class="dependency-row"
-                                  title={`Open child PR #${child.number}: ${child.title}`}
-                                  disabled={busy.value}
-                                  onClick={() => props.onOpen(prUrl(child.number))}
-                                >
-                                  <span class="dependency-kind">
-                                    <GitBranch size={13} />
-                                    Child
-                                  </span>
-                                  <span>#{child.number}</span>
-                                  <strong>{child.title}</strong>
-                                  <ChevronRight size={13} />
-                                </button>
-                              ))}
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  <Information details={details} />
-                  <div class={`description-heading ${styles['mt-4']}`}>
-                    <button
-                      class="section-heading"
-                      aria-expanded={descriptionOpen.value}
-                      onClick={() => (descriptionOpen.value = !descriptionOpen.value)}
-                    >
-                      <ChevronRight size={13} class={`chevron ${descriptionOpen.value ? 'rotated' : ''}`} />
-                      Description
-                    </button>
-                    {bodyDraft.value === null && (
-                      <button
-                        class="button small"
-                        disabled={busy.value}
-                        onClick={() => {
-                          descriptionOpen.value = true;
-                          bodyDraft.value = pr().body ?? '';
-                        }}
-                      >
-                        <Pencil size={14} />
-                        Edit
-                      </button>
-                    )}
-                  </div>
-                  {bodyDraft.value !== null ? (
-                    <div class="description-editor">
-                      <MentionField
-                        aria-label="Pull request description"
-                        value={bodyDraft.value}
-                        maxlength={65000}
-                        disabled={busy.value}
-                        inputRef={focusOnce}
-                        onInput={value => (bodyDraft.value = value)}
-                      />
-                      <div class={styles['comment-form-footer']}>
-                        <span>Markdown supported</span>
-                        <div class="flex gap-2">
-                          <button class="button small" onClick={() => (bodyDraft.value = null)}>
-                            Cancel
-                          </button>
-                          <button class="button small primary" disabled={busy.value} onClick={saveBody}>
-                            Save
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    descriptionOpen.value && (
-                      <div class={styles['pr-description']}>
-                        <Markdown body={pr().body || 'No description provided.'} baseUrl={markdownBase()} />
-                      </div>
-                    )
-                  )}
-                  {!!stalePending() && (
-                    <div class="warning-banner">
-                      Your pending review targets an older commit. Discard it before starting a new review on these changes.
-                    </div>
-                  )}
-                </div>
-              </section>
+              <PRHeader view={view} onOpen={props.onOpen} />
               {!commentsOpen.value && <DetailsPanel details={details} />}
             </div>
             <div class="review-tabs-bar">
@@ -1377,93 +1085,8 @@ export default defineComponent(
                 entrance={entrance('checks')}
               />
             )}
-            {tab.value === 'review' && (
-              <div class="conversation own-review">
-                <div class={styles['own-review-heading']}>
-                  <h3>Your review</h3>
-                  <p>
-                    {pending.value
-                      ? 'Your pending comments are private until you submit this review.'
-                      : 'Your feedback on this pull request, all in one place.'}
-                  </p>
-                </div>
-                {ws()
-                  .reviews.filter(review => review.user.id === viewer().id)
-                  .map(reviewCard)}
-                {allComments.value
-                  .filter(
-                    comment =>
-                      comment.user.id === viewer().id && !ws().reviews.some(review => review.id === comment.pull_request_review_id),
-                  )
-                  .map(comment => (
-                    <div class="conversation-comment">
-                      <div class="comment-author">
-                        <Avatar login={comment.user.login} src={comment.user.avatar_url} small />
-                        <strong>You</strong>
-                        <Timestamp date={comment.created_at} />
-                      </div>
-                      {codeComment(comment)}
-                    </div>
-                  ))}
-                {!ws().reviews.some(review => review.user.id === viewer().id) &&
-                  !allComments.value.some(comment => comment.user.id === viewer().id) && (
-                    <div class="empty-state">
-                      <MessageSquare size={26} />
-                      <h3>A fresh perspective starts here.</h3>
-                      <p>Click a line number in the diff to leave feedback, or start a review to save comments as a draft.</p>
-                      <button class="button" title="Return to the diff to add inline feedback" onClick={() => (tab.value = 'changes')}>
-                        Back to changes
-                      </button>
-                    </div>
-                  )}
-              </div>
-            )}
-            {tab.value === 'conversation' && (
-              <div class="conversation">
-                {pendingSection('comments', 'reviews') && <Loader label="Loading conversation…" />}
-                {visibleConversation.value.map(comment => (
-                  <div id={`conversation-comment-${comment.id}`} class={`conversation-comment ${entrance(`comment-${comment.id}`)}`}>
-                    <div class="comment-author">
-                      <Avatar login={comment.user.login} src={comment.user.avatar_url} small />
-                      <strong>{comment.user.login}</strong>
-                      <Timestamp date={comment.created_at} prefix="commented" />
-                      <CommentActions item={comment} actions={edits} />
-                    </div>
-                    <CommentBody item={comment} actions={edits} baseUrl={markdownBase()} />
-                    <ReactionBar comment={comment} actions={reactions} />
-                  </div>
-                ))}
-                {visibleReviews.value.filter(review => review.state !== 'PENDING').map(reviewCard)}
-                <form class={styles['comment-form']} onSubmit={postComment}>
-                  <label for="pr-comment">Leave a comment</label>
-                  <MentionField
-                    id="pr-comment"
-                    placeholder="Share your thoughts on this pull request…"
-                    value={body.value}
-                    onInput={value => (body.value = value)}
-                    maxlength={65000}
-                    disabled={busy.value}
-                  />
-                  <div class={styles['comment-form-footer']}>
-                    <span>Posted publicly to this PR on GitHub.</span>
-                    <button
-                      class="button primary"
-                      title="Publish a comment to the PR conversation immediately"
-                      type="submit"
-                      disabled={busy.value || !body.value.trim()}
-                    >
-                      {busy.value ? (
-                        <Spinner text="Posting…" />
-                      ) : (
-                        <>
-                          <MessageSquare size={14} />
-                          Comment
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </form>
-              </div>
+            {(tab.value === 'review' || tab.value === 'conversation') && (
+              <ConversationTab view={view} mode={tab.value} draft={body} onChanges={() => (tab.value = 'changes')} />
             )}
             {tab.value === 'changes' && (
               <>
@@ -1880,12 +1503,3 @@ export default defineComponent(
   },
   { props: ['store', 'api', 'info', 'settings', 'onSettings', 'onOpen', 'onBack'] },
 );
-
-function FileCodeIcon() {
-  return (
-    <span class="changes-icon">
-      <ArrowRight size={12} />
-      <Plus size={9} />
-    </span>
-  );
-}
