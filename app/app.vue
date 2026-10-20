@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import App from '../src/App';
+import { api, info } from '../src/session';
 
 const home = () => window.location.assign('/');
 </script>
@@ -7,7 +8,10 @@ const home = () => window.location.assign('/');
 <template>
   <NuxtErrorBoundary>
     <App>
-      <NuxtPage :keepalive="{ include: ['InboxPage'] }" />
+      <!-- NuxtPage stays mounted so Nuxt sees it; only the page waits for a GitHub connection. -->
+      <NuxtPage v-slot="{ Component }" :keepalive="{ include: ['InboxPage'] }">
+        <component :is="Component" v-if="api && info" />
+      </NuxtPage>
     </App>
     <template #error="{ error, clearError }">
       <main class="empty-state">
