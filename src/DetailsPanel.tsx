@@ -26,6 +26,9 @@ import {
 } from '@lucide/vue';
 import {
   errorMessage,
+  pullRequestReviewers,
+  reviewDecision,
+  teamKey,
   mergeabilityPending,
   mergeReady,
   type GitHub,
@@ -36,7 +39,9 @@ import {
   type PullRequest,
   type Review,
   type StatusCheck,
+  type WorkspaceSection,
 } from './github';
+import type { PRWorkspace } from './prWorkspace';
 import { checkIcons } from './Checks';
 import { pop } from './motion';
 import { Avatar, IconButton, Loader, PersonLabel, SearchField, useWidth, Dismiss } from './ui';
@@ -44,7 +49,10 @@ import { usePeople, useSearch, type Person } from './people';
 import styles from './DetailsPanel.module.css';
 import switchStyles from './switch.module.css';
 
-export type Run = <T>(label: string, work: (api: GitHub) => Promise<T>, refresh?: boolean) => Promise<T | undefined>;
+// `toast` announces the outcome in the toast, failures included; without it a failure shows in the page's error banner.
+// `refresh` rereads after the write: GitHub recomputes review requests and mergeability, so most writes need `pr`.
+export type MutateOptions = { toast?: string; refresh?: 'pr' | 'all' | 'none' };
+export type Mutate = (work: (api: GitHub) => Promise<unknown>, options?: MutateOptions) => Promise<boolean>;
 
 const readiness: Record<string, [string, string]> = {
   clean: ['Ready to merge', 'All checks and approval requirements have been met'],
@@ -90,21 +98,8 @@ const describeChecks = (checks?: StatusCheck[]) =>
     .filter(([, count]) => count)
     .map(([kind, count]) => `${count} ${checkWords[kind]}`)
     .join(', ') || 'No checks';
-// A review given on behalf of a requested team stands in for that team's request.
-export function reviewerStates(pr: PullRequest, reviews: Review[], onBehalfOf: Record<string, string[]> = {}) {
-  const covered = new Set(Object.values(onBehalfOf).flat());
-  const latest = new Map<string, string>();
-  for (const review of reviews) if (review.state !== 'PENDING') latest.set(review.user.login, review.state);
-  for (const user of pr.requested_reviewers ?? []) latest.set(user.login, 'REQUESTED');
-  for (const team of pr.requested_teams ?? []) if (!covered.has(teamKey(pr, team.slug))) latest.set(teamKey(pr, team.slug), 'REQUESTED');
-  return [...latest];
-}
-// Approved means someone approved and nobody's latest review still requests changes.
-export const reviewApproved = (pr: PullRequest, reviews: Review[], onBehalfOf?: Record<string, string[]>) => {
-  const states = reviewerStates(pr, reviews, onBehalfOf).map(([, state]) => state);
-  return states.includes('APPROVED') && !states.includes('CHANGES_REQUESTED');
-};
-const teamKey = (pr: PullRequest, slug: string) => `${pr.base.repo?.full_name.split('/')[0]}/${slug}`;
+export const reviewApproved = (pr: PullRequest, reviews: Review[], onBehalfOf?: Record<string, string[]>) =>
+  reviewDecision(pullRequestReviewers(pr, reviews, onBehalfOf)) === 'APPROVED';
 // GitHub rejects review requests for the PR author and for bots.
 const requestable = (pr: PullRequest, login: string) => login !== pr.user.login && !login.endsWith('[bot]');
 
@@ -219,22 +214,24 @@ export const MergeControls = defineComponent(
     autoMerge: boolean;
     approved: boolean;
     disabled: boolean;
-    onRun: Run;
+    onMutate: Mutate;
   }) => {
     const autoMergeMethod = () => props.pr.auto_merge?.merge_method ?? props.methods[0];
     const toggleAutoMerge = async (input: HTMLInputElement) => {
       const enable = input.checked;
       const method = autoMergeMethod();
-      const saved = await props.onRun(enable ? 'Auto-merge enabled' : 'Auto-merge turned off', async api => {
-        try {
-          await api.setAutoMerge(props.pr, enable && method ? method : null);
-          return true;
-        } catch (error) {
-          if (enable && error instanceof Error && /clean status/i.test(error.message))
-            throw new Error('This pull request is already mergeable. Use Merge.');
-          throw error;
-        }
-      });
+      const saved = await props.onMutate(
+        async api => {
+          try {
+            await api.setAutoMerge(props.pr, enable && method ? method : null);
+          } catch (error) {
+            if (enable && error instanceof Error && /clean status/i.test(error.message))
+              throw new Error('This pull request is already mergeable. Use Merge.');
+            throw error;
+          }
+        },
+        { toast: enable ? 'Auto-merge enabled' : 'Auto-merge turned off', refresh: 'all' },
+      );
       // A failed write leaves the PR unchanged, so the switch must not keep the rejected position.
       if (!saved) input.checked = !enable;
     };
@@ -270,13 +267,15 @@ export const MergeControls = defineComponent(
             autoMerge={props.autoMerge}
             approved={props.approved}
             disabled={props.disabled}
-            onMerge={method => props.onRun('Pull request merged', api => api.merge(props.prRef, pr.head.sha, method))}
+            onMerge={method =>
+              props.onMutate(api => api.merge(props.prRef, pr.head.sha, method), { toast: 'Pull request merged', refresh: 'all' })
+            }
           />
         </>
       );
     };
   },
-  { props: ['pr', 'prRef', 'methods', 'autoMerge', 'approved', 'disabled', 'onRun'] },
+  { props: ['pr', 'prRef', 'methods', 'autoMerge', 'approved', 'disabled', 'onMutate'] },
 );
 
 export const MoreMenu = defineComponent(
@@ -285,7 +284,8 @@ export const MoreMenu = defineComponent(
     return () => {
       const { details } = props;
       const pr = details.pr();
-      const { onRun, prRef } = details.source();
+      const { onMutate, prRef } = details.source();
+      const change = (toast: string, work: Parameters<Mutate>[0]) => () => void onMutate(work, { toast, refresh: 'all' });
       if (pr.merged) return null;
       const actions: [string, typeof GitPullRequest, () => void][] =
         pr.state === 'open'
@@ -293,15 +293,11 @@ export const MoreMenu = defineComponent(
               [
                 pr.draft ? 'Ready for review' : 'Convert to draft',
                 pr.draft ? GitPullRequest : GitPullRequestDraft,
-                () => onRun(pr.draft ? 'Marked ready for review' : 'Converted to draft', api => api.setDraft(pr, !pr.draft)),
+                change(pr.draft ? 'Marked ready for review' : 'Converted to draft', api => api.setDraft(pr, !pr.draft)),
               ],
-              [
-                'Close pull request',
-                GitPullRequestClosed,
-                () => onRun('Pull request closed', api => api.editPR(prRef, { state: 'closed' })),
-              ],
+              ['Close pull request', GitPullRequestClosed, change('Pull request closed', api => api.editPR(prRef, { state: 'closed' }))],
             ]
-          : [['Reopen pull request', GitPullRequest, () => onRun('Pull request reopened', api => api.editPR(prRef, { state: 'open' }))]];
+          : [['Reopen pull request', GitPullRequest, change('Pull request reopened', api => api.editPR(prRef, { state: 'open' }))]];
       return (
         <div class="popover-anchor">
           <IconButton label="More pull request actions" active={open.value} onClick={() => (open.value = !open.value)}>
@@ -412,42 +408,53 @@ const Picker = defineComponent(
   { props: ['label', 'load', 'search', 'selected', 'disabled', 'onPick'] },
 );
 
-export interface DetailsSource {
-  pr: PullRequest;
-  reviews: Review[];
-  checks?: StatusCheck[];
-  issues?: LinkedIssue[];
-  codeOwners?: string[];
-  onBehalfOf?: Record<string, string[]>;
+export interface DetailsInput {
+  store: PRWorkspace;
   api: GitHub;
   prRef: PRRef;
   busy: boolean;
   onChecks: () => void;
-  onPatch: (patch: Partial<PullRequest>) => void;
-  onRun: Run;
+  onMutate: Mutate;
 }
 
-// Label and reviewer writes return the new values, so they patch locally in addition to refreshing the PR.
-export function useDetails(source: () => DetailsSource) {
+// Sections still loading read as undefined so the panel shows their loaders; writes land in the PR store.
+export function useDetails(input: () => DetailsInput) {
+  const source = () => {
+    const { store } = input();
+    const workspace = store.current();
+    const settled = (section: WorkspaceSection) => !workspace.pending.includes(section);
+    return {
+      ...input(),
+      pr: workspace.pr,
+      reviews: workspace.reviews,
+      checks: settled('checks') ? (workspace.checks ?? []) : undefined,
+      issues: settled('linkedIssues') ? (workspace.linkedIssues ?? []) : undefined,
+      codeOwners: workspace.codeOwners,
+      onBehalfOf: workspace.onBehalfOf,
+    };
+  };
   const pr = () => source().pr;
-  const reviewers = computed(() => reviewerStates(pr(), source().reviews, source().onBehalfOf));
+  const reviewers = computed(() =>
+    pullRequestReviewers(pr(), source().reviews, source().onBehalfOf).map(
+      row => [row.login, row.requested ? 'REQUESTED' : row.review!] as const,
+    ),
+  );
   const labels = () => pr().labels ?? [];
+  // Label and reviewer writes return the new values; patching them keeps the sidebar right while GitHub's reread lags.
+  const setPR = (change: Partial<PullRequest>) => input().store.setPR(change);
   const setLabels = (names: string[]) =>
-    void source()
-      .onRun('Labels updated', api => api.setLabels(source().prRef, names), false)
-      .then(value => {
-        if (value) source().onPatch({ labels: value });
-      });
+    void source().onMutate(async api => setPR({ labels: await api.setLabels(source().prRef, names) }), {
+      toast: 'Labels updated',
+      refresh: 'pr',
+    });
   const request = (logins: string[], remove = false) =>
-    void source()
-      .onRun(
-        `Review ${remove ? 'request removed' : 'requested'} from ${logins.join(', ')}`,
-        api => api.requestReviewers(source().prRef, logins, remove),
-        false,
-      )
-      .then(value => {
-        if (value) source().onPatch({ requested_reviewers: value.requested_reviewers, requested_teams: value.requested_teams });
-      });
+    void source().onMutate(
+      async api => {
+        const { requested_reviewers, requested_teams } = await api.requestReviewers(source().prRef, logins, remove);
+        setPR({ requested_reviewers, requested_teams });
+      },
+      { toast: `Review ${remove ? 'request removed' : 'requested'} from ${logins.join(', ')}`, refresh: 'pr' },
+    );
   return {
     source,
     pr,

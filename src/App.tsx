@@ -30,7 +30,7 @@ import './styles.css';
 import styles from './App.module.css';
 import logoUrl from './assets/hermes-logo.png';
 
-// The shell stays mounted across routes; the current page renders in its default slot once GitHub is connected.
+// The shell stays mounted across routes; app.vue renders the current page in its default slot once GitHub is connected.
 export default defineComponent((_, { slots }) => {
   const shortcutsOpen = shallowRef(false);
   const accountOpen = shallowRef(false);
@@ -218,16 +218,15 @@ export default defineComponent((_, { slots }) => {
           </div>
         </>
       )}
-      {!api.value || !info.value ? (
+      {(!api.value || !info.value) && (
         <main class="empty-state">
           <Github size={35} />
           <h2>Connect GitHub to start reviewing</h2>
           <p>Your review requests, authored PRs, and drafts load straight from GitHub.</p>
           {connectButton('primary')}
         </main>
-      ) : (
-        slots.default?.()
       )}
+      {slots.default?.()}
       <AnimatePresence>
         {!!authOpen.value && <AuthDialog key="auth" onClose={() => (authOpen.value = false)} onConnect={connect} />}
         {!!openDialog.value && (

@@ -9,7 +9,15 @@ import {
   withSnapshots,
   type InboxView,
 } from './inboxUpdates.ts';
-import type { Comment, InboxItem, PullRequest, Review } from './github.ts';
+import {
+  pullRequestReviewers,
+  reviewDecision,
+  reviewOutcome,
+  type Comment,
+  type InboxItem,
+  type PullRequest,
+  type Review,
+} from './github.ts';
 import { demoPR } from './fixtures.ts';
 
 const me = { id: 1, login: 'me' };
@@ -17,6 +25,7 @@ const alice = { id: 2, login: 'alice' };
 const pr = (extra: Partial<PullRequest> = {}): PullRequest => ({
   ...demoPR,
   html_url: 'https://github.com/acme/app/pull/42',
+  base: { ...demoPR.base, repo: { ...demoPR.base.repo!, full_name: 'acme/app' } },
   number: 42,
   user: alice,
   state: 'open',
@@ -160,4 +169,49 @@ describe('withSnapshots', () => {
     recordPR(pr({ user: me }), [review(alice, 'APPROVED', 1)], [], 'me');
     assert.equal(withSnapshots('authored', [], inboxSnapshots(), view()).items[0]!.review, 'approved');
   });
+});
+
+describe('review state shared by the sidebar, Merge button and inbox', () => {
+  const bob = { id: 2, login: 'bob' };
+  const bot = { id: 3, login: 'ci-bot', type: 'Bot' };
+  for (const { name, pull, reviews, outcome, approved } of [
+    { name: 'an approval', pull: pr(), reviews: [review(bob, 'APPROVED')], outcome: 'approved', approved: true },
+    {
+      name: 'an approval after requesting changes',
+      pull: pr(),
+      reviews: [review(bob, 'CHANGES_REQUESTED', 1), review(bob, 'APPROVED', 2)],
+      outcome: 'approved',
+      approved: true,
+    },
+    {
+      name: 'an approval re-requested',
+      pull: pr({ requested_reviewers: [bob] }),
+      reviews: [review(bob, 'APPROVED')],
+      outcome: 'approved',
+      approved: true,
+    },
+    {
+      name: 'changes requested, then re-requested',
+      pull: pr({ requested_reviewers: [bob] }),
+      reviews: [review(bob, 'CHANGES_REQUESTED')],
+      outcome: 'returned',
+      approved: false,
+    },
+    {
+      name: 'a comment re-requested',
+      pull: pr({ requested_reviewers: [bob] }),
+      reviews: [review(bob, 'COMMENTED')],
+      outcome: 'waiting',
+      approved: false,
+    },
+    { name: 'only a bot approval', pull: pr(), reviews: [review(bot, 'APPROVED')], outcome: 'waiting', approved: false },
+    { name: 'a request with no reviews', pull: pr({ requested_reviewers: [me] }), reviews: [], outcome: 'waiting', approved: false },
+  ] as const)
+    it(`agrees on ${name}`, () => {
+      const reviewers = pullRequestReviewers(pull, [...reviews]);
+      assert.equal(reviewOutcome(reviewers, pull.user.login), outcome);
+      assert.equal(reviewDecision(reviewers) === 'APPROVED', approved);
+      recordPR(pull, [...reviews], [], 'me');
+      assert.equal(inboxSnapshots().get(pull.html_url)?.item.review, outcome);
+    });
 });

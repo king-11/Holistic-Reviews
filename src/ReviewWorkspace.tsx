@@ -1,10 +1,20 @@
-import { computed, defineComponent, onMounted, onUnmounted, provide, shallowRef, watch, watchEffect } from 'vue';
+import {
+  computed,
+  defineComponent,
+  onMounted,
+  onUnmounted,
+  provide,
+  shallowRef,
+  watch,
+  watchEffect,
+  type ComputedRef,
+  type ShallowRef,
+} from 'vue';
 import { createShortcuts, modalOpen, step } from './shortcuts';
 import { AnimatePresence, motion } from 'motion-v';
-import { drop, reduced, rise } from './motion';
+import { drop, rise } from './motion';
 import {
   ArrowLeft,
-  ArrowRight,
   Check,
   CheckCheck,
   ChevronRight,
@@ -13,18 +23,11 @@ import {
   CircleCheck,
   CircleX,
   Columns2,
-  GitBranch,
   GitCommitHorizontal,
-  GitMerge,
-  GitPullRequest,
-  GitPullRequestClosed,
-  Layers,
   List,
   MessageSquare,
   MessagesSquare,
   PanelLeftOpen,
-  Pencil,
-  Plus,
   RefreshCw,
   Search,
   Settings2,
@@ -32,10 +35,8 @@ import {
   X,
 } from '@lucide/vue';
 import {
-  blockingStates,
   branchRelations,
   errorMessage,
-  mergeReady,
   type ChangedFile,
   type Comment,
   type Commit,
@@ -43,81 +44,87 @@ import {
   type GitHub,
   type PRRef,
   type PullRequest,
+  type Workspace,
   type Review,
   type ReviewCommentInput,
   type TokenInfo,
   type User,
-  type Workspace,
   type WorkspaceSection,
 } from './github';
 import FileTree from './FileTree';
 import Checks from './Checks';
-import DetailsPanel, { Information, MergeControls, MoreMenu, ReviewIcon, reviewApproved, useDetails, type Run } from './DetailsPanel';
+import DetailsPanel, { MergeControls, MoreMenu, reviewApproved, useDetails, type Details, type Mutate } from './DetailsPanel';
 import DiffView, { type ContextLoader, type DiffSettings } from './DiffView';
-import {
-  Avatar,
-  CodeSnippet,
-  IconButton,
-  Loader,
-  Modal,
-  SearchField,
-  Spinner,
-  Timestamp,
-  inputValue,
-  timeAgo,
-  fullDate,
-  update,
-  Dismiss,
-} from './ui';
-import Markdown from './MarkdownView';
+import { IconButton, Loader, Modal, SearchField, Spinner, inputValue, update, Dismiss } from './ui';
 import MentionField from './MentionField';
 import { peopleDirectory, peopleKey } from './people';
 import { markInboxStale, recordPR } from './inboxUpdates';
 import { toggleViewedFile, verifiedContextLines } from './diff';
-import {
-  commentEntries,
-  commentRange,
-  commentSnippet,
-  diffLinePreview,
-  isBot,
-  withThreadLocations,
-  type CommentEntry,
-  type LinePoint,
-} from './comments';
+import { commentEntries, commentRange, diffLinePreview, isBot, withThreadLocations, type CommentEntry, type LinePoint } from './comments';
 import CommentsPanel from './CommentsPanel';
 import InlineComposer, { type InlineLocation } from './InlineComposer';
 import type { ReplyActions } from './ReviewThread';
-import { CommentActions, CommentBody, isReview, type EditActions, type Editable } from './CommentEditor';
-import ReactionBar, { createReactionActions } from './Reactions';
+import type { PRWorkspace } from './prWorkspace';
+import { isReview, type EditActions, type Editable } from './CommentEditor';
+import { createReactionActions, type ReactionActions } from './Reactions';
+import PRHeader from './PRHeader';
+import ConversationTab from './ConversationTab';
 import { CommitHistory, CommitPicker, type CommitRange } from './Commits';
+import { FileCodeIcon } from './FileIcon';
 import { filterFiles, type FileStatus } from './file_filters';
+import { mutationBusy } from './session';
 import styles from './ReviewWorkspace.module.css';
 import switchStyles from './switch.module.css';
 
 type ReviewEvent = 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES';
 type Dialog = 'review' | 'inline' | 'discard' | null;
 
+// What the layout shell shares with the header and tabs it renders; all PR data reads through `store`.
+export interface PRView {
+  store: PRWorkspace;
+  api: GitHub;
+  ws: () => Workspace;
+  pr: () => PullRequest;
+  ref: () => PRRef;
+  prUrl: (number: number) => string;
+  markdownBase: () => string;
+  viewer: () => User;
+  busy: ShallowRef<boolean>;
+  mutate: Mutate;
+  done: (message: string, warning?: string) => void;
+  copy: (label: string, text: string) => Promise<void>;
+  entered: Map<string, string>;
+  entrance: (key: string) => string;
+  details: Details;
+  approved: () => boolean;
+  relations: ComputedRef<ReturnType<typeof branchRelations>>;
+  stalePending: () => boolean;
+  pendingSection: (...sections: WorkspaceSection[]) => boolean;
+  pending: ComputedRef<Review | undefined>;
+  allComments: ComputedRef<Comment[]>;
+  visibleConversation: ComputedRef<Comment[]>;
+  visibleReviews: ComputedRef<Review[]>;
+  shown: (item: { user: User }) => boolean;
+  edits: EditActions;
+  reactions: ReactionActions;
+  displayFiles: ComputedRef<ChangedFile[]>;
+  selectFile: (filename: string) => void;
+}
+
 type Props = {
-  workspace: Workspace;
+  store: PRWorkspace;
   api: GitHub;
   info: TokenInfo;
   settings: DiffSettings;
   onSettings: (settings: DiffSettings) => void;
   onOpen: (url: string) => void;
   onBack: () => void;
-  onRefresh: () => void;
-  onRefreshPR: () => void;
-  onBusy: (busy: boolean) => void;
 };
 
 export default defineComponent(
   (props: Props) => {
-    const prPatch = shallowRef<Partial<PullRequest>>({});
-    watch(
-      () => props.workspace.pr.id,
-      () => (prPatch.value = {}),
-    );
-    const pr = () => ({ ...props.workspace.pr, ...prPatch.value });
+    const ws = () => props.store.current();
+    const pr = () => ws().pr;
     const ref = (): PRRef => {
       const [owner, repo] = (pr().base.repo?.full_name || '').split('/');
       return { owner, repo, number: pr().number };
@@ -128,28 +135,14 @@ export default defineComponent(
     // Submitting a review or single inline comment satisfies the viewer's request on GitHub, even before the PR reread catches up.
     const clearOwnRequest = () => {
       if (pr().requested_reviewers?.some(user => user.login === viewer().login))
-        prPatch.value = { ...prPatch.value, requested_reviewers: pr().requested_reviewers!.filter(user => user.login !== viewer().login) };
+        props.store.setPR({ requested_reviewers: pr().requested_reviewers!.filter(user => user.login !== viewer().login) });
     };
     const ownPR = () => pr().user.id === viewer().id;
-    const pendingSection = (...sections: WorkspaceSection[]) => sections.some(section => props.workspace.pending.includes(section));
+    const pendingSection = (...sections: WorkspaceSection[]) => sections.some(section => ws().pending.includes(section));
     const tab = shallowRef<'changes' | 'conversation' | 'review' | 'commits' | 'checks'>('changes');
     let active = true;
     onUnmounted(() => (active = false));
 
-    // Sections arrive after mount; keep anything posted locally that the server snapshot doesn't include yet.
-    const mirror = <T extends { id: number | string }>(source: () => T[] | undefined) => {
-      const state = shallowRef(source() ?? []);
-      watch(source, incoming => {
-        const next = incoming ?? [];
-        state.value = [...next, ...state.value.filter(item => !next.some(other => other.id === item.id))];
-      });
-      return state;
-    };
-    const comments = mirror(() => props.workspace.comments);
-    const inlineComments = mirror(() => props.workspace.inlineComments);
-    const reviews = mirror(() => props.workspace.reviews);
-    const threads = mirror(() => props.workspace.reviewThreads);
-    const draftComments = shallowRef<Comment[]>([]);
     const people = computed(() => peopleDirectory(ref(), props.api));
     provide(peopleKey, () => people.value);
     // Everyone already on this PR is who reviewers and mentions most likely want, before any search.
@@ -159,38 +152,25 @@ export default defineComponent(
           pr().user,
           ...(pr().requested_reviewers ?? []),
           ...(pr().assignees ?? []),
-          ...[...comments.value, ...inlineComments.value, ...reviews.value].map(item => item.user),
+          ...[...ws().comments, ...ws().inlineComments, ...ws().reviews].map(item => item.user),
           viewer(),
         ].map(user => ({ login: user.login, avatarUrl: user.avatar_url })),
       ),
     );
-    const pending = computed(() => reviews.value.find(review => review.user.id === viewer().id && review.state === 'PENDING'));
+    const pending = computed(() => ws().reviews.find(review => review.user.id === viewer().id && review.state === 'PENDING'));
     const stalePending = () => !!pending.value && pending.value?.commit_id !== pr().head.sha;
-    const canReview = () => props.workspace.reviewsLoaded && pr().state === 'open';
-    const canReply = () => props.workspace.reviewsLoaded && !stalePending();
+    const canReview = () => ws().reviewsLoaded && pr().state === 'open';
+    const canReply = () => ws().reviewsLoaded && !stalePending();
+    // The kept-alive inbox corrects this PR's row from what this page knows, ahead of GitHub search catching up.
+    watchEffect(() => {
+      if (ws().reviewsLoaded) recordPR(pr(), ws().reviews, ws().inlineComments, viewer().login, props.info.teams);
+    });
 
-    const busy = shallowRef(false);
+    // One flag for every write: App also reads it to hold navigation until the write lands.
+    const busy = mutationBusy;
     const error = shallowRef('');
     const notice = shallowRef('');
-    watchEffect(() => props.onBusy(busy.value));
-    onUnmounted(() => props.onBusy(false));
-    async function action(work: () => Promise<void>) {
-      if (busy.value) return false;
-      busy.value = true;
-      error.value = '';
-      notice.value = '';
-      try {
-        await work();
-        markInboxStale(pr().html_url);
-        if (active) props.onRefreshPR();
-        return true;
-      } catch (failure) {
-        if (active) error.value = errorMessage(failure, 'GitHub could not complete this action.');
-        return false;
-      } finally {
-        if (active) busy.value = false;
-      }
-    }
+    onUnmounted(() => (busy.value = false));
 
     const toast = shallowRef({ id: 0, message: '', tone: 'ok' as 'ok' | 'error' });
     let toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -212,22 +192,24 @@ export default defineComponent(
         () => showToast(`Copied ${label}`),
         () => showToast('Clipboard unavailable in this browser', 'error'),
       );
-    // Kept apart from `busy`, which also blocks App from reloading the PR after the write.
-    const acting = shallowRef(false);
-    const run: Run = async (label, work, refresh = true) => {
-      if (acting.value) return;
-      acting.value = true;
+    const mutate: Mutate = async (work, { toast, refresh = 'pr' } = {}) => {
+      if (busy.value) return false;
+      busy.value = true;
+      error.value = '';
+      notice.value = '';
       try {
-        const result = await work(props.api);
+        await work(props.api);
         markInboxStale(pr().html_url);
-        showToast(label);
-        if (refresh) props.onRefresh();
-        else props.onRefreshPR();
-        return result;
+        if (toast) showToast(toast);
+        if (active && refresh !== 'none') props.store.refresh(refresh);
+        return true;
       } catch (failure) {
-        showToast(errorMessage(failure, 'GitHub could not complete this action.'), 'error');
+        const message = errorMessage(failure, 'GitHub could not complete this action.');
+        if (toast) showToast(message, 'error');
+        else if (active) error.value = message;
+        return false;
       } finally {
-        acting.value = false;
+        busy.value = false;
       }
     };
 
@@ -235,7 +217,7 @@ export default defineComponent(
     async function loadPendingComments(review: Review, fresh = false) {
       const version = ++draftLoadVersion;
       const result = await (fresh ? props.api.fresh() : props.api).reviewComments(ref(), review.id);
-      if (active && version === draftLoadVersion && pending.value?.id === review.id) draftComments.value = result;
+      if (active && version === draftLoadVersion && pending.value?.id === review.id) props.store.patch({ draftComments: result });
     }
     watchEffect(() => {
       const review = pending.value;
@@ -247,7 +229,7 @@ export default defineComponent(
     async function refreshThreads() {
       try {
         const result = await props.api.fresh().reviewThreads(ref());
-        if (active) threads.value = result.items;
+        if (active) props.store.patch({ reviewThreads: result.items });
         return result.truncated ? ' Some thread statuses are unavailable. Open GitHub for the rest.' : '';
       } catch {
         return ' Feedback saved, but thread status could not be refreshed. Refresh the PR before resolving new threads.';
@@ -256,18 +238,18 @@ export default defineComponent(
 
     const allComments = computed(() =>
       withThreadLocations(
-        [...draftComments.value, ...inlineComments.value].filter(
+        [...ws().draftComments, ...ws().inlineComments].filter(
           (item, index, array) => array.findIndex(other => other.id === item.id) === index,
         ),
-        threads.value,
+        ws().reviewThreads,
       ),
     );
     const shown = (item: { user: User }) => !props.settings.hideBotComments || !isBot(item.user);
     const panelEntries = computed(() =>
-      commentEntries(props.workspace.files, allComments.value, comments.value, threads.value, props.settings.hideBotComments),
+      commentEntries(ws().files, allComments.value, ws().comments, ws().reviewThreads, props.settings.hideBotComments),
     );
-    const visibleConversation = computed(() => comments.value.filter(shown));
-    const visibleReviews = computed(() => reviews.value.filter(shown));
+    const visibleConversation = computed(() => ws().comments.filter(shown));
+    const visibleReviews = computed(() => ws().reviews.filter(shown));
 
     const moderator = shallowRef(false);
     onMounted(
@@ -280,11 +262,11 @@ export default defineComponent(
     const withBody = <T extends { id: number }>(list: T[], id: number, body?: string) =>
       body === undefined ? list.filter(item => item.id !== id) : list.map(item => (item.id === id ? { ...item, body } : item));
     const changeComment = (item: Editable, body?: string) => {
-      if (isReview(item)) update(reviews, prev => withBody(prev, item.id, body));
-      else if (!item.path && !item.pull_request_review_id) update(comments, prev => withBody(prev, item.id, body));
+      if (isReview(item)) props.store.edit('reviews', prev => withBody(prev, item.id, body));
+      else if (!item.path && !item.pull_request_review_id) props.store.edit('comments', prev => withBody(prev, item.id, body));
       else {
-        update(inlineComments, prev => withBody(prev, item.id, body));
-        update(draftComments, prev => withBody(prev, item.id, body));
+        props.store.edit('inlineComments', prev => withBody(prev, item.id, body));
+        props.store.edit('draftComments', prev => withBody(prev, item.id, body));
       }
     };
     const inPendingReview = (item: Editable) => !isReview(item) && !!pending.value && item.pull_request_review_id === pending.value.id;
@@ -293,7 +275,7 @@ export default defineComponent(
         (moderator.value || item.user.id === viewer().id) && (!isReview(item) || (item.state !== 'PENDING' && !!item.body?.trim())),
       disabled: () => busy.value,
       save: (item, text) =>
-        action(async () => {
+        mutate(async () => {
           const body = text.trim();
           await (isReview(item)
             ? props.api.editReview(ref(), item.id, body)
@@ -302,7 +284,7 @@ export default defineComponent(
           done('Comment updated on GitHub.');
         }),
       remove: item =>
-        action(async () => {
+        mutate(async () => {
           const review = inPendingReview(item) ? pending.value : undefined;
           await props.api.deleteComment(ref(), item, !!review);
           changeComment(item);
@@ -316,8 +298,8 @@ export default defineComponent(
                 () => false,
               ));
           if (removedByGitHub) {
-            update(reviews, prev => prev.filter(other => other.id !== review.id));
-            draftComments.value = [];
+            props.store.edit('reviews', prev => prev.filter(other => other.id !== review.id));
+            props.store.patch({ draftComments: [] });
           }
           done(removedByGitHub ? 'Comment deleted. GitHub removed the now-empty pending review.' : 'Comment deleted from GitHub.');
         }),
@@ -346,16 +328,16 @@ export default defineComponent(
       onReply: replyToComment,
     };
     async function replyToComment(id: number, body: string, startReview = false) {
-      const saved = await action(async () => {
+      const saved = await mutate(async () => {
         if (!canReply()) throw new Error('Refresh this PR and its active review before replying.');
         if (startReview && !canReview()) throw new Error('Reviews can only be started on open pull requests.');
         const root = allComments.value.find(comment => comment.id === id);
         if (!root) throw new Error('This comment is no longer loaded. Refresh before replying.');
         let current = pending.value;
-        let thread = threads.value.find(thread => thread.rootCommentId === id);
+        let thread = ws().reviewThreads.find(thread => thread.rootCommentId === id);
         if ((current || startReview) && !thread) {
           const result = await props.api.fresh().reviewThreads(ref());
-          threads.value = result.items;
+          props.store.patch({ reviewThreads: result.items });
           thread = result.items.find(thread => thread.rootCommentId === id);
           if (!thread) throw new Error('Thread metadata is unavailable. Open this thread on GitHub or refresh before starting a review.');
         }
@@ -363,7 +345,7 @@ export default defineComponent(
         if (starting) {
           const started = await props.api.startReview(ref(), pr().head.sha);
           current = started;
-          update(reviews, prev => [...prev, started]);
+          props.store.edit('reviews', prev => [...prev, started]);
         }
         const result = await props.api.reply(ref(), id, body, current, thread?.id);
         const comment = {
@@ -375,9 +357,9 @@ export default defineComponent(
         };
         if (current) {
           ++draftLoadVersion;
-          update(draftComments, prev => [...prev, comment]);
+          props.store.edit('draftComments', prev => [...prev, comment]);
         } else {
-          update(inlineComments, prev => [...prev, comment]);
+          props.store.edit('inlineComments', prev => [...prev, comment]);
           clearOwnRequest();
         }
         update(replyDrafts, prev => ({ ...prev, [id]: { body: '' } }));
@@ -397,12 +379,12 @@ export default defineComponent(
       return saved;
     }
     async function resolveThread(id: string, resolved: boolean) {
-      return action(async () => {
-        const thread = threads.value.find(item => item.id === id);
+      return mutate(async () => {
+        const thread = ws().reviewThreads.find(item => item.id === id);
         if (!thread || !(resolved ? thread.canResolve : thread.canUnresolve))
           throw new Error('You do not have permission to change this thread.');
         const result = await props.api.setThreadResolved(id, resolved);
-        update(threads, prev => prev.map(item => (item.id === id ? { ...item, ...result } : item)));
+        props.store.edit('reviewThreads', prev => prev.map(item => (item.id === id ? { ...item, ...result } : item)));
         done(`Thread ${resolved ? 'resolved' : 'reopened'} on GitHub.`);
       });
     }
@@ -430,30 +412,30 @@ export default defineComponent(
     }
     async function submitReview(e?: SubmitEvent) {
       e?.preventDefault();
-      if (event.value !== 'APPROVE' && !reviewBody.value.trim() && !draftComments.value.length) {
+      if (event.value !== 'APPROVE' && !reviewBody.value.trim() && !ws().draftComments.length) {
         error.value = 'Add a review summary or a pending inline comment.';
         return;
       }
-      await action(async () => {
+      await mutate(async () => {
         const result = await props.api.submitReview(ref(), pr().head.sha, event.value, reviewBody.value.trim(), pending.value);
         const current = pending.value;
         entered.set(`review-${result.id}`, 'grow-in');
-        update(reviews, prev => [...prev.filter(review => review.id !== current?.id), result]);
-        update(inlineComments, prev => [...prev, ...draftComments.value]);
+        props.store.edit('reviews', prev => [...prev.filter(review => review.id !== current?.id), result]);
+        props.store.edit('inlineComments', prev => [...prev, ...ws().draftComments]);
         clearOwnRequest();
-        draftComments.value = [];
+        props.store.patch({ draftComments: [] });
         reviewBody.value = '';
         dialog.value = null;
         done(`${event.value === 'APPROVE' ? 'Approval' : 'Review'} submitted to GitHub.`, await refreshThreads());
       });
     }
     const discardReview = () =>
-      action(async () => {
+      mutate(async () => {
         const current = pending.value;
         if (!current) return;
         const deleted = await props.api.discardReview(ref(), current.id);
-        update(reviews, prev => prev.filter(review => review.id !== current.id));
-        draftComments.value = [];
+        props.store.edit('reviews', prev => prev.filter(review => review.id !== current.id));
+        props.store.patch({ draftComments: [] });
         dialog.value = null;
         done(deleted ? 'Pending review discarded.' : 'This pending review was already gone on GitHub; cleared it here.');
       });
@@ -476,11 +458,11 @@ export default defineComponent(
     }
     async function postInline(start = false) {
       if (!inlineBody.value.trim() || !canReply() || (start && !pending.value && !canReview())) return;
-      await action(async () => {
+      await mutate(async () => {
         if (selectedRange.value || comparing.value) throw new Error('Switch to All commits before adding a review comment.');
         const location = inlineLocation.value;
         const text = inlineBody.value.trim();
-        const file = props.workspace.files.find(file => file.filename === location.path);
+        const file = ws().files.find(file => file.filename === location.path);
         if (
           !file ||
           !commentRange(file, { line: location.startLine ?? location.line, side: location.startSide ?? location.side }, location)
@@ -499,7 +481,7 @@ export default defineComponent(
         if (starting) {
           const started = await props.api.startReview(ref(), pr().head.sha, comment);
           current = started;
-          update(reviews, prev => [...prev, started]);
+          props.store.edit('reviews', prev => [...prev, started]);
         } else {
           await props.api.inlineComment(ref(), pr().head.sha, comment, current);
           if (!current) clearOwnRequest();
@@ -507,9 +489,10 @@ export default defineComponent(
         try {
           if (current) await loadPendingComments(current, true);
           else
-            inlineComments.value = (
-              await props.api.fresh().pages<Comment>(`/repos/${ref().owner}/${ref().repo}/pulls/${ref().number}/comments`)
-            ).items;
+            props.store.patch({
+              inlineComments: (await props.api.fresh().pages<Comment>(`/repos/${ref().owner}/${ref().repo}/pulls/${ref().number}/comments`))
+                .items,
+            });
         } catch {
           refreshWarning = ' Comment saved, but comments could not be refreshed. Refresh the PR to see it; do not post it again.';
         }
@@ -528,68 +511,12 @@ export default defineComponent(
     }
 
     const body = shallowRef('');
-    async function postComment(e: SubmitEvent) {
-      e.preventDefault();
-      if (!body.value.trim()) return;
-      await action(async () => {
-        const result = await props.api.comment(ref(), body.value.trim());
-        entered.set(`comment-${result.id}`, 'grow-in');
-        update(comments, prev => [...prev, result]);
-        body.value = '';
-        done('Comment posted to GitHub.');
-      });
-    }
+    const approved = () => reviewApproved(pr(), ws().reviews, ws().onBehalfOf);
 
-    const focused = new WeakSet<Element>();
-    // Function refs rerun on every patch; focus each editor only when it first mounts.
-    const focusOnce = (el: unknown) => {
-      if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) || focused.has(el)) return;
-      focused.add(el);
-      if (el instanceof HTMLInputElement) el.select();
-      else el.focus();
-    };
-    const titleDraft = shallowRef<string | null>(null);
-    const saveTitle = () => {
-      const title = titleDraft.value?.trim();
-      titleDraft.value = null;
-      if (title && title !== pr().title) void run('Title updated', api => api.editPR(ref(), { title }));
-    };
-    const bodyDraft = shallowRef<string | null>(null);
-    const descriptionOpen = shallowRef(true);
-    const saveBody = async () => {
-      if (await run('Description updated', api => api.editPR(ref(), { body: bodyDraft.value ?? '' }))) bodyDraft.value = null;
-    };
-    const approved = () => reviewApproved(pr(), reviews.value, props.workspace.onBehalfOf);
-    const prStatus = () => {
-      const current = pr();
-      const checks = props.workspace.checks ?? [];
-      if (current.merged) return ['Merged', GitMerge, 'merged'] as const;
-      if (current.state === 'closed') return ['Closed', GitPullRequestClosed, 'blocked'] as const;
-      if (current.draft) return ['Draft', CircleX, 'blocked'] as const;
-      if (checks.some(check => blockingStates.includes(check.state))) return ['Checks failed', CircleX, 'blocked'] as const;
-      if (mergeReady(current) && !checks.some(check => check.state === 'pending') && approved())
-        return ['Ready to merge', CircleCheck, 'open'] as const;
-      return ['Open', GitPullRequest, 'open'] as const;
-    };
-    // Celebrates a merge that happens while you watch, never one that was already done when the PR opened.
-    const celebrating = shallowRef(false);
-    let celebrationTimer: ReturnType<typeof setTimeout> | undefined;
-    watch(
-      () => pr().merged,
-      (merged, was) => {
-        if (!merged || was !== false) return;
-        celebrating.value = true;
-        clearTimeout(celebrationTimer);
-        celebrationTimer = setTimeout(() => (celebrating.value = false), 900);
-      },
-    );
-    onUnmounted(() => clearTimeout(celebrationTimer));
-
-    const stackOpen = shallowRef(false);
-    const relations = computed(() => branchRelations(pr(), props.workspace.related));
+    const relations = computed(() => branchRelations(pr(), ws().related));
     const stack = () =>
-      props.workspace.nativeStack
-        ? [...props.workspace.nativeStack.entries].sort((a, b) => a.position - b.position)
+      ws().nativeStack
+        ? [...ws().nativeStack!.entries].sort((a, b) => a.position - b.position)
         : [...relations.value.parents, pr(), ...relations.value.children].map(entry => ({ ...entry, url: prUrl(entry.number) }));
     const openStacked = (delta: 1 | -1) => {
       const entries = stack();
@@ -599,26 +526,16 @@ export default defineComponent(
     };
 
     const details = useDetails(() => ({
-      pr: pr(),
-      reviews: reviews.value,
-      checks: pendingSection('checks') ? undefined : (props.workspace.checks ?? []),
-      issues: pendingSection('linkedIssues') ? undefined : (props.workspace.linkedIssues ?? []),
-      codeOwners: props.workspace.codeOwners,
-      onBehalfOf: props.workspace.onBehalfOf,
+      store: props.store,
       api: props.api,
       prRef: ref(),
-      busy: acting.value,
+      busy: busy.value,
       onChecks: () => {
         tab.value = 'checks';
         requestAnimationFrame(() => document.querySelector('.review-tabs-bar')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
       },
-      onPatch: value => (prPatch.value = { ...prPatch.value, ...value }),
-      onRun: run,
+      onMutate: mutate,
     }));
-    // The kept-alive inbox corrects this PR's row from what this page knows (including label and reviewer patches), ahead of GitHub search catching up.
-    watchEffect(() => {
-      if (props.workspace.reviewsLoaded) recordPR(pr(), reviews.value, inlineComments.value, viewer().login, props.info.teams);
-    });
 
     const commitList = shallowRef<Commit[]>([]);
     const commitsLoading = shallowRef(false);
@@ -753,14 +670,14 @@ export default defineComponent(
     const contentQuery = shallowRef('');
     const statusFilters = shallowRef<FileStatus[]>([]);
     const focusedFile = shallowRef<string | null>(null);
-    const selected = shallowRef(props.workspace.files[0]?.filename || '');
+    const selected = shallowRef(ws().files[0]?.filename || '');
     watch(
-      () => props.workspace.files,
+      () => ws().files,
       value => (selected.value ||= value[0]?.filename || ''),
     );
     const collapsed = shallowRef<Set<string>>(new Set());
     const viewed = shallowRef<Set<string>>(new Set());
-    const displayFiles = computed(() => comparison.value?.files || props.workspace.files);
+    const displayFiles = computed(() => comparison.value?.files || ws().files);
     const files = computed(() =>
       filterFiles(displayFiles.value, { filename: filenameQuery.value, content: contentQuery.value, statuses: statusFilters.value }),
     );
@@ -957,61 +874,39 @@ export default defineComponent(
     window.addEventListener('beforeunload', unsaved);
     onUnmounted(() => window.removeEventListener('beforeunload', unsaved));
 
-    const codeComment = (comment: Comment) => (
-      <section class={styles['review-code-comment']}>
-        <div class="flex items-center">
-          <button
-            class={styles['review-comment-location']}
-            title={`Show the changed file ${comment.path || '(unavailable)'}`}
-            onClick={() => selectFile(comment.path || '')}
-          >
-            <FileCodeIcon />
-            {comment.path?.split('/').at(-1)}
-            {comment.line ? `:${comment.line}` : ' · outdated'}
-          </button>
-          <CommentActions item={comment} actions={edits} />
-        </div>
-        <CodeSnippet
-          rows={commentSnippet(
-            comment,
-            displayFiles.value.find(file => file.filename === comment.path),
-          )}
-        />
-        <CommentBody item={comment} actions={edits} baseUrl={markdownBase()} />
-        <ReactionBar
-          comment={comment}
-          actions={reactions}
-          pending={!!pending.value && comment.pull_request_review_id === pending.value.id}
-        />
-      </section>
-    );
-    const reviewCard = (review: Review) => {
-      const code = allComments.value.filter(comment => comment.pull_request_review_id === review.id && shown(comment));
-      return (
-        <div class={`conversation-comment ${entrance(`review-${review.id}`)}`} data-review-state={review.state}>
-          <div class="comment-author">
-            <Avatar login={review.user.login} src={review.user.avatar_url} small />
-            <strong>{review.user.id === viewer().id ? 'You' : review.user.login}</strong>
-            {review.state === 'PENDING' ? <span class="pending-badge">Pending</span> : <ReviewIcon review={review.state} />}
-            {!!review.submitted_at && <Timestamp date={review.submitted_at} />}
-            <CommentActions item={review} actions={edits} />
-          </div>
-          {(review.body || '').trim() ? (
-            <>
-              <CommentBody item={review} actions={edits} baseUrl={markdownBase()} />
-              <ReactionBar comment={review} actions={reactions} pending={review.state === 'PENDING'} />
-            </>
-          ) : (
-            review.state === 'PENDING' &&
-            !code.length && <Markdown body="Review in progress. Add comments from the diff, then finish your review." />
-          )}
-          {code.map(codeComment)}
-        </div>
-      );
+    const view: PRView = {
+      store: props.store,
+      api: props.api,
+      ws,
+      pr,
+      ref,
+      prUrl,
+      markdownBase,
+      viewer,
+      busy,
+      mutate,
+      done,
+      copy,
+      entered,
+      entrance,
+      details,
+      approved,
+      relations,
+      stalePending,
+      pendingSection,
+      pending,
+      allComments,
+      visibleConversation,
+      visibleReviews,
+      shown,
+      edits,
+      reactions,
+      displayFiles,
+      selectFile,
     };
 
     return () => (
-      <div class={`review-layout ${commentsOpen.value ? 'comments-open' : ''}`} aria-busy={!!props.workspace.pending.length}>
+      <div class={`review-layout ${commentsOpen.value ? 'comments-open' : ''}`} aria-busy={!!ws().pending.length}>
         {!!(sidebar.value && !focusedFile.value) && (
           <FileTree
             loading={pendingSection('files')}
@@ -1085,11 +980,11 @@ export default defineComponent(
               <MergeControls
                 pr={pr()}
                 prRef={ref()}
-                methods={props.workspace.mergeMethods ?? []}
-                autoMerge={!!props.workspace.autoMerge}
+                methods={ws().mergeMethods ?? []}
+                autoMerge={!!ws().autoMerge}
                 approved={approved()}
-                disabled={acting.value}
-                onRun={run}
+                disabled={busy.value}
+                onMutate={mutate}
               />
               <MoreMenu details={details} />
               <span class="header-divider" />
@@ -1105,254 +1000,14 @@ export default defineComponent(
                   <span>{panelEntries.value.length}</span>
                 </button>
               )}
-              <IconButton
-                label="Refresh pull request"
-                onClick={() => {
-                  prPatch.value = {};
-                  props.onRefresh();
-                }}
-                disabled={busy.value || !!props.workspace.pending.length}
-              >
-                <RefreshCw size={15} class={props.workspace.pending.length ? 'spin' : ''} />
+              <IconButton label="Refresh pull request" onClick={props.store.reload} disabled={busy.value || !!ws().pending.length}>
+                <RefreshCw size={15} class={ws().pending.length ? 'spin' : ''} />
               </IconButton>
             </div>
           </div>
           <div class={styles['review-scroll']}>
             <div class="pr-top">
-              <section class="pr-heading-section">
-                <div class="pr-heading-inner">
-                  <div class="pr-title-row">
-                    {titleDraft.value !== null ? (
-                      <input
-                        class="pr-title-input"
-                        aria-label="Pull request title"
-                        value={titleDraft.value}
-                        maxlength={256}
-                        ref={focusOnce}
-                        onInput={e => (titleDraft.value = inputValue(e))}
-                        onBlur={saveTitle}
-                        onKeydown={(e: KeyboardEvent) => {
-                          if (e.key === 'Enter') saveTitle();
-                          if (e.key === 'Escape') titleDraft.value = null;
-                        }}
-                      />
-                    ) : (
-                      <h1>
-                        <button
-                          class="pr-title-button"
-                          title="Edit title"
-                          disabled={busy.value}
-                          onClick={() => (titleDraft.value = pr().title)}
-                        >
-                          {pr().title}
-                        </button>
-                      </h1>
-                    )}
-                    {(() => {
-                      const [label, Icon, tone] = prStatus();
-                      return (
-                        <span
-                          class="pr-state"
-                          data-tone={tone}
-                          data-celebrate={celebrating.value ? '' : undefined}
-                          role="img"
-                          aria-label={label}
-                          title={label}
-                        >
-                          <Icon size={18} />
-                          {celebrating.value && !reduced() && (
-                            <span class="merge-burst" aria-hidden="true">
-                              {Array.from({ length: 10 }, (_, index) => (
-                                <i key={index} style={`--angle: ${index * 36}deg`} />
-                              ))}
-                            </span>
-                          )}
-                        </span>
-                      );
-                    })()}
-                  </div>
-                  <div class="pr-details">
-                    <Avatar login={pr().user.login} src={pr().user.avatar_url} small />
-                    <strong>{pr().user.login}</strong>
-                    <span>
-                      {pr().merged ? 'merged' : pr().state === 'closed' ? 'wanted to merge' : 'wants to merge'} {pr().commits}{' '}
-                      {pr().commits === 1 ? 'commit' : 'commits'} into
-                    </span>
-                    {[pr().base.ref, null, pr().head.ref].map(branch =>
-                      branch === null ? (
-                        <ArrowLeft key="arrow" size={12} />
-                      ) : (
-                        <button key={branch} class="pr-branch" title={`Copy ${branch}`} onClick={() => copy('branch name', branch)}>
-                          {branch}
-                        </button>
-                      ),
-                    )}
-                  </div>
-                  <div class="pr-meta">
-                    <time title={fullDate(pr().created_at)}>Opened {timeAgo(pr().created_at)}</time>·
-                    <time title={fullDate(pr().updated_at)}>Updated {timeAgo(pr().updated_at)}</time>·
-                    <span>
-                      {pr().changed_files} {pr().changed_files === 1 ? 'file' : 'files'}
-                    </span>
-                    <span class="additions">+{pr().additions}</span>
-                    <span class="deletions">−{pr().deletions}</span>
-                  </div>
-                  {!!(props.workspace.nativeStack || relations.value.parents.length || relations.value.children.length) && (
-                    <div class={`reveal border border-border rounded-lg mt-5 ${styles['overflow-hidden']}`}>
-                      <div class="dependency-heading">
-                        <Layers size={14} />
-                        <button
-                          class="flex items-center gap-2 py-0.5 px-0 text-left"
-                          title={stackOpen.value ? 'Hide dependent pull requests' : 'Show the PR stack or branch-based dependencies'}
-                          aria-expanded={stackOpen.value}
-                          aria-controls="dependency-entries"
-                          onClick={() => (stackOpen.value = !stackOpen.value)}
-                        >
-                          <strong>
-                            {props.workspace.nativeStack
-                              ? `GitHub stack #${props.workspace.nativeStack.number}`
-                              : 'Dependent pull requests'}
-                          </strong>
-                          <ChevronRight size={13} class={`chevron ${stackOpen.value ? 'rotated' : ''}`} />
-                        </button>
-                        <span>
-                          {props.workspace.nativeStack ? `${props.workspace.nativeStack.size} pull requests` : 'Linked by branch'}
-                        </span>
-                        {!!stackOpen.value && (
-                          <IconButton label="Close stack panel" onClick={() => (stackOpen.value = false)}>
-                            <X size={15} />
-                          </IconButton>
-                        )}
-                      </div>
-                      {!!stackOpen.value && (
-                        <div id="dependency-entries">
-                          {props.workspace.nativeStack ? (
-                            <>
-                              {(props.workspace.nativeStack?.entries ?? []).map(entry => (
-                                <button
-                                  class={`dependency-row ${entry.number === pr().number ? styles['current-entry'] : ''}`}
-                                  title={`${entry.number === pr().number ? 'Current PR' : 'Open stacked PR'} #${entry.number}: ${entry.title}`}
-                                  disabled={busy.value || entry.number === pr().number}
-                                  onClick={() => props.onOpen(entry.url)}
-                                >
-                                  <span class="dependency-kind">
-                                    {entry.position}.<GitPullRequest size={13} />
-                                  </span>
-                                  <span>#{entry.number}</span>
-                                  <strong>{entry.title}</strong>
-                                  {entry.number === pr().number ? <span>Current</span> : <ChevronRight size={13} />}
-                                </button>
-                              ))}
-                              {!!props.workspace.nativeStack?.truncated && (
-                                <p class="group-warning">Showing the first 100 stack entries. Open GitHub for the full stack.</p>
-                              )}
-                            </>
-                          ) : (
-                            <>
-                              {relations.value.parents.map(parent => (
-                                <button
-                                  class="dependency-row"
-                                  title={`Open parent PR #${parent.number}: ${parent.title}`}
-                                  disabled={busy.value}
-                                  onClick={() => props.onOpen(prUrl(parent.number))}
-                                >
-                                  <span class="dependency-kind">
-                                    <GitBranch size={13} />
-                                    Parent
-                                  </span>
-                                  <span>#{parent.number}</span>
-                                  <strong>{parent.title}</strong>
-                                  <ChevronRight size={13} />
-                                </button>
-                              ))}
-                              <div class="dependency-current">
-                                <span class="dependency-node" />
-                                <span>#{pr().number}</span>
-                                <strong>{pr().title}</strong>
-                                <span>Current</span>
-                              </div>
-                              {relations.value.children.map(child => (
-                                <button
-                                  class="dependency-row"
-                                  title={`Open child PR #${child.number}: ${child.title}`}
-                                  disabled={busy.value}
-                                  onClick={() => props.onOpen(prUrl(child.number))}
-                                >
-                                  <span class="dependency-kind">
-                                    <GitBranch size={13} />
-                                    Child
-                                  </span>
-                                  <span>#{child.number}</span>
-                                  <strong>{child.title}</strong>
-                                  <ChevronRight size={13} />
-                                </button>
-                              ))}
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  <Information details={details} />
-                  <div class={`description-heading ${styles['mt-4']}`}>
-                    <button
-                      class="section-heading"
-                      aria-expanded={descriptionOpen.value}
-                      onClick={() => (descriptionOpen.value = !descriptionOpen.value)}
-                    >
-                      <ChevronRight size={13} class={`chevron ${descriptionOpen.value ? 'rotated' : ''}`} />
-                      Description
-                    </button>
-                    {bodyDraft.value === null && (
-                      <button
-                        class="button small"
-                        disabled={busy.value}
-                        onClick={() => {
-                          descriptionOpen.value = true;
-                          bodyDraft.value = pr().body ?? '';
-                        }}
-                      >
-                        <Pencil size={14} />
-                        Edit
-                      </button>
-                    )}
-                  </div>
-                  {bodyDraft.value !== null ? (
-                    <div class="description-editor">
-                      <MentionField
-                        aria-label="Pull request description"
-                        value={bodyDraft.value}
-                        maxlength={65000}
-                        disabled={busy.value}
-                        inputRef={focusOnce}
-                        onInput={value => (bodyDraft.value = value)}
-                      />
-                      <div class={styles['comment-form-footer']}>
-                        <span>Markdown supported</span>
-                        <div class="flex gap-2">
-                          <button class="button small" onClick={() => (bodyDraft.value = null)}>
-                            Cancel
-                          </button>
-                          <button class="button small primary" disabled={busy.value} onClick={saveBody}>
-                            Save
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    descriptionOpen.value && (
-                      <div class={styles['pr-description']}>
-                        <Markdown body={pr().body || 'No description provided.'} baseUrl={markdownBase()} />
-                      </div>
-                    )
-                  )}
-                  {!!stalePending() && (
-                    <div class="warning-banner">
-                      Your pending review targets an older commit. Discard it before starting a new review on these changes.
-                    </div>
-                  )}
-                </div>
-              </section>
+              <PRHeader view={view} onOpen={props.onOpen} />
               {!commentsOpen.value && <DetailsPanel details={details} />}
             </div>
             <div class="review-tabs-bar">
@@ -1389,7 +1044,7 @@ export default defineComponent(
                 >
                   <CheckCheck size={14} />
                   Your review
-                  {!!draftComments.value.length && <span>{draftComments.value.length}</span>}
+                  {!!ws().draftComments.length && <span>{ws().draftComments.length}</span>}
                 </button>
                 <button
                   class={tab.value === 'checks' ? 'selected' : ''}
@@ -1430,99 +1085,16 @@ export default defineComponent(
             {tab.value === 'commits' && <CommitHistory {...commitProps} />}
             {tab.value === 'checks' && (
               <Checks
-                checks={props.workspace.checks}
+                checks={ws().checks}
                 loading={pendingSection('checks')}
-                busy={acting.value}
+                busy={busy.value}
                 prRef={ref()}
-                onRun={run}
+                onMutate={mutate}
                 entrance={entrance('checks')}
               />
             )}
-            {tab.value === 'review' && (
-              <div class="conversation own-review">
-                <div class={styles['own-review-heading']}>
-                  <h3>Your review</h3>
-                  <p>
-                    {pending.value
-                      ? 'Your pending comments are private until you submit this review.'
-                      : 'Your feedback on this pull request, all in one place.'}
-                  </p>
-                </div>
-                {reviews.value.filter(review => review.user.id === viewer().id).map(reviewCard)}
-                {allComments.value
-                  .filter(
-                    comment =>
-                      comment.user.id === viewer().id && !reviews.value.some(review => review.id === comment.pull_request_review_id),
-                  )
-                  .map(comment => (
-                    <div class="conversation-comment">
-                      <div class="comment-author">
-                        <Avatar login={comment.user.login} src={comment.user.avatar_url} small />
-                        <strong>You</strong>
-                        <Timestamp date={comment.created_at} />
-                      </div>
-                      {codeComment(comment)}
-                    </div>
-                  ))}
-                {!reviews.value.some(review => review.user.id === viewer().id) &&
-                  !allComments.value.some(comment => comment.user.id === viewer().id) && (
-                    <div class="empty-state">
-                      <MessageSquare size={26} />
-                      <h3>A fresh perspective starts here.</h3>
-                      <p>Click a line number in the diff to leave feedback, or start a review to save comments as a draft.</p>
-                      <button class="button" title="Return to the diff to add inline feedback" onClick={() => (tab.value = 'changes')}>
-                        Back to changes
-                      </button>
-                    </div>
-                  )}
-              </div>
-            )}
-            {tab.value === 'conversation' && (
-              <div class="conversation">
-                {pendingSection('comments', 'reviews') && <Loader label="Loading conversation…" />}
-                {visibleConversation.value.map(comment => (
-                  <div id={`conversation-comment-${comment.id}`} class={`conversation-comment ${entrance(`comment-${comment.id}`)}`}>
-                    <div class="comment-author">
-                      <Avatar login={comment.user.login} src={comment.user.avatar_url} small />
-                      <strong>{comment.user.login}</strong>
-                      <Timestamp date={comment.created_at} prefix="commented" />
-                      <CommentActions item={comment} actions={edits} />
-                    </div>
-                    <CommentBody item={comment} actions={edits} baseUrl={markdownBase()} />
-                    <ReactionBar comment={comment} actions={reactions} />
-                  </div>
-                ))}
-                {visibleReviews.value.filter(review => review.state !== 'PENDING').map(reviewCard)}
-                <form class={styles['comment-form']} onSubmit={postComment}>
-                  <label for="pr-comment">Leave a comment</label>
-                  <MentionField
-                    id="pr-comment"
-                    placeholder="Share your thoughts on this pull request…"
-                    value={body.value}
-                    onInput={value => (body.value = value)}
-                    maxlength={65000}
-                    disabled={busy.value}
-                  />
-                  <div class={styles['comment-form-footer']}>
-                    <span>Posted publicly to this PR on GitHub.</span>
-                    <button
-                      class="button primary"
-                      title="Publish a comment to the PR conversation immediately"
-                      type="submit"
-                      disabled={busy.value || !body.value.trim()}
-                    >
-                      {busy.value ? (
-                        <Spinner text="Posting…" />
-                      ) : (
-                        <>
-                          <MessageSquare size={14} />
-                          Comment
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </form>
-              </div>
+            {(tab.value === 'review' || tab.value === 'conversation') && (
+              <ConversationTab view={view} mode={tab.value} draft={body} onChanges={() => (tab.value = 'changes')} />
             )}
             {tab.value === 'changes' && (
               <>
@@ -1708,7 +1280,7 @@ export default defineComponent(
                           focused={focusedFile.value === file.filename}
                           onFocus={() => focusFile(focusedFile.value ? null : file.filename)}
                           comments={selectedRange.value ? [] : allComments.value.filter(comment => comment.path === file.filename)}
-                          threads={threads.value}
+                          threads={ws().reviewThreads}
                           onResolve={resolveThread}
                           replies={replyActions}
                           loadContext={loadContext}
@@ -1860,10 +1432,10 @@ export default defineComponent(
                     </span>
                   </label>
                 </div>
-                {!!draftComments.value.length && (
+                {!!ws().draftComments.length && (
                   <p class={`text-xs text-secondary flex items-center gap-1 ${styles['mt-4']}`}>
                     <MessageSquare size={14} />
-                    Includes {draftComments.value.length} pending inline {draftComments.value.length === 1 ? 'comment' : 'comments'}.
+                    Includes {ws().draftComments.length} pending inline {ws().draftComments.length === 1 ? 'comment' : 'comments'}.
                   </p>
                 )}
                 {!!error.value && (
@@ -1937,14 +1509,5 @@ export default defineComponent(
       </div>
     );
   },
-  { props: ['workspace', 'api', 'info', 'settings', 'onSettings', 'onOpen', 'onBack', 'onRefresh', 'onRefreshPR', 'onBusy'] },
+  { props: ['store', 'api', 'info', 'settings', 'onSettings', 'onOpen', 'onBack'] },
 );
-
-function FileCodeIcon() {
-  return (
-    <span class="changes-icon">
-      <ArrowRight size={12} />
-      <Plus size={9} />
-    </span>
-  );
-}

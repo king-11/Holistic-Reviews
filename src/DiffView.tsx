@@ -13,17 +13,9 @@ import {
   type VNodeChild,
 } from 'vue';
 import { themeById, type ThemeId } from './themes';
-import { FileDiff, registerCustomTheme } from '@pierre/diffs';
+import { FileDiff } from '@pierre/diffs';
 
-const pierreVariants = {
-  'pierre-light-soft': () => import('@pierre/theme/pierre-light-soft'),
-  'pierre-light-vibrant': () => import('@pierre/theme/pierre-light-vibrant'),
-  'pierre-light-protanopia-deuteranopia': () => import('@pierre/theme/pierre-light-protanopia-deuteranopia'),
-  'pierre-light-tritanopia': () => import('@pierre/theme/pierre-light-tritanopia'),
-};
-for (const [name, load] of Object.entries(pierreVariants))
-  registerCustomTheme(name, () => load().then(module => module.default as unknown as ThemeRegistration));
-import type { DiffLineAnnotation, ExpansionDirections, FileDiffLoadedFiles, ThemeRegistration } from '@pierre/diffs';
+import type { DiffLineAnnotation, ExpansionDirections, FileDiffLoadedFiles } from '@pierre/diffs';
 import { errorMessage, type ChangedFile, type Comment, type ReviewThread } from './github';
 import {
   ArrowUpRight,

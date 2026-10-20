@@ -273,6 +273,7 @@ export function demoWorkspace(pr = demoPR): Workspace {
         body: '**Suggestion** — cover the empty-token case.\n\n`handleConnect` returns early when the token is empty. The behavior looks right; a regression test will keep this validation consistent.\n\n- [ ] Test an empty token\n- [ ] Test whitespace-only input\n\n<details><summary>Suggested test</summary>\n\n```ts\nexpect(connectWithToken("")).not.toHaveConnected();\n```\n\n</details>',
       },
     ],
+    draftComments: [],
     reviewThreads: [{ id: 'demo-thread-20', rootCommentId: 20, resolved: false, canResolve: true, canUnresolve: false }],
     comments: [
       {

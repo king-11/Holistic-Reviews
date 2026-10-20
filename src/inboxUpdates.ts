@@ -1,14 +1,15 @@
 import { shallowRef } from 'vue';
 import {
-  classifyReview,
   itemRepository,
+  pullRequestReviewers,
+  reviewOutcome,
+  teamKey,
   type Comment,
   type InboxGroup,
   type InboxItem,
   type MergedFilter,
   type PullRequest,
   type Review,
-  type ReviewSummary,
 } from './github.ts';
 
 // Where a PR belongs in each inbox group: true or false when the PR page knows, undefined when only search can tell
@@ -26,17 +27,16 @@ export interface PRSnapshot {
 export const snapshotLifetime = 3 * 60_000;
 
 function involvement(pr: PullRequest, reviews: Review[], comments: Comment[], viewer: string, teams?: string[]) {
-  const submitted = (review: Review) => review.user.login === viewer && review.state !== 'PENDING';
+  const row = pullRequestReviewers(pr, reviews).find(reviewer => reviewer.login === viewer);
   // A single line comment is a review on GitHub, so it counts as reviewed-by too.
   const reviewed =
-    reviews.some(submitted) ||
+    !!row?.review ||
     comments.some(comment => comment.user.login === viewer && !reviews.some(review => review.id === comment.pull_request_review_id));
-  const direct = !!pr.requested_reviewers?.some(user => user.login === viewer);
-  const owner = new URL(pr.html_url).pathname.split('/')[1];
+  const direct = !!row?.requested;
   const team = !pr.requested_teams?.length
     ? false
     : teams
-      ? pr.requested_teams.some(entry => teams.includes(`${owner}/${entry.slug}`))
+      ? pr.requested_teams.some(entry => teams.includes(teamKey(pr, entry.slug)))
       : undefined;
   return { reviewed, direct, team };
 }
@@ -56,23 +56,6 @@ export function placement(pr: PullRequest, reviews: Review[], comments: Comment[
   };
 }
 
-// The authored sections split by review outcome; REST reviews stand in for GraphQL's reviewDecision until search catches up.
-function reviewState(pr: PullRequest, reviews: Review[]) {
-  const latest = new Map<string, ReviewSummary['latestReviews'][number]>();
-  for (const review of reviews)
-    if (review.state !== 'PENDING' && review.state !== 'DISMISSED')
-      latest.set(review.user.login, { state: review.state, author: { __typename: review.user.type ?? 'User', login: review.user.login } });
-  const latestReviews = [...latest.values()];
-  return classifyReview(
-    {
-      reviewDecision: latestReviews.some(review => review.state === 'CHANGES_REQUESTED') ? 'CHANGES_REQUESTED' : null,
-      latestReviews,
-      requested: (pr.requested_reviewers ?? []).map(user => user.login),
-    },
-    pr.user.login,
-  );
-}
-
 const snapshots = shallowRef(new Map<string, PRSnapshot>());
 export const inboxSnapshots = () => snapshots.value;
 
@@ -90,7 +73,8 @@ export function recordPR(pr: PullRequest, reviews: Review[], comments: Comment[]
     updated_at: pr.updated_at,
     comments: pr.comments,
     labels: pr.labels ?? [],
-    review: reviewState(pr, reviews),
+    // REST reviews stand in for GraphQL's reviewDecision until search catches up.
+    review: reviewOutcome(pullRequestReviewers(pr, reviews), pr.user.login),
   };
   const { reviewed, direct, team } = involvement(pr, reviews, comments, viewer, teams);
   snapshots.value = new Map(snapshots.value).set(pr.html_url, {

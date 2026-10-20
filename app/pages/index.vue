@@ -7,6 +7,6 @@ defineOptions({ name: 'InboxPage' });
 </script>
 
 <template>
-  <!-- The shell renders pages only once GitHub is connected. -->
+  <!-- app.vue renders pages only once GitHub is connected. -->
   <Inbox :api="api!" :info="info!" :on-open-dialog="showOpenDialog" />
 </template>
