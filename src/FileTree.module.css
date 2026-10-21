@@ -159,7 +159,9 @@
 .folder-count {
   font-family: var(--font-mono-compact);
 }
-.tree-row:not(:hover, :focus-within) .eye:not([data-viewed]) :global(.icon-button),
+.tree-row:not(:hover, :focus-within) .eye:not([data-viewed]) :global(.icon-button) {
+  opacity: 0;
+}
 .tree-row:not(:hover, :focus-within) .eye[data-viewed] .folder-count {
   display: none;
 }

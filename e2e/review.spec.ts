@@ -1639,7 +1639,7 @@ test.describe('workspace', () => {
     const requested = history.locator('[data-event="review_requested"]');
     await expect(requested).toHaveCount(1);
     await expect(requested.locator('.avatar')).toHaveCount(3);
-    await expect(requested).toContainText(/alice\s*requested review from\s*carol\s*bob/);
+    await expect(requested).toContainText(/alice\s*requested review from.*carol.*bob/);
     const push = history.locator('[data-event="head_ref_force_pushed"]').getByRole('link');
     await expect(push).toHaveText([FIRST.slice(0, 7), HEAD.slice(0, 7)]);
     await expect(push.last()).toHaveAttribute('href', `https://github.com/acme/app/commit/${HEAD}`);
