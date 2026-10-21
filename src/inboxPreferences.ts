@@ -1,7 +1,8 @@
-import type { InboxItem, MergedFilter, SearchOrder } from './github';
-import { tryStorage } from './storage';
+import { searchResultCap, type InboxItem, type MergedFilter, type SearchOrder } from './github.ts';
+import { tryStorage } from './storage.ts';
 
 const mergedFilters = ['all', 'mine', 'reviewing'] as const;
+const sectionIds = ['requested', 'returned', 'approved', 'waiting', 'drafts', 'reviewed', 'merged'] as const;
 const sortChoices = [
   'priority',
   'title-asc',
@@ -14,8 +15,9 @@ const sortChoices = [
   'created-asc',
 ] as const;
 export type SortChoice = (typeof sortChoices)[number];
-export const sortOptions: { value: SortChoice; label: string; detail: string }[] = [
-  { value: 'priority', label: 'Priority', detail: 'Waiting on you first' },
+export type InboxSectionId = (typeof sectionIds)[number];
+export const sortOptions: { value: SortChoice; label: string; detail?: string }[] = [
+  { value: 'priority', label: 'Priority' },
   { value: 'title-asc', label: 'Title', detail: 'A–Z' },
   { value: 'title-desc', label: 'Title', detail: 'Z–A' },
   { value: 'size-desc', label: 'Size of change', detail: 'Largest first' },
@@ -25,11 +27,14 @@ export const sortOptions: { value: SortChoice; label: string; detail: string }[]
   { value: 'created-desc', label: 'Created', detail: 'Latest first' },
   { value: 'created-asc', label: 'Created', detail: 'Oldest first' },
 ];
+export const defaultSort = (section: InboxSectionId): SortChoice => (section === 'requested' ? 'priority' : 'updated-desc');
 // Updated and created also re-query, since only GitHub can order pages that aren't loaded yet.
 export const serverOrder = (choice: SortChoice): SearchOrder => ({
   sort: choice.startsWith('created') ? 'created' : 'updated',
   order: choice.endsWith('asc') ? 'asc' : 'desc',
 });
+export const needsServerRefetch = (choice: SortChoice, loaded: number, total: number) =>
+  (choice.startsWith('updated') || choice.startsWith('created')) && loaded < Math.min(total, searchResultCap);
 const sizeOf = (item: InboxItem) => (item.details ? item.details.additions + item.details.deletions : undefined);
 // Items without size data sort last whichever way the size is ordered.
 const bySize = (direction: 1 | -1) => (a: InboxItem, b: InboxItem) => {
@@ -52,15 +57,31 @@ export const clientOrders: Record<SortChoice, (a: InboxItem, b: InboxItem) => nu
   'created-asc': byDate('created_at', 1),
 };
 
-type InboxPreferences = { repos?: string[]; sort?: SortChoice; merged?: MergedFilter; known?: string[] };
+type InboxPreferences = {
+  repos?: string[];
+  sorts?: Partial<Record<InboxSectionId, SortChoice>>;
+  merged?: MergedFilter;
+  known?: string[];
+};
 const preferencesKey = 'review.inbox';
 const stringList = (value: unknown) =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined;
+const sectionSorts = (value: unknown) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      ([section, choice]) =>
+        sectionIds.includes(section as InboxSectionId) &&
+        sortChoices.includes(choice as SortChoice) &&
+        (section === 'requested' || choice !== 'priority'),
+    ),
+  ) as Partial<Record<InboxSectionId, SortChoice>>;
+};
 export function readPreferences(): InboxPreferences {
   const saved = tryStorage(() => JSON.parse(localStorage.getItem(preferencesKey) ?? 'null')) as Record<string, unknown> | null;
   return {
     repos: stringList(saved?.repos),
-    sort: sortChoices.find(choice => choice === saved?.sort),
+    sorts: sectionSorts(saved?.sorts),
     merged: mergedFilters.find(filter => filter === saved?.merged),
     known: stringList(saved?.known),
   };

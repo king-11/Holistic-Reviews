@@ -44,15 +44,17 @@ Each row (`InboxRow`) is a `<NuxtLink>` to `/<owner>/<repo>/pull/<number>` displ
 
 ## Repository Filter & Sorting
 
-- **Default repository:** After the first unfiltered load, the repository with the highest PR count is selected automatically. Subsequent changes are persisted in `localStorage` (`review.inbox`: `repos`, `sort`, `known`).
-- **Sorting:**
+- **Default repository:** After the first unfiltered load, the repository with the highest PR count is selected automatically. Subsequent changes are persisted in `localStorage` (`review.inbox`: `repos`, `sorts`, `merged`, `known`).
+- **Sorting per section:**
   - `Updated` (`updated-desc` / `updated-asc`) and `Created` (`created-desc` / `created-asc`) sort on the server via `/search/issues` parameters and also sort loaded items client-side.
   - `Title` (`title-asc` / `title-desc`) and `Size of change` (`size-desc` / `size-asc`, where `size = additions + deletions`) sort loaded items client-side.
-  - `Priority` is the default sort (`updated-desc` on GitHub); it ranks only **Needs your review** into Now (score ≥ 50), Soon (≥ 20), and Later. Other sections use updated-desc ordering while Priority is selected.
+  - `Priority` is offered only for **Needs your review** and is its default; it ranks that section into Now (score ≥ 50), Soon (≥ 20), and Later. Other sections default to `Updated · Latest first`.
+  - Each section saves its own sort. Changing a sort reorders only that section's loaded rows. Updated/Created choices refetch only that section's search group when more results remain beyond those loaded; client-only choices never refetch. The authored search group is shared by Returned, Approved, Waiting, and Drafts: a sort-triggered refetch uses the changed section's order while sibling sections keep client-sorting by their own choices.
+  - Initial group loads use the saved server order when all sections sharing the group agree; otherwise the group defaults to updated-desc.
 
 ## Search Result Loading
 
-GitHub search requests up to 100 results per page (its maximum), while each inbox section initially reveals 10. Rows are filtered and sorted before the visible limit is applied, so priority mode shows the highest-ranked loaded PRs first and lane counts include only visible rows. **Load more** reveals the next 10 loaded matches, requesting another 100-result API page only when needed. When searching locally, the visible count is measured against loaded rows matching the search. Limits reset to 10 after a full reload, repository or sort change, or merged-filter change; quiet background refreshes preserve the current limits. The button does not change the viewport when rows are revealed.
+GitHub search requests up to 100 results per page (its maximum), while each inbox section initially reveals 10. Rows are filtered and sorted before the visible limit is applied, so priority mode shows the highest-ranked loaded PRs first and lane counts include only visible rows. **Load more** reveals the next 10 loaded matches, requesting another 100-result API page only when needed. When searching locally, the visible count is measured against loaded rows matching the search. Limits reset to 10 after a full reload, repository change, the changed section's sort change, or merged-filter change; quiet background refreshes preserve the current limits. The button does not change the viewport when rows are revealed.
 
 ## Needs Your Review Priority
 

@@ -11,6 +11,7 @@ const composer = (page: Page) => page.getByRole('textbox', { name: /^Comment on 
 const writes = (fake: Fake, path: string | RegExp) =>
   fake.writes.filter(write => (typeof path === 'string' ? write.path === path || write.operation === path : path.test(write.path)));
 const lastWrite = (fake: Fake, path: string | RegExp) => writes(fake, path).at(-1)?.body;
+const groupButton = (page: Page, name: RegExp) => page.getByRole('main').locator('button[aria-expanded]').filter({ hasText: name });
 
 async function drag(page: Page, from: Locator, to: Locator) {
   await from.hover();
@@ -27,7 +28,7 @@ async function startLineReview(page: Page, body: string) {
 }
 
 // Inbox repositories default to the most-used one, so tests that need every repository seed an explicit choice.
-async function seedInbox(page: Page, preferences: { repos?: string[]; sort?: string }) {
+async function seedInbox(page: Page, preferences: { repos?: string[]; sorts?: Record<string, string>; merged?: string }) {
   await page.addInitScript(saved => {
     if (!localStorage.getItem('review.inbox')) localStorage.setItem('review.inbox', JSON.stringify(saved));
   }, preferences);
@@ -38,7 +39,7 @@ test.describe('inbox', () => {
     await mockGitHub(page);
     await seedInbox(page, { repos: [] });
     await page.goto('/');
-    const group = (name: RegExp) => page.getByRole('main').getByRole('button', { name });
+    const group = (name: RegExp) => groupButton(page, name);
     for (const name of [
       /Needs your review\s*3/,
       /Returned to you\s*1/,
@@ -102,7 +103,7 @@ test.describe('inbox', () => {
   test('a merged filter in the collapsed section bar expands the section and queries all, yours, or review requests', async ({ page }) => {
     const fake = await mockGitHub(page);
     await page.goto('/');
-    const merged = page.getByRole('main').getByRole('button', { name: /Recently merged/ });
+    const merged = groupButton(page, /Recently merged/);
     const radios = page.getByRole('radiogroup', { name: 'Merged pull requests' });
     const row = (title: RegExp) => page.getByRole('link', { name: title });
     // Inbox sections search concurrently, so only the latest merged query reflects the chosen filter.
@@ -135,7 +136,8 @@ test.describe('inbox', () => {
     await page.goto('/');
     await page
       .getByRole('main')
-      .getByRole('button', { name: /Recently merged/ })
+      .locator('button[aria-expanded]')
+      .filter({ hasText: /Recently merged/ })
       .click();
     const radios = page.getByRole('radiogroup', { name: 'Merged pull requests' });
     await expect(radios.getByRole('radio', { name: 'All' })).toBeDisabled();
@@ -159,19 +161,45 @@ test.describe('inbox', () => {
     await expect(page.getByRole('checkbox', { name: 'acme/app' })).not.toBeChecked();
   });
 
-  test('sorts by title client-side and by creation date on the server, remembering the choice', async ({ page }) => {
+  test('sorts sections independently without fetching complete results', async ({ page }) => {
     const fake = await mockGitHub(page);
+    await seedInbox(page, { repos: ['acme/app', 'acme/infra'] });
     await page.goto('/');
-    await expect(page.getByRole('button', { name: '1 repository' })).toBeVisible();
-    await page.getByRole('button', { name: 'Sort pull requests' }).click();
+    const requested = page.locator('[data-section="requested"]');
+    const returned = page.locator('[data-section="returned"]');
+    await expect.poll(() => fake.searches.length).toBe(10);
+    await expect(requested.locator('.pr-row')).toHaveCount(3);
+    const returnedTitles = await returned.locator('.pr-row-title').allTextContents();
+    const searches = fake.searches.length;
+    await page.getByRole('button', { name: 'Sort Needs your review' }).click();
+    await expect(page.getByRole('menuitemradio', { name: 'Priority', exact: true })).toBeVisible();
+    await expect(page.getByText('Waiting on you first')).toHaveCount(0);
     await page.getByRole('menuitemradio', { name: /^Title Z–A/ }).click();
-    await expect(page.locator('section.requested .pr-row-title').first()).toContainText('Tune cache eviction');
-    await page.getByRole('button', { name: 'Sort pull requests' }).click();
-    await page.getByRole('menuitemradio', { name: /Created Oldest first/ }).click();
-    await expect.poll(() => fake.searches.at(-1)).toMatchObject({ sort: 'created', order: 'asc' });
+    await expect(requested.locator('.pr-row-title').first()).toContainText('Tune cache eviction');
+    expect(fake.searches.length).toBe(searches);
+    expect(await returned.locator('.pr-row-title').allTextContents()).toEqual(returnedTitles);
+    await page.getByRole('button', { name: 'Sort Returned to you' }).click();
+    await expect(page.getByRole('menuitemradio', { name: 'Priority' })).toHaveCount(0);
     await page.reload();
-    await page.getByRole('button', { name: 'Sort pull requests' }).click();
-    await expect(page.getByRole('menuitemradio', { name: /Created Oldest first/ })).toHaveAttribute('aria-checked', 'true');
+    await page.getByRole('button', { name: 'Sort Needs your review' }).click();
+    await expect(page.getByRole('menuitemradio', { name: /^Title Z–A/ })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  test('refetches only an incomplete section group for a server-ordered sort', async ({ page }) => {
+    const fake = await mockGitHub(page, { requestedPRCount: 105 });
+    await seedInbox(page, { repos: ['acme/app'] });
+    await page.goto('/');
+    await expect.poll(() => fake.searches.length).toBe(10);
+    const searches = fake.searches.length;
+    await page.getByRole('button', { name: 'Sort Needs your review' }).click();
+    await page.getByRole('menuitemradio', { name: /Created Oldest first/ }).click();
+    await expect.poll(() => fake.searches.length).toBe(searches + 1);
+    expect(fake.searches.slice(searches)).toHaveLength(1);
+    expect(fake.searches.at(-1)).toMatchObject({
+      q: expect.stringContaining('review-requested:'),
+      sort: 'created',
+      order: 'asc',
+    });
   });
 
   test('shows changes, checks, and people involved on each inbox row', async ({ page }) => {
@@ -304,7 +332,8 @@ test.describe('inbox after acting on a pull request', () => {
     await expect(page.getByRole('main').getByRole('button', { name: /Needs your review\s*1/ })).toBeVisible();
     await page
       .getByRole('main')
-      .getByRole('button', { name: /Reviewed by you/ })
+      .locator('button[aria-expanded]')
+      .filter({ hasText: /Reviewed by you/ })
       .click();
     await expect(row(page, 'reviewed')).toBeVisible();
     await expect.poll(() => fake.searches.length).toBeGreaterThan(searches);
@@ -324,7 +353,8 @@ test.describe('inbox after acting on a pull request', () => {
     await expect(row(page, 'requested')).toHaveCount(0);
     await page
       .getByRole('main')
-      .getByRole('button', { name: /Recently merged/ })
+      .locator('button[aria-expanded]')
+      .filter({ hasText: /Recently merged/ })
       .click();
     await expect(row(page, 'merged')).toBeVisible();
   });
@@ -359,7 +389,8 @@ test.describe('routing', () => {
     await page.goto('/');
     await page
       .getByRole('main')
-      .getByRole('button', { name: /Reviewed by you/ })
+      .locator('button[aria-expanded]')
+      .filter({ hasText: /Reviewed by you/ })
       .click();
     await expect(page.getByRole('link', { name: /Draft reviewed earlier/ })).toBeVisible();
     await page.waitForLoadState('networkidle');
@@ -509,7 +540,7 @@ test.describe('motion', () => {
     test(`${name} opens and closes from the keyboard without animating`, async ({ page }) => {
       await mockGitHub(page);
       await page.goto('/');
-      await expect(page.getByRole('button', { name: /Needs your review/ })).toBeVisible();
+      await expect(groupButton(page, /Needs your review/)).toBeVisible();
       const dialog = frames(page, '[role="dialog"]');
       const backdrop = frames(page, '.modal-backdrop');
       await page.keyboard.press(key);
