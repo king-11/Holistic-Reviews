@@ -100,20 +100,6 @@
   display: flex;
   align-items: center;
 }
-.checks {
-  display: block;
-  width: 100%;
-  padding: 0;
-  text-align: left;
-}
-.checks h3 > span {
-  color: var(--color-muted);
-  font-size: var(--text-xs);
-  font-weight: 400;
-}
-.checks:hover .bar {
-  opacity: 0.8;
-}
 [data-review='APPROVED'],
 .chip[data-state='success'] svg {
   color: var(--color-green);
@@ -131,36 +117,11 @@
 [data-review='COMMENTED'] {
   color: var(--color-accent);
 }
-.bar {
+.check-summary {
   display: flex;
-  transition: opacity 150ms var(--ease-out);
-  gap: 2px;
-  height: 4px;
-  margin-bottom: 8px;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-.bar[data-loading='true'] {
-  background: var(--color-border);
-}
-.bar > span {
-  transition: flex-grow 200ms var(--ease-out);
-}
-.bar > [data-state='success'] {
-  background: var(--color-green);
-}
-.bar > [data-state='failure'] {
-  background: var(--color-red);
-}
-.bar > [data-state='cancelled'] {
-  background: var(--color-secondary);
-}
-.bar > [data-state='pending'] {
-  background: var(--color-amber);
-}
-.bar > [data-state='skipped'],
-.bar > [data-state='neutral'] {
-  background: var(--color-border-strong);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
 }
 .info {
   display: none;

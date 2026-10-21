@@ -1053,7 +1053,11 @@ test.describe('details panel', () => {
       'href',
       'https://github.com/acme/app/issues/7',
     );
-    await panel.getByTitle('Open the Checks tab').click();
+    await expect(panel.getByRole('button', { name: '1 pending' })).toBeVisible();
+    await panel.getByRole('button', { name: '1 pending' }).click();
+    await expect(panel.getByRole('dialog', { name: 'Checks pending' }).getByRole('link')).toHaveCount(1);
+    await page.keyboard.press('Escape');
+    await panel.getByRole('button', { name: 'View all' }).click();
     await expect(page.getByRole('list', { name: 'Status checks' })).toBeVisible();
   });
 

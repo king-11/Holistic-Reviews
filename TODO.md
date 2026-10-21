@@ -66,3 +66,6 @@
   - Show disabled commands with their reason (for example, "waiting on test / integration") instead of hiding them.
   - Approve and Theme open a sub-page; Approve's shows what will happen before it runs. Approvals and merges wait three seconds with an Undo, since GitHub can't take them back.
   - Show each command's shortcut, and list recently used commands first.
+
+- [x] Show check counts in the side panel
+  - Use the same expandable per-state check chips in the Information summary and the side panel.
