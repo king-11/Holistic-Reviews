@@ -258,6 +258,7 @@ export async function mockGitHub(
     onBehalf?: boolean;
     emptyReviewDeletes?: boolean;
     prState?: 'merged' | 'closed';
+    draftPR?: boolean;
     mergeStates?: PullRequest['mergeable_state'][];
     autoMergeClean?: boolean;
     signedOut?: boolean;
@@ -574,6 +575,7 @@ export async function mockGitHub(
           requested_reviewers: options.viewerRequested ? [viewer, ...(pr.requested_reviewers ?? [])] : pr.requested_reviewers,
           state: options.prState ? 'closed' : 'open',
           merged: options.prState === 'merged',
+          draft: options.draftPR ?? pr.draft,
           mergeable_state,
           mergeable: mergeable_state === 'unknown' ? null : true,
           auto_merge: state.autoMerge,

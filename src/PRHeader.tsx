@@ -4,6 +4,7 @@ import {
   ChevronRight,
   CircleCheck,
   CircleX,
+  FilePenLine,
   GitMerge,
   GitPullRequest,
   GitPullRequestClosed,
@@ -50,7 +51,7 @@ export default defineComponent(
       const checks = ws().checks ?? [];
       if (current.merged) return ['Merged', GitMerge, 'merged'] as const;
       if (current.state === 'closed') return ['Closed', GitPullRequestClosed, 'blocked'] as const;
-      if (current.draft) return ['Draft', CircleX, 'blocked'] as const;
+      if (current.draft) return ['Draft', FilePenLine, 'draft'] as const;
       if (checks.some(check => blockingStates.includes(check.state))) return ['Checks failed', CircleX, 'blocked'] as const;
       if (mergeReady(current) && !checks.some(check => check.state === 'pending') && approved())
         return ['Ready to merge', CircleCheck, 'open'] as const;
