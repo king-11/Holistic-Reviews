@@ -16,16 +16,43 @@ const sortChoices = [
 ] as const;
 export type SortChoice = (typeof sortChoices)[number];
 export type InboxSectionId = (typeof sectionIds)[number];
-export const sortOptions: { value: SortChoice; label: string; detail?: string }[] = [
+type SortDirectionOption = {
+  value: Exclude<SortChoice, 'priority'>;
+  direction: 'up' | 'down';
+  title: string;
+  ariaLabel: string;
+};
+type SortOption = { value: 'priority'; label: string } | { label: string; directions: SortDirectionOption[] };
+export const sortOptions: SortOption[] = [
   { value: 'priority', label: 'Priority' },
-  { value: 'title-asc', label: 'Title', detail: 'A–Z' },
-  { value: 'title-desc', label: 'Title', detail: 'Z–A' },
-  { value: 'size-desc', label: 'Size of change', detail: 'Largest first' },
-  { value: 'size-asc', label: 'Size of change', detail: 'Smallest first' },
-  { value: 'updated-desc', label: 'Updated', detail: 'Latest first' },
-  { value: 'updated-asc', label: 'Updated', detail: 'Oldest first' },
-  { value: 'created-desc', label: 'Created', detail: 'Latest first' },
-  { value: 'created-asc', label: 'Created', detail: 'Oldest first' },
+  {
+    label: 'Title',
+    directions: [
+      { value: 'title-asc', direction: 'up', title: 'A–Z', ariaLabel: 'Title: A–Z' },
+      { value: 'title-desc', direction: 'down', title: 'Z–A', ariaLabel: 'Title: Z–A' },
+    ],
+  },
+  {
+    label: 'Size of change',
+    directions: [
+      { value: 'size-asc', direction: 'up', title: 'Smallest first', ariaLabel: 'Size: Smallest first' },
+      { value: 'size-desc', direction: 'down', title: 'Largest first', ariaLabel: 'Size: Largest first' },
+    ],
+  },
+  {
+    label: 'Updated',
+    directions: [
+      { value: 'updated-asc', direction: 'up', title: 'Oldest first', ariaLabel: 'Updated: Oldest first' },
+      { value: 'updated-desc', direction: 'down', title: 'Latest first', ariaLabel: 'Updated: Latest first' },
+    ],
+  },
+  {
+    label: 'Created',
+    directions: [
+      { value: 'created-asc', direction: 'up', title: 'Oldest first', ariaLabel: 'Created: Oldest first' },
+      { value: 'created-desc', direction: 'down', title: 'Latest first', ariaLabel: 'Created: Latest first' },
+    ],
+  },
 ];
 export const defaultSort = (section: InboxSectionId): SortChoice => (section === 'requested' ? 'priority' : 'updated-desc');
 // Updated and created also re-query, since only GitHub can order pages that aren't loaded yet.

@@ -1,6 +1,8 @@
 import { computed, defineComponent, onActivated, onDeactivated, onUnmounted, shallowRef, watch } from 'vue';
 import {
+  ArrowDown,
   ArrowDownWideNarrow,
+  ArrowUp,
   ArrowUpRight,
   BookOpen,
   Check,
@@ -733,25 +735,55 @@ export default defineComponent(
                         {sortMenu.value === section.id && (
                           <>
                             <Dismiss onClose={() => (sortMenu.value = null)} />
-                            <div class="popover" role="menu" aria-label={`Sort ${section.label} by`}>
+                            <div class={`popover ${styles['sort-popover']}`} role="menu" aria-label={`Sort ${section.label} by`}>
                               <div class="popover-title">Sort by</div>
                               {sortOptions
-                                .filter(option => section.id === 'requested' || option.value !== 'priority')
+                                .filter(option => section.id === 'requested' || !('value' in option) || option.value !== 'priority')
                                 .map(option => {
-                                  const checked = sortChoice(section.id) === option.value;
+                                  if ('value' in option) {
+                                    const checked = sortChoice(section.id) === option.value;
+                                    return (
+                                      <button
+                                        key={option.value}
+                                        type="button"
+                                        role="menuitemradio"
+                                        aria-checked={checked}
+                                        class={styles['sort-option']}
+                                        onClick={() => setSortChoice(section, option.value)}
+                                      >
+                                        <span class={styles['sort-label']} data-sort-label={option.label}>
+                                          {option.label}
+                                        </span>
+                                        {checked && <Check size={14} />}
+                                      </button>
+                                    );
+                                  }
                                   return (
-                                    <button
-                                      key={option.value}
-                                      type="button"
-                                      role="menuitemradio"
-                                      aria-checked={checked}
-                                      class={styles['sort-option']}
-                                      onClick={() => setSortChoice(section, option.value)}
-                                    >
-                                      {option.label}
-                                      {option.detail && <span class={styles['sort-detail']}>{option.detail}</span>}
-                                      {checked && <Check size={14} />}
-                                    </button>
+                                    <div key={option.label} class={styles['sort-field']} role="group" aria-label={`Sort ${option.label}`}>
+                                      <span class={styles['sort-label']} data-sort-label={option.label}>
+                                        {option.label}
+                                      </span>
+                                      <div class={styles['sort-directions']}>
+                                        {option.directions.map(direction => {
+                                          const checked = sortChoice(section.id) === direction.value;
+                                          const Icon = direction.direction === 'up' ? ArrowUp : ArrowDown;
+                                          return (
+                                            <button
+                                              key={direction.value}
+                                              type="button"
+                                              role="menuitemradio"
+                                              aria-checked={checked}
+                                              aria-label={direction.ariaLabel}
+                                              title={direction.title}
+                                              class={styles['sort-direction']}
+                                              onClick={() => setSortChoice(section, direction.value)}
+                                            >
+                                              <Icon size={14} />
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
                                   );
                                 })}
                             </div>

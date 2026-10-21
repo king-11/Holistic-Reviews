@@ -173,8 +173,14 @@ test.describe('inbox', () => {
     const searches = fake.searches.length;
     await page.getByRole('button', { name: 'Sort Needs your review' }).click();
     await expect(page.getByRole('menuitemradio', { name: 'Priority', exact: true })).toBeVisible();
+    const priorityFontSize = await page
+      .getByRole('menuitemradio', { name: 'Priority' })
+      .locator('[data-sort-label]')
+      .evaluate(element => getComputedStyle(element).fontSize);
+    const titleFontSize = await page.locator('[data-sort-label="Title"]').evaluate(element => getComputedStyle(element).fontSize);
+    expect(priorityFontSize).toBe(titleFontSize);
     await expect(page.getByText('Waiting on you first')).toHaveCount(0);
-    await page.getByRole('menuitemradio', { name: /^Title Z–A/ }).click();
+    await page.getByRole('menuitemradio', { name: 'Title: Z–A' }).click();
     await expect(requested.locator('.pr-row-title').first()).toContainText('Tune cache eviction');
     expect(fake.searches.length).toBe(searches);
     expect(await returned.locator('.pr-row-title').allTextContents()).toEqual(returnedTitles);
@@ -182,8 +188,43 @@ test.describe('inbox', () => {
     await expect(page.getByRole('menuitemradio', { name: 'Priority' })).toHaveCount(0);
     await page.reload();
     await page.getByRole('button', { name: 'Sort Needs your review' }).click();
-    await expect(page.getByRole('menuitemradio', { name: /^Title Z–A/ })).toHaveAttribute('aria-checked', 'true');
+    await expect(page.getByRole('menuitemradio', { name: 'Title: Z–A' })).toHaveAttribute('aria-checked', 'true');
   });
+
+  for (const viewportWidth of [1280, 375, 320]) {
+    test(`keeps the sort menu aligned and in the viewport at ${viewportWidth}px`, async ({ page }) => {
+      await page.setViewportSize({ width: viewportWidth, height: 900 });
+      await mockGitHub(page);
+      await seedInbox(page, { repos: ['acme/app'] });
+      await page.goto('/');
+      await expect(page.getByRole('button', { name: 'Sort Needs your review' })).toBeVisible();
+      await page.getByRole('button', { name: 'Sort Needs your review' }).click();
+      const menu = page.getByRole('menu', { name: 'Sort Needs your review by' });
+      const menuBounds = await menu.boundingBox();
+      expect(menuBounds).not.toBeNull();
+      expect(menuBounds!.x).toBeGreaterThanOrEqual(0);
+      expect(menuBounds!.x + menuBounds!.width).toBeLessThanOrEqual(viewportWidth);
+      await expect(menu.locator('[data-sort-label="Size of change"]')).toHaveCSS('white-space', 'nowrap');
+
+      const directions = {
+        Title: ['Title: A–Z', 'Title: Z–A'],
+        'Size of change': ['Size: Smallest first', 'Size: Largest first'],
+        Updated: ['Updated: Oldest first', 'Updated: Latest first'],
+        Created: ['Created: Oldest first', 'Created: Latest first'],
+      };
+      const columns: number[][] = [];
+      for (const [field, labels] of Object.entries(directions)) {
+        const buttons = menu.getByRole('group', { name: `Sort ${field}` }).getByRole('menuitemradio');
+        const actualLabels = await buttons.evaluateAll(elements => elements.map(element => element.getAttribute('aria-label')));
+        expect(actualLabels).toEqual(labels);
+        columns.push(await buttons.evaluateAll(elements => elements.map(element => element.getBoundingClientRect().x)));
+      }
+      for (const index of [0, 1]) {
+        const positions = columns.map(column => column[index]);
+        expect(Math.max(...positions) - Math.min(...positions)).toBeLessThan(0.5);
+      }
+    });
+  }
 
   test('refetches only an incomplete section group for a server-ordered sort', async ({ page }) => {
     const fake = await mockGitHub(page, { requestedPRCount: 105 });
@@ -192,7 +233,7 @@ test.describe('inbox', () => {
     await expect.poll(() => fake.searches.length).toBe(5);
     const searches = fake.searches.length;
     await page.getByRole('button', { name: 'Sort Needs your review' }).click();
-    await page.getByRole('menuitemradio', { name: /Created Oldest first/ }).click();
+    await page.getByRole('menuitemradio', { name: 'Created: Oldest first' }).click();
     await expect.poll(() => fake.searches.length).toBe(searches + 1);
     expect(fake.searches.slice(searches)).toHaveLength(1);
     expect(fake.searches.at(-1)).toMatchObject({
@@ -1532,7 +1573,9 @@ test.describe('workspace', () => {
     await expect(child).toHaveAttribute('title', 'Open child PR #43: Use retries in scheduler');
     await expect(current).toHaveAttribute('aria-current', 'page');
     await expect(page.locator('.dependency-node')).toHaveCount(0);
-    const numberPositions = await Promise.all([parent, current, child].map(async row => (await row.locator('span').first().boundingBox())!.x));
+    const numberPositions = await Promise.all(
+      [parent, current, child].map(async row => (await row.locator('span').first().boundingBox())!.x),
+    );
     expect(Math.max(...numberPositions) - Math.min(...numberPositions)).toBeLessThan(0.5);
     await page.getByRole('button', { name: 'Close stack panel' }).click();
     await expect(parent).toHaveCount(0);
