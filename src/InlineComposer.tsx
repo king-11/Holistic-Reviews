@@ -1,7 +1,5 @@
 import { defineComponent } from 'vue';
-import { motion } from 'motion-v';
 import { MessageSquare, Plus, X } from '@lucide/vue';
-import { drop } from './motion';
 import MentionField from './MentionField';
 import { IconButton, Spinner } from './ui';
 import type { CommentLocation } from './comments';
@@ -29,7 +27,7 @@ export default defineComponent(
       const { location, busy } = props;
       const empty = !props.body.trim();
       return (
-        <motion.div {...drop()} class="inline-composer" role="group" aria-label="Line comment">
+        <div class="inline-composer" role="group" aria-label="Line comment">
           <div class={styles.heading}>
             <MessageSquare size={15} />
             <strong>{props.pending ? 'Add to your review' : location.startLine ? 'Comment on these lines' : 'Comment on this line'}</strong>
@@ -112,7 +110,7 @@ export default defineComponent(
               )}
             </div>
           </form>
-        </motion.div>
+        </div>
       );
     },
   { props: ['location', 'body', 'pending', 'busy', 'error', 'canComment', 'canStartReview', 'stale', 'onBody', 'onClose', 'onPost'] },

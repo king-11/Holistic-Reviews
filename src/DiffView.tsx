@@ -415,8 +415,9 @@ const DiffRenderer = defineComponent(
               if (composer)
                 requestAnimationFrame(() => {
                   if (!host.isConnected) return;
-                  host.querySelector<HTMLElement>('.inline-composer textarea')?.focus({ preventScroll: true });
-                  host.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                  const textarea = host.querySelector<HTMLTextAreaElement>('.inline-composer textarea');
+                  textarea?.focus({ preventScroll: true });
+                  textarea?.scrollIntoView({ block: 'nearest' });
                 });
               disposers.set(key, () => render(null, host));
               return host;

@@ -1737,6 +1737,96 @@ test.describe('diff view', () => {
 });
 
 test.describe('inline comments and reviews', () => {
+  test('opening a composer on a visible line keeps the diff still', async ({ page }) => {
+    await mockGitHub(page, { prState: 'merged' });
+    await openPR(page);
+    const line = lineNumber(page, 'src/worker.py', 10, 'addition');
+    await line.evaluate(element => {
+      const scroller = document.querySelector<HTMLElement>('[class*=review-scroll]')!;
+      const viewport = scroller.getBoundingClientRect();
+      scroller.scrollTop += element.getBoundingClientRect().top - (viewport.top + scroller.clientHeight * 0.4);
+    });
+    const before = await line.evaluate(element => {
+      const scroller = document.querySelector<HTMLElement>('[class*=review-scroll]')!;
+      return {
+        scrollTop: scroller.scrollTop,
+        lineTop: element.getBoundingClientRect().top,
+        viewportTop: scroller.getBoundingClientRect().top,
+        clientHeight: scroller.clientHeight,
+      };
+    });
+    expect(before.lineTop).toBeGreaterThan(before.viewportTop + before.clientHeight * 0.3);
+    expect(before.lineTop).toBeLessThan(before.viewportTop + before.clientHeight * 0.5);
+
+    await line.click();
+    await expect(composer(page)).toBeVisible();
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+    const after = await line.evaluate(element => {
+      const scroller = document.querySelector<HTMLElement>('[class*=review-scroll]')!;
+      return { scrollTop: scroller.scrollTop, lineTop: element.getBoundingClientRect().top };
+    });
+    expect(after.scrollTop).toBe(before.scrollTop);
+    expect(after.lineTop).toBeCloseTo(before.lineTop, 1);
+  });
+
+  test('opening a composer near the bottom reveals only its textarea immediately', async ({ page }) => {
+    type InlineRevealRecord = {
+      options: boolean | ScrollIntoViewOptions | undefined;
+      scrollTop: number;
+      textareaBottom: number;
+      viewportBottom: number;
+      containerBottom: number;
+    };
+    await mockGitHub(page, { prState: 'merged' });
+    await openPR(page);
+    const scroller = page.locator('[class*=review-scroll]').first();
+    const line = lineNumber(page, 'src/worker.py', 10, 'addition');
+    await line.evaluate(element => {
+      const scroller = document.querySelector<HTMLElement>('[class*=review-scroll]')!;
+      const viewport = scroller.getBoundingClientRect();
+      scroller.scrollTop += element.getBoundingClientRect().top - (viewport.bottom - 55);
+    });
+    await page.evaluate(() => {
+      const original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function (options?: boolean | ScrollIntoViewOptions) {
+        if (this instanceof HTMLTextAreaElement) {
+          const scroller = document.querySelector<HTMLElement>('[class*=review-scroll]');
+          const container = this.closest<HTMLElement>('.inline-composer');
+          if (scroller && container) {
+            (window as Window & { __inlineReveal?: InlineRevealRecord }).__inlineReveal = {
+              options,
+              scrollTop: scroller.scrollTop,
+              textareaBottom: this.getBoundingClientRect().bottom,
+              viewportBottom: scroller.getBoundingClientRect().bottom,
+              containerBottom: container.getBoundingClientRect().bottom,
+            };
+          }
+        }
+        return original.call(this, options);
+      };
+    });
+
+    await line.click();
+    const textarea = composer(page);
+    await expect(textarea).toBeVisible();
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+    const record = await page.evaluate(() => (window as Window & { __inlineReveal?: InlineRevealRecord }).__inlineReveal);
+    expect(record).toBeDefined();
+    if (!record) throw new Error('Expected the textarea to be revealed.');
+    const scrollerBox = await scroller.boundingBox();
+    const textareaBox = await textarea.boundingBox();
+    if (!scrollerBox || !textareaBox) throw new Error('Expected the textarea and review scroller to be visible.');
+    const scrollTop = await scroller.evaluate(element => element.scrollTop);
+    const textareaOverflow = record.textareaBottom - record.viewportBottom;
+    const containerOverflow = record.containerBottom - record.viewportBottom;
+    expect(record.options).toEqual({ block: 'nearest' });
+    expect(textareaOverflow).toBeGreaterThan(0);
+    expect(containerOverflow).toBeGreaterThan(textareaOverflow);
+    expect(scrollTop - record.scrollTop).toBeCloseTo(textareaOverflow, 0);
+    expect(scrollTop - record.scrollTop).toBeLessThan(containerOverflow);
+    expect(textareaBox.y + textareaBox.height).toBeLessThanOrEqual(scrollerBox.y + scrollerBox.height + 1);
+  });
+
   for (const [layout, kind, side] of [
     ['Unified diff', 'addition', 'RIGHT'],
     ['Split diff', 'deletion', 'LEFT'],
