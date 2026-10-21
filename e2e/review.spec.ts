@@ -1525,10 +1525,15 @@ test.describe('workspace', () => {
     await page.getByRole('button', { name: 'Dependent pull requests' }).click();
     const parent = page.getByRole('button', { name: /#41 Prepare worker base/ });
     const child = page.getByRole('button', { name: /#43 Use retries in scheduler/ });
+    const current = page.locator('.dependency-current');
     await expect(parent).toBeVisible();
     await expect(parent).toHaveAttribute('title', 'Open parent PR #41: Prepare worker base');
     await expect(child).toBeVisible();
     await expect(child).toHaveAttribute('title', 'Open child PR #43: Use retries in scheduler');
+    await expect(current).toHaveAttribute('aria-current', 'page');
+    await expect(page.locator('.dependency-node')).toHaveCount(0);
+    const numberPositions = await Promise.all([parent, current, child].map(async row => (await row.locator('span').first().boundingBox())!.x));
+    expect(Math.max(...numberPositions) - Math.min(...numberPositions)).toBeLessThan(0.5);
     await page.getByRole('button', { name: 'Close stack panel' }).click();
     await expect(parent).toHaveCount(0);
   });

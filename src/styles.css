@@ -1859,7 +1859,6 @@ button.section-heading:hover {
 }
 .dependency-current {
   background: var(--color-accent-soft);
-  padding-left: 20px;
   color: var(--color-accent);
 }
 .text-accent,
@@ -1867,16 +1866,6 @@ button.section-heading:hover {
 .search-input:focus-within,
 .dependency-current strong {
   color: var(--color-accent);
-}
-.dependency-current > span:last-child {
-  font-size: var(--text-xs);
-}
-.dependency-node {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-indigo);
-  margin-right: 48px;
 }
 .warning-banner {
   font-size: var(--text-xs);
@@ -2349,9 +2338,6 @@ form:has(.review-options input[value='REQUEST_CHANGES']:checked) .modal-footer .
   }
   .dependency-position {
     width: 40px;
-  }
-  .dependency-node {
-    margin-right: 28px;
   }
   .dependency-row,
   .dependency-current {

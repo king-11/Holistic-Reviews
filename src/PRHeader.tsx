@@ -203,11 +203,9 @@ export default defineComponent(
                           <ChevronRight size={13} />
                         </button>
                       ))}
-                      <div class="dependency-current">
-                        <span class="dependency-node" />
+                      <div class="dependency-current" aria-current="page">
                         <span>#{pr().number}</span>
                         <strong>{pr().title}</strong>
-                        <span>Current</span>
                       </div>
                       {relations.value.children.map(child => (
                         <button
