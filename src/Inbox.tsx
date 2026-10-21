@@ -245,8 +245,8 @@ export default defineComponent(
     const stale = (group: InboxGroup, version: number, stamp: number, groupVersion: number) =>
       version !== request || groupVersion !== groupVersions[group] || (group === 'merged' && stamp !== mergedVersion);
     watch(
-      [() => props.api, () => props.info, selected, refresh],
-      ([api, info, repos]) => {
+      [() => props.api, () => props.info.user.login, () => selected.value, () => refresh.value],
+      ([api, login, repos]) => {
         controller?.abort();
         const version = ++request;
         if (!repos.length) repoCounts.value = new Map();
@@ -269,7 +269,7 @@ export default defineComponent(
             const order = initialGroupOrder(group);
             groupOrders[group] = order;
             try {
-              const result = await client.inbox(group, { login: info.user.login, repos, merged: mergedFilter.value, order }, signal);
+              const result = await client.inbox(group, { login, repos, merged: mergedFilter.value, order }, signal);
               if (stale(group, version, mergedStamp, groupVersion)) return;
               data.value = { ...data.value, [group]: result };
               errors.value = { ...errors.value, [group]: undefined };

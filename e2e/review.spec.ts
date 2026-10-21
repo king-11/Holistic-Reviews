@@ -167,7 +167,7 @@ test.describe('inbox', () => {
     await page.goto('/');
     const requested = page.locator('[data-section="requested"]');
     const returned = page.locator('[data-section="returned"]');
-    await expect.poll(() => fake.searches.length).toBe(10);
+    await expect.poll(() => fake.searches.length).toBe(5);
     await expect(requested.locator('.pr-row')).toHaveCount(3);
     const returnedTitles = await returned.locator('.pr-row-title').allTextContents();
     const searches = fake.searches.length;
@@ -189,7 +189,7 @@ test.describe('inbox', () => {
     const fake = await mockGitHub(page, { requestedPRCount: 105 });
     await seedInbox(page, { repos: ['acme/app'] });
     await page.goto('/');
-    await expect.poll(() => fake.searches.length).toBe(10);
+    await expect.poll(() => fake.searches.length).toBe(5);
     const searches = fake.searches.length;
     await page.getByRole('button', { name: 'Sort Needs your review' }).click();
     await page.getByRole('menuitemradio', { name: /Created Oldest first/ }).click();
@@ -200,6 +200,18 @@ test.describe('inbox', () => {
       sort: 'created',
       order: 'asc',
     });
+  });
+
+  test('does not refetch Inbox after refreshed team info resolves', async ({ page }) => {
+    const fake = await mockGitHub(page, { teamsDelayMs: 2000 });
+    await seedInbox(page, { repos: ['acme/app'] });
+    const teamsResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/user/teams');
+    await page.goto('/');
+    await expect.poll(() => fake.searches.length).toBe(5);
+    await expect(page.getByRole('button', { name: 'Refresh inbox' })).toBeEnabled();
+    await teamsResponse;
+    await page.waitForTimeout(100);
+    expect(fake.searches).toHaveLength(5);
   });
 
   test('shows changes, checks, and people involved on each inbox row', async ({ page }) => {
@@ -234,7 +246,7 @@ test.describe('inbox', () => {
     const loadMore = section.getByRole('button', { name: /^Load more ·/ });
     await expect(rows).toHaveCount(10);
     await expect(loadMore).toHaveText('Load more · 10 of 105');
-    await expect.poll(() => fake.searches.length).toBe(10);
+    await expect.poll(() => fake.searches.length).toBe(5);
     await loadMore.scrollIntoViewIfNeeded();
     const lastRow = await rows.last().elementHandle();
     if (!lastRow) throw new Error('Expected a requested PR row.');

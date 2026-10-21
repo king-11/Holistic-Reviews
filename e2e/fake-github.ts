@@ -267,6 +267,7 @@ export async function mockGitHub(
     stalePendingReadAfterEdit?: boolean;
     ownPR?: boolean;
     requestedPRCount?: number;
+    teamsDelayMs?: number;
   } = {},
 ) {
   const requestedPRCount = options.requestedPRCount ?? 3;
@@ -790,6 +791,7 @@ export async function mockGitHub(
     const body = request.postData() ? JSON.parse(request.postData()!) : undefined;
     if (options.hold?.test(path)) await gate;
     try {
+      if (path === '/user/teams' && options.teamsDelayMs) await new Promise<void>(resolve => setTimeout(resolve, options.teamsDelayMs));
       if (path === '/graphql') {
         const operation = body.query.match(/^(?:query|mutation) (\w+)/)?.[1];
         if (body.query.startsWith('mutation')) state.writes.push({ method: 'POST', path, body: body.variables, operation });
