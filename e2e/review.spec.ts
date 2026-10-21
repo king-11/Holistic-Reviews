@@ -1178,6 +1178,14 @@ for (const [button, path] of [
 const reviewRequests = '/repos/acme/app/pulls/42/requested_reviewers';
 
 test.describe('details panel', () => {
+  test('shows a draft status with a neutral header icon', async ({ page }) => {
+    await mockGitHub(page, { draftPR: true });
+    await openPR(page);
+    const status = page.locator('.pr-title-row .pr-state');
+    await expect(status).toHaveAttribute('data-tone', 'draft');
+    await expect(status).toHaveAccessibleName('Draft');
+  });
+
   test('merges a team request into the review given on its behalf', async ({ page }) => {
     await page.setViewportSize({ width: 1568, height: 900 });
     await mockGitHub(page, { onBehalf: true });

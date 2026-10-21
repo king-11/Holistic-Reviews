@@ -1609,6 +1609,10 @@ a:hover,
   color: var(--color-violet);
   background: color-mix(in srgb, var(--color-violet) 8%, transparent);
 }
+.pr-state[data-tone='draft'] {
+  color: var(--color-muted);
+  background: color-mix(in srgb, var(--color-muted) 10%, transparent);
+}
 /* A merge you just made is the one moment that earns a playful beat: the badge pops with a little overshoot and sparks fly off it. */
 .pr-state[data-celebrate] {
   position: relative;
