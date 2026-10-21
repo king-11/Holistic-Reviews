@@ -38,7 +38,7 @@ Each row (`InboxRow`) is a `<NuxtLink>` to `/<owner>/<repo>/pull/<number>` displ
 
 - Status icon (`merged`, `draft`, or `open`), repository `owner/name#number`, title, author, relative update time, and labels.
 - **Participants:** Up to 4 avatars (excluding the PR author) plus a `+N` overflow badge.
-- **Checks:** Latest commit `statusCheckRollup` mapped to `success` (green check), `failure`/`error` (red cross), `pending`/`expected` (amber dashed circle), or empty when no checks exist.
+- **Checks:** Latest commit `statusCheckRollup` mapped to `success` (green check), `failure`/`error` (red cross), `pending`/`expected` (amber dashed circle), or empty when no checks exist. The 16px icon is centered in a 20px cell aligned across rows.
 - **Diff size:** `+additions` and `−deletions`.
 - **Pending review comments:** A dashed `N pending` pill when the viewer has unpublished inline comments on the PR.
 

@@ -210,6 +210,19 @@ test.describe('inbox', () => {
     await expect(row.getByText('−3')).toBeVisible();
     await expect(row.getByRole('img', { name: 'Checks passed' })).toBeVisible();
     await expect(row.getByTitle('bob, carol')).toBeVisible();
+    await expect(page.getByRole('link', { name: /Tune cache eviction/ }).getByRole('img', { name: 'Checks running' })).toBeVisible();
+    const checkGeometry = await page.locator('section.requested .pr-row').evaluateAll(rows =>
+      rows.flatMap(row => {
+        const time = row.querySelector('.row-time')?.textContent?.trim();
+        const icon = row.querySelector('[aria-label^="Checks"] svg');
+        if (!time || !icon) return [];
+        const rect = icon.getBoundingClientRect();
+        return [{ time, centerX: Math.round((rect.left + rect.width / 2) * 1000) / 1000, width: rect.width }];
+      }),
+    );
+    expect(new Set(checkGeometry.map(row => row.time)).size).toBeGreaterThan(1);
+    expect(new Set(checkGeometry.map(row => row.centerX)).size).toBe(1);
+    expect(checkGeometry.every(row => row.width === 16)).toBe(true);
   });
 
   test('reveals 10 requested PRs at a time and keeps the viewport steady', async ({ page }) => {

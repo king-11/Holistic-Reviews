@@ -126,7 +126,12 @@ const inline = (id: number, author: typeof alice, path: string, line: number, bo
 const inbox = (
   number: number,
   title: string,
-  { draft = false, repository = repo.full_name, author = alice }: { draft?: boolean; repository?: string; author?: typeof alice } = {},
+  {
+    draft = false,
+    repository = repo.full_name,
+    author = alice,
+    updatedAt = at,
+  }: { draft?: boolean; repository?: string; author?: typeof alice; updatedAt?: string } = {},
 ) => ({
   id: number,
   number,
@@ -137,14 +142,18 @@ const inbox = (
   draft,
   state: 'open',
   created_at: at,
-  updated_at: at,
+  updated_at: updatedAt,
   comments: 1,
   labels: [],
 });
 const inboxGroups: [RegExp, ReturnType<typeof inbox>[]][] = [
   [
     /review-requested:/,
-    [inbox(42, pr.title), inbox(77, 'Tune cache eviction'), inbox(88, 'Rotate infra credentials', { repository: 'acme/infra' })],
+    [
+      inbox(42, pr.title, { updatedAt: new Date(NOW.getTime() - 52 * 60_000).toISOString() }),
+      inbox(77, 'Tune cache eviction', { updatedAt: new Date(NOW.getTime() - 5 * 60 * 60_000).toISOString() }),
+      inbox(88, 'Rotate infra credentials', { repository: 'acme/infra' }),
+    ],
   ],
   [/author:\S+ draft:true/, [inbox(90, 'Sketch retry dashboard', { draft: true, author: viewer })]],
   [

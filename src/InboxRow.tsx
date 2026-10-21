@@ -21,7 +21,7 @@ function MarkCell(props: { name: string; mark?: Mark }) {
     <span class={`${styles.cell} ${styles[`cell-${props.name}`]}`}>
       {Icon && props.mark && (
         <span class={styles[`tone-${props.mark.tone}`]} role="img" aria-label={props.mark.label} title={props.mark.label}>
-          <Icon size={14} />
+          <Icon size={16} />
         </span>
       )}
     </span>
