@@ -133,3 +133,39 @@
 .powered-by > span:last-child {
   margin-left: auto;
 }
+
+.tree-row {
+  position: relative;
+}
+.eye {
+  position: absolute;
+  top: 0;
+  right: 6px;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+}
+.eye :global(.icon-button) {
+  width: 24px;
+  height: 24px;
+}
+.eye :global(.icon-button.active) {
+  color: var(--color-indigo);
+  background: none;
+}
+.folder-count {
+  font-family: var(--font-mono-compact);
+}
+.tree-row:not(:hover, :focus-within) .eye:not([data-viewed]) :global(.icon-button) {
+  opacity: 0;
+}
+.tree-row:not(:hover, :focus-within) .eye[data-viewed] .folder-count {
+  display: none;
+}
+.tree-row:is(:hover, :focus-within) .letter,
+.tree-row:has(.eye[data-viewed]) .letter {
+  visibility: hidden;
+}

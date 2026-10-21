@@ -7,8 +7,8 @@ type Payload = Record<string, any>;
 const NOW = new Date('2026-10-17T12:00:00Z');
 const at = '2026-10-17T11:00:00Z';
 const sha = (char: string) => char.repeat(40);
-const BASE = sha('a'),
-  FIRST = sha('c');
+const BASE = sha('a');
+export const FIRST = sha('c');
 export const HEAD = sha('b');
 const repo = { id: 1, full_name: 'acme/app' };
 const repoPath = `/repos/${repo.full_name}`;
@@ -369,6 +369,8 @@ export async function mockGitHub(
     const operation = query.match(/^(?:query|mutation) (\w+)/)?.[1];
     const input = variables.input || {};
     switch (operation) {
+      case 'ForcePushes':
+        return { nodes: [{ id: 'HRFPE1', beforeCommit: { oid: FIRST } }] };
       case 'Development':
         return {
           repository: {
@@ -611,6 +613,26 @@ export async function mockGitHub(
       const text = query.get('ref') === BASE ? oldWorker : newWorker;
       return [200, { type: 'file', encoding: 'base64', size: text.length, content: Buffer.from(text).toString('base64') }];
     }
+    if (path === `${repoPath}/issues/42/timeline`)
+      return [
+        200,
+        [
+          {
+            event: 'committed',
+            sha: FIRST,
+            html_url: '',
+            message: 'Add retries\n\nDetails',
+            author: { name: 'Alice', date: at },
+            committer: { date: at },
+          },
+          { event: 'review_requested', node_id: 'RRE1', actor: alice, created_at: at, requested_reviewer: carol },
+          { event: 'review_requested', node_id: 'RRE2', actor: alice, created_at: at, requested_reviewer: bob },
+          { event: 'labeled', node_id: 'LE1', actor: alice, created_at: at, label: { name: 'retry', color: '0e8a16' } },
+          { event: 'subscribed', actor: alice, created_at: at },
+          ...state.conversation.map(comment => ({ event: 'commented', ...comment })),
+          { event: 'head_ref_force_pushed', node_id: 'HRFPE1', actor: alice, created_at: at, commit_id: HEAD },
+        ],
+      ];
     if (path === `${repoPath}/issues/42/comments`) {
       if (method === 'GET') return [200, state.conversation];
       const comment = { id: state.nextId++, user: viewer, body: body!.body, created_at: NOW.toISOString() };

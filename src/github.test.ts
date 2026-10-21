@@ -1012,6 +1012,37 @@ describe('GitHub data loading', () => {
       [['run-42', 'lint']],
     );
   });
+  it('splits the timeline into comments and line events and resolves the commit a force push replaced', async () => {
+    const user = { id: 1, login: 'alice' };
+    mock.method(globalThis, 'fetch', async (input: string | URL | Request) =>
+      new URL(String(input)).pathname === '/graphql'
+        ? Response.json({ data: { nodes: [{ id: 'FP1', beforeCommit: { oid: 'old' } }] } })
+        : Response.json([
+            { event: 'commented', id: 9, node_id: 'IC9', body: 'Hi', user, created_at: '2026-01-01T00:00:00Z' },
+            { event: 'subscribed', actor: user, created_at: '2026-01-01T00:00:00Z' },
+            {
+              event: 'committed',
+              sha: 'abc',
+              html_url: 'https://github.com/o/r/commit/abc',
+              message: 'Fix',
+              author: { name: 'Al', date: '2026-01-02T00:00:00Z' },
+            },
+            { event: 'head_ref_force_pushed', node_id: 'FP1', actor: user, created_at: '2026-01-03T00:00:00Z', commit_id: 'new' },
+          ]),
+    );
+    const { comments, timeline } = await new GitHub('test-only-token').timeline(ref);
+    assert.deepEqual(
+      comments.map(comment => [comment.id, comment.body]),
+      [[9, 'Hi']],
+    );
+    assert.deepEqual(
+      timeline.map(event => [event.event, event.id, event.created_at, event.before_commit_id ?? event.commit?.sha]),
+      [
+        ['committed', 'abc', '2026-01-02T00:00:00Z', 'abc'],
+        ['head_ref_force_pushed', 'FP1', '2026-01-03T00:00:00Z', 'old'],
+      ],
+    );
+  });
   it('keeps a workspace usable when conversation or stack data fails', async () => {
     mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
       const url = new URL(String(input));

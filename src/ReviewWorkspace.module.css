@@ -181,3 +181,109 @@
   background: var(--color-red-soft);
   color: var(--color-red);
 }
+
+.history-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+.history,
+.history-commits ul {
+  position: relative;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.history::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 14px;
+  width: 1px;
+  background: var(--color-border);
+}
+.history > li {
+  position: relative;
+  padding-left: 44px;
+}
+.history-marker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-muted);
+}
+.history-card > .history-marker {
+  top: 6px;
+  border: none;
+  background: none;
+}
+.history-card :global(.comment-author) > :global(.avatar) {
+  display: none;
+}
+.history-event {
+  margin-bottom: 16px;
+}
+.history-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+}
+.history-line strong {
+  color: var(--color-text);
+  font-weight: 500;
+}
+.history-line > time {
+  margin-left: auto;
+}
+.history-person {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.history-sha {
+  font-family: var(--font-mono-compact);
+  color: var(--color-accent);
+}
+.history-label {
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--label-color) 50%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--label-color) 14%, transparent);
+  color: var(--color-text);
+}
+.history-commits {
+  flex: 1;
+  min-width: 0;
+}
+.history-commits > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  cursor: pointer;
+  list-style: none;
+}
+.history-commits li {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+}
+.history-commits li > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-secondary);
+}

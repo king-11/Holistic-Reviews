@@ -248,8 +248,41 @@ export interface Workspace {
   onBehalfOf?: Record<string, string[]>;
   mergeMethods?: MergeMethod[];
   autoMerge?: boolean;
+  timeline: TimelineEvent[];
   pending: WorkspaceSection[];
 }
+
+// Line events from the issue timeline; comments and reviews stay in their own lists so editing them is unchanged.
+export interface TimelineEvent {
+  event: (typeof timelineEvents)[number];
+  id: string;
+  created_at: string;
+  actor?: User;
+  label?: Label;
+  rename?: { from: string; to: string };
+  requested_reviewer?: User;
+  requested_team?: Team;
+  commit_id?: string | null;
+  before_commit_id?: string;
+  source?: { issue?: { number: number; title: string; html_url: string } };
+  commit?: { sha: string; html_url: string; message: string; author: string };
+}
+export const timelineEvents = [
+  'committed',
+  'head_ref_force_pushed',
+  'labeled',
+  'unlabeled',
+  'renamed',
+  'review_requested',
+  'review_request_removed',
+  'ready_for_review',
+  'convert_to_draft',
+  'merged',
+  'closed',
+  'reopened',
+  'cross-referenced',
+  'head_ref_deleted',
+] as const;
 
 export const workspaceSections = [
   'files',
@@ -273,6 +306,7 @@ export interface StatusCheck {
   state: CheckState;
   url: string;
   detail?: string;
+  seconds?: number;
   // GitHub Actions check runs are jobs; only those can be re-run through the REST API.
   job?: { id: number; run: number };
 }
@@ -283,7 +317,7 @@ const actionsJob = (url: string | null) => {
   const [, run, id] = url?.match(/\/actions\/runs\/(\d+)\/job\/(\d+)/) ?? [];
   return run ? { id: Number(id), run: Number(run) } : undefined;
 };
-const checkOrder: CheckState[] = ['failure', 'cancelled', 'pending', 'neutral', 'success', 'skipped'];
+export const checkOrder: CheckState[] = ['failure', 'cancelled', 'pending', 'neutral', 'success', 'skipped'];
 // GitHub re-runs cancelled jobs with failed ones and treats them as blocking.
 export const blockingStates: CheckState[] = ['failure', 'cancelled'];
 
@@ -571,6 +605,7 @@ export class GitHub {
       related: [],
       reviewThreads: [],
       draftComments: [],
+      timeline: [],
       reviewsLoaded: false,
       ...previous,
       pr,
@@ -611,11 +646,10 @@ export class GitHub {
           ),
         error => settle('files', {}, [failed('Changed files', error)]),
       ),
-      section(
-        'comments',
-        'Conversation',
-        () => this.pages<Comment>(`${repoPath(ref)}/issues/${ref.number}/comments`, signal, maxPages.lists),
-        items => ({ comments: items }),
+      this.timeline(ref, signal).then(
+        ({ comments, timeline, truncated }) =>
+          settle('comments', { comments, timeline }, truncated ? ['Conversation is limited to the first 1,000 timeline events.'] : []),
+        error => settle('comments', {}, [failed('Conversation', error)]),
       ),
       section(
         'inlineComments',
@@ -675,6 +709,8 @@ export class GitHub {
       check_suite?: { id: number } | null;
       app?: { id: number } | null;
       output?: { title?: string | null };
+      started_at?: string | null;
+      completed_at?: string | null;
     };
     type WorkflowRun = { name: string | null; workflow_id: number; check_suite_id: number };
     type Status = { id: number; context: string; state: string; target_url: string | null; description: string | null };
@@ -707,6 +743,8 @@ export class GitHub {
         name: workflow?.name ? `${workflow.name} / ${run.name}` : run.name,
         url: run.html_url || fallback,
         detail: run.output?.title || undefined,
+        seconds:
+          run.started_at && run.completed_at ? Math.round((Date.parse(run.completed_at) - Date.parse(run.started_at)) / 1000) : undefined,
         state: (run.status !== 'completed'
           ? 'pending'
           : run.conclusion === 'success'
@@ -728,6 +766,66 @@ export class GitHub {
       })),
     ];
     return checks.sort((a, b) => checkOrder.indexOf(a.state) - checkOrder.indexOf(b.state));
+  }
+
+  // One timeline read serves both the comment cards and the line events between them.
+  async timeline(ref: PRRef, signal?: AbortSignal) {
+    type Raw = Omit<TimelineEvent, 'event' | 'id' | 'created_at' | 'commit'> & {
+      event: string;
+      id?: number;
+      node_id?: string;
+      created_at?: string;
+      user?: User;
+      body?: string;
+      html_url?: string;
+      sha?: string;
+      message?: string;
+      author?: { name: string; date: string };
+      committer?: { date: string };
+    };
+    const { items, truncated } = await this.pages<Raw>(`${repoPath(ref)}/issues/${ref.number}/timeline`, signal, maxPages.lists);
+    const comments: Comment[] = items
+      .filter(item => item.event === 'commented')
+      .map(({ id, node_id, body, user, created_at, html_url }) => ({
+        id: id!,
+        node_id,
+        body: body ?? '',
+        user: user!,
+        created_at: created_at!,
+        html_url,
+      }));
+    const timeline: TimelineEvent[] = items.flatMap(item =>
+      (timelineEvents as readonly string[]).includes(item.event)
+        ? [
+            {
+              ...item,
+              event: item.event as TimelineEvent['event'],
+              id: item.node_id ?? item.sha ?? String(item.id),
+              created_at: item.created_at ?? item.committer?.date ?? item.author!.date,
+              commit: item.sha
+                ? { sha: item.sha, html_url: item.html_url!, message: item.message ?? '', author: item.author?.name ?? '' }
+                : undefined,
+              source: item.source?.issue && {
+                issue: { number: item.source.issue.number, title: item.source.issue.title, html_url: item.source.issue.html_url },
+              },
+            },
+          ]
+        : [],
+    );
+    // REST only reports the new head of a force push; GraphQL also knows the commit it replaced.
+    const pushes = timeline.filter(item => item.event === 'head_ref_force_pushed');
+    if (pushes.length) {
+      const data = await this.graphql<{ nodes: ({ id: string; beforeCommit: { oid: string } | null } | null)[] }>(
+        'query ForcePushes($ids: [ID!]!) { nodes(ids: $ids) { ... on HeadRefForcePushedEvent { id beforeCommit { oid } } } }',
+        { ids: pushes.map(item => item.id) },
+        signal,
+      ).catch(() => undefined);
+      for (const node of data?.nodes ?? []) {
+        const push = node && pushes.find(item => item.id === node.id);
+        if (push && node.beforeCommit) push.before_commit_id = node.beforeCommit.oid;
+      }
+    }
+    return { comments, timeline, truncated };
   }
 
   async commits(ref: PRRef, signal?: AbortSignal) {
