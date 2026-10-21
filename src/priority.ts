@@ -8,7 +8,8 @@ export type PriorityInput = {
   checks: 'success' | 'failure' | 'pending' | null;
 };
 
-export type PriorityReason = { label: string; title?: string };
+// Rows show the kind as an icon with the short value; the label explains it on hover.
+export type PriorityReason = { kind: 'wait' | 'commits' | 'stack' | 'owner' | 'checks'; short?: string; label: string; title?: string };
 export type PriorityResult = { score: number; lane: 'now' | 'soon' | 'later'; reasons: PriorityReason[] };
 
 const hour = 60 * 60 * 1000;
@@ -59,15 +60,18 @@ export function priority(input: PriorityInput, now: Date): PriorityResult {
         ? `${newCommitCount} new commit${input.newCommits === 1 && !input.moreThanTwentyNewCommits ? '' : 's'} since your review · ${elapsedLabel(input.waitStart, now)}`
         : undefined;
     reasons.push({
+      kind: newCommitLabel ? 'commits' : 'wait',
+      short: newCommitLabel ? newCommitCount : elapsedLabel(input.waitStart, now),
       label: newCommitLabel ?? `ready ${elapsedLabel(input.waitStart, now)} ago`,
       title: `Waiting score: ${waitingPoints.toFixed(1)} points from ${workingHourCount.toFixed(1)} working hours (weekdays, 09:00–17:00 local time).`,
     });
   }
-  if (input.stackedReady > 0) reasons.push({ label: `${input.stackedReady} ready stacked on this` });
-  if (input.codeOwner) reasons.push({ label: 'code owner' });
-  if (input.checks === 'success') reasons.push({ label: 'checks green' });
-  if (input.checks === 'failure') reasons.push({ label: 'checks failing' });
-  if (input.checks === 'pending') reasons.push({ label: 'checks running' });
+  if (input.stackedReady > 0)
+    reasons.push({ kind: 'stack', short: String(input.stackedReady), label: `${input.stackedReady} ready stacked on this` });
+  if (input.codeOwner) reasons.push({ kind: 'owner', label: 'code owner' });
+  if (input.checks === 'success') reasons.push({ kind: 'checks', label: 'checks green' });
+  if (input.checks === 'failure') reasons.push({ kind: 'checks', label: 'checks failing' });
+  if (input.checks === 'pending') reasons.push({ kind: 'checks', label: 'checks running' });
 
   return { score, lane, reasons };
 }

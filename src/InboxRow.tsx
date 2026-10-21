@@ -1,10 +1,21 @@
 import { defineComponent } from 'vue';
-import { ChevronRight, FilePenLine, GitMerge, GitPullRequest } from '@lucide/vue';
+import {
+  ChevronRight,
+  CircleX,
+  Clock,
+  FilePenLine,
+  GitCommitHorizontal,
+  GitMerge,
+  GitPullRequest,
+  Layers,
+  ShieldCheck,
+  TriangleAlert,
+} from '@lucide/vue';
 import { navigateTo } from 'nuxt/app';
 import { itemRepository, prPath, type InboxGroup, type InboxItem } from './github';
 import { checkIcons } from './Checks';
 import { Avatar, timeAgo } from './ui';
-import type { PriorityResult } from './priority';
+import type { PriorityReason, PriorityResult } from './priority';
 import styles from './Inbox.module.css';
 
 type Mark = { icon: typeof GitMerge; tone: 'green' | 'red' | 'amber' | 'muted'; label: string };
@@ -12,6 +23,13 @@ const checkMarks: Record<'success' | 'failure' | 'pending', Mark> = {
   success: { icon: checkIcons.success, tone: 'green', label: 'Checks passed' },
   failure: { icon: checkIcons.failure, tone: 'red', label: 'Checks failed' },
   pending: { icon: checkIcons.pending, tone: 'amber', label: 'Checks running' },
+};
+
+const reasonIcons: Record<Exclude<PriorityReason['kind'], 'checks'>, typeof GitMerge> = {
+  wait: Clock,
+  commits: GitCommitHorizontal,
+  stack: Layers,
+  owner: ShieldCheck,
 };
 
 // Every cell keeps its width, even when empty, so the columns line up across rows.
@@ -91,14 +109,34 @@ export default defineComponent(
             <span>#{item.number}</span>
             <span class="text-xs">·</span>
             <span>{item.user.login === props.viewerLogin ? 'you' : item.user.login}</span>
+            {group === 'authored' && item.review === 'returned' && (
+              <span class={`${styles.blocker} ${styles['tone-red']}`} role="img" aria-label="Changes requested" title="Changes requested">
+                <CircleX size={14} />
+                {(item.details?.changesBy ?? []).map(login => (
+                  <Avatar key={login} login={login} small src={item.details?.participants.find(user => user.login === login)?.avatarUrl} />
+                ))}
+              </span>
+            )}
+            {group === 'authored' && item.details?.conflict && (
+              <span class={`${styles.blocker} ${styles['tone-red']}`} role="img" aria-label="Merge conflict" title="Merge conflict">
+                <TriangleAlert size={14} />
+              </span>
+            )}
           </div>
           {props.priority && (
             <div class={styles['priority-reasons']}>
-              {props.priority.reasons.map(reason => (
-                <span key={reason.label} class={styles['priority-reason']} title={reason.title}>
-                  {reason.label}
-                </span>
-              ))}
+              {props.priority.reasons.map(reason => {
+                // The checks column already shows check state.
+                if (reason.kind === 'checks') return null;
+                const Icon = reasonIcons[reason.kind];
+                const label = reason.title ? `${reason.label}. ${reason.title}` : reason.label;
+                return (
+                  <span key={reason.kind} class={styles['priority-reason']} role="img" aria-label={reason.label} title={label}>
+                    <Icon size={13} />
+                    {reason.short}
+                  </span>
+                );
+              })}
             </div>
           )}
         </div>

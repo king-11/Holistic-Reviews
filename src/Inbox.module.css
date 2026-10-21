@@ -43,6 +43,9 @@
 .repo-caption {
   margin-top: 28px;
 }
+.nav-group {
+  margin-top: 16px;
+}
 .repo-nav {
   font-size: var(--text-xs);
 }
@@ -323,11 +326,20 @@
   margin-top: 6px;
 }
 .priority-reason {
-  padding: 1px 5px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  color: var(--color-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--color-muted);
   font-size: var(--text-xs);
+}
+.priority-reasons {
+  gap: 10px;
+}
+.blocker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
 }
 @media (max-width: 1100px) {
   .cell-bubbles {
@@ -338,4 +350,38 @@
   .cell-checks {
     display: none;
   }
+}
+
+.rail-layout {
+  grid-template-columns: 60px minmax(0, 1fr);
+}
+.rail {
+  padding: 24px 8px 0;
+}
+.rail .nav-label,
+.rail :global(.nav-count),
+.rail .nav-caption,
+.rail .repo-nav,
+.rail .sidebar-bottom,
+.rail .sidebar-status,
+.rail .workspace-label > span:last-child {
+  display: none;
+}
+.rail :global(.nav-item) {
+  justify-content: center;
+}
+.rail .workspace-label {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+.rail .rail-toggle {
+  margin-top: auto;
+}
+.rail .rail-toggle svg {
+  transform: scaleX(-1);
+}
+.rail-toggle {
+  color: var(--color-muted);
+  margin-bottom: 8px;
 }

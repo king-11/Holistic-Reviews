@@ -354,7 +354,7 @@ export const demoInbox: Record<InboxGroup, InboxItem[]> = {
     inboxItem(298630, 'Introduce keyboard navigation for command menus', 'you', { draft: true }),
     inboxItem(298599, 'Explore incremental sync for connected sources', 'you', { draft: true }),
   ],
-  reviewed: [inboxItem(298401, parent.title, 'alexchen')],
+  team: [inboxItem(298401, parent.title, 'alexchen')],
   merged: [
     inboxItem(298350, 'Update connection status indicators', 'you'),
     inboxItem(298344, 'Tighten the connector retry budget', 'alexchen'),

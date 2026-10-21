@@ -14,7 +14,7 @@ import {
   type ReviewSummary,
   type StatusCheck,
 } from './github.ts';
-import { demoInbox, demoPR } from './fixtures.ts';
+import { demoPR } from './fixtures.ts';
 
 const ref = { owner: 'acme', repo: 'app', number: 42 };
 const sha = demoPR.head.sha;
@@ -283,12 +283,11 @@ describe('PR references and inbox queries', () => {
       assert.throws(() => parsePRUrl(url));
     }
   });
-  it('creates distinct review, authored, draft and reviewed queries', () => {
-    assert.match(inboxQuery('requested', 'me'), /is:open review-requested:me draft:false/);
+  it('creates distinct direct request, team request, authored and draft queries', () => {
+    assert.match(inboxQuery('requested', 'me'), /is:open user-review-requested:me draft:false/);
+    assert.match(inboxQuery('team', 'me'), /is:open review-requested:me -user-review-requested:me draft:false/);
     assert.match(inboxQuery('authored', 'me'), /author:me draft:false/);
     assert.match(inboxQuery('drafts', 'me'), /author:me draft:true/);
-    assert.match(inboxQuery('reviewed', 'me'), /reviewed-by:me -author:me/);
-    assert.doesNotMatch(inboxQuery('reviewed', 'me'), /\bdraft:/);
     assert.match(inboxQuery('requested', 'me', ['acme/app', 'acme/other']), /repo:acme\/app repo:acme\/other/);
   });
   for (const [name, repos, merged, expected] of [
@@ -381,7 +380,17 @@ describe('review state, auto-merge and merge settings', () => {
   for (const [name, input, expected] of [
     ['an approving decision', summary('APPROVED', [review('APPROVED', 'bob')]), 'approved'],
     ['a changes-requested decision', summary('CHANGES_REQUESTED'), 'returned'],
-    ['a human comment that is not re-requested', summary('REVIEW_REQUIRED', [review('COMMENTED', 'bob')]), 'returned'],
+    ['a human comment that is not re-requested', summary('REVIEW_REQUIRED', [review('COMMENTED', 'bob')]), 'waiting'],
+    [
+      'changes requested by a reviewer who was re-requested',
+      summary('CHANGES_REQUESTED', [review('CHANGES_REQUESTED', 'bob')], ['bob']),
+      'waiting',
+    ],
+    [
+      'changes requested by a reviewer who was not re-requested',
+      summary('CHANGES_REQUESTED', [review('CHANGES_REQUESTED', 'bob')]),
+      'returned',
+    ],
     ['a human comment that was re-requested', summary('REVIEW_REQUIRED', [review('COMMENTED', 'bob')], ['bob']), 'waiting'],
     ['only bot comments', summary('REVIEW_REQUIRED', [review('COMMENTED', 'glean-pr-reviewer', 'Bot')]), 'waiting'],
     ["only the author's own comment", summary('REVIEW_REQUIRED', [review('COMMENTED', 'me')]), 'waiting'],
@@ -631,8 +640,8 @@ describe('review state, auto-merge and merge settings', () => {
     assert.equal(calls.length, 3);
   });
   for (const [group, reviews] of [
-    ['reviewed', [undefined, undefined]],
-    ['authored', ['approved', 'returned']],
+    ['team', [undefined, undefined]],
+    ['authored', ['approved', 'waiting']],
   ] as const)
     it(`attaches details to ${group} items from one batched GraphQL query${reviews[0] ? ' and classifies their review' : ' without review state'}`, async () => {
       const calls = fake([
@@ -811,16 +820,6 @@ describe('GitHub data loading', () => {
     const calls = fake([{ data: [1], headers: { link: '<next>; rel="next"' } }]);
     assert.deepEqual(await new GitHub('test-only-token').pages('/items?state=open', undefined, 1), { items: [1], truncated: true });
     assert.match(calls[0].url, /\?state=open&per_page/);
-  });
-  it('keeps draft PRs eligible for Reviewed by you', async () => {
-    const draft = { ...demoInbox.requested[0], draft: true };
-    const calls = fake([{ data: { items: [draft], total_count: 1, incomplete_results: false } }]);
-    const result = await new GitHub('test-only-token').inbox('reviewed', { login: 'me' });
-    assert.deepEqual(result.items, [draft]);
-    assert.equal(result.total_count, 1);
-    const query = new URL(calls[0].url).searchParams.get('q')!;
-    assert.match(query, /reviewed-by:me/);
-    assert.doesNotMatch(query, /\bdraft:/);
   });
   it('returns native stack entries in position order, noting truncation', async () => {
     fake([

@@ -2,7 +2,7 @@ import { searchResultCap, type InboxItem, type MergedFilter, type SearchOrder } 
 import { tryStorage } from './storage.ts';
 
 const mergedFilters = ['all', 'mine', 'reviewing'] as const;
-const sectionIds = ['requested', 'returned', 'approved', 'waiting', 'drafts', 'reviewed', 'merged'] as const;
+const sectionIds = ['attention', 'requested', 'team', 'ready', 'waiting', 'drafts', 'merged'] as const;
 const sortChoices = [
   'priority',
   'title-asc',
@@ -89,6 +89,8 @@ type InboxPreferences = {
   sorts?: Partial<Record<InboxSectionId, SortChoice>>;
   merged?: MergedFilter;
   known?: string[];
+  // Sidebar collapsed to an icon rail.
+  rail?: boolean;
 };
 const preferencesKey = 'review.inbox';
 const stringList = (value: unknown) =>
@@ -111,6 +113,7 @@ export function readPreferences(): InboxPreferences {
     sorts: sectionSorts(saved?.sorts),
     merged: mergedFilters.find(filter => filter === saved?.merged),
     known: stringList(saved?.known),
+    rail: saved?.rail === true || undefined,
   };
 }
 export const savePreferences = (preferences: InboxPreferences) =>

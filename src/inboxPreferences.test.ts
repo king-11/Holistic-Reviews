@@ -34,12 +34,12 @@ describe('Inbox preferences', () => {
       'review.inbox',
       JSON.stringify({
         sort: 'created-asc',
-        sorts: { requested: 'title-asc', returned: 'created-asc', approved: 'priority', unknown: 'updated-asc' },
+        sorts: { requested: 'title-asc', attention: 'created-asc', ready: 'priority', returned: 'updated-asc' },
       }),
     );
-    assert.deepEqual(readPreferences().sorts, { requested: 'title-asc', returned: 'created-asc' });
+    assert.deepEqual(readPreferences().sorts, { requested: 'title-asc', attention: 'created-asc' });
     assert.equal(defaultSort('requested'), 'priority');
-    assert.equal(defaultSort('returned'), 'updated-desc');
+    assert.equal(defaultSort('attention'), 'updated-desc');
   });
 
   for (const [choice, loaded, total, expected] of [

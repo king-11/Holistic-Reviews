@@ -8,8 +8,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  CircleCheck,
-  CircleDot,
+  CircleAlert,
   FilePenLine,
   Filter,
   GitMerge,
@@ -17,23 +16,26 @@ import {
   Hourglass,
   Inbox as InboxIcon,
   Layers,
-  MessageSquareReply,
+  PanelLeft,
   Plus,
   RefreshCw,
+  Rocket,
   SlidersHorizontal,
-  ThumbsUp,
+  User,
+  Users,
 } from '@lucide/vue';
 import {
+  authoredSection,
   errorMessage,
   itemRepository,
   searchPageSize,
   searchResultCap,
   type GitHub,
+  type AuthoredSection,
   type InboxGroup,
   type InboxItem,
   type InboxResult,
   type MergedFilter,
-  type ReviewState,
   type SearchOrder,
   type TokenInfo,
 } from './github';
@@ -56,55 +58,55 @@ import { createShortcuts, modalOpen, step } from './shortcuts';
 import { Dismiss, IconButton, SearchField, Spinner, inputValue } from './ui';
 import styles from './Inbox.module.css';
 
-// Each section is a view of one fetched group; the authored group splits by review state.
+// Each section is a view of one fetched group; your open PRs split by what has to happen next.
 type Section = {
   id: InboxSectionId;
   group: InboxGroup;
-  review?: ReviewState;
+  authored?: AuthoredSection;
   label: string;
   description: string;
   icon: typeof GitPullRequest;
 };
 const sections: Section[] = [
   {
+    id: 'attention',
+    group: 'authored',
+    authored: 'attention',
+    label: 'Needs your attention',
+    description: 'Your pull requests with requested changes, failing checks or a merge conflict',
+    icon: CircleAlert,
+  },
+  {
     id: 'requested',
     group: 'requested',
-    label: 'Needs your review',
-    description: 'Ready-for-review pull requests where you are a requested reviewer',
-    icon: CircleDot,
+    label: 'Requested from you',
+    description: 'Ready-for-review pull requests requesting your review by name',
+    icon: User,
   },
   {
-    id: 'returned',
-    group: 'authored',
-    review: 'returned',
-    label: 'Returned to you',
-    description: 'Reviewers commented or requested changes and haven’t been re-requested',
-    icon: MessageSquareReply,
+    id: 'team',
+    group: 'team',
+    label: 'Requested from your team',
+    description: 'Ready-for-review pull requests requesting a review only from a team you are in',
+    icon: Users,
   },
   {
-    id: 'approved',
+    id: 'ready',
     group: 'authored',
-    review: 'approved',
-    label: 'Approved',
-    description: 'Your open pull requests that reviewers approved',
-    icon: ThumbsUp,
+    authored: 'ready',
+    label: 'Ready to merge',
+    description: 'Your approved pull requests with no failing checks or conflicts',
+    icon: Rocket,
   },
   {
     id: 'waiting',
     group: 'authored',
-    review: 'waiting',
-    label: 'Waiting for review',
+    authored: 'waiting',
+    label: 'Awaiting review',
     description: 'Your open pull requests waiting on reviewers',
     icon: Hourglass,
   },
   { id: 'drafts', group: 'drafts', label: 'Drafts', description: 'Work in progress, authored by you', icon: FilePenLine },
-  {
-    id: 'reviewed',
-    group: 'reviewed',
-    label: 'Reviewed by you',
-    description: 'Open pull requests you have reviewed, including drafts',
-    icon: CircleCheck,
-  },
   {
     id: 'merged',
     group: 'merged',
@@ -121,8 +123,9 @@ const priorityLanes: { id: PriorityResult['lane']; label: string }[] = [
   { id: 'later', label: 'Later' },
 ];
 const visibleRowStep = 10;
-// Items GitHub search returns before review data arrives count as waiting.
-const reviewOf = (item: InboxItem) => item.review ?? 'waiting';
+// A team request lists every requested team; the viewer's own team names the group when known.
+const teamOf = (item: InboxItem, teams: string[] = []) =>
+  item.details?.teams?.find(team => teams.includes(team)) ?? item.details?.teams?.[0] ?? 'Team';
 
 const mergedOptions: { value: MergedFilter; label: string; title: string }[] = [
   { value: 'all', label: 'All', title: 'Every merged pull request in the selected repositories' },
@@ -145,6 +148,7 @@ type Props = {
 export default defineComponent(
   (props: Props) => {
     const preferences = readPreferences();
+    const rail = shallowRef(preferences.rail ?? false);
 
     const query = shallowRef('');
     const search = shallowRef<HTMLInputElement>();
@@ -209,13 +213,13 @@ export default defineComponent(
     const mergedFilter = shallowRef<MergedFilter>(preferences.merged ?? 'all');
     const mergedLoading = shallowRef(false);
     watch(selected, () => (visibleLimits.value = {}));
-    watch([selected, sorts, repoOptions, mergedFilter], ([repos, savedSorts, known, merged]) =>
-      savePreferences({ repos: repoDefaulted ? repos : undefined, sorts: savedSorts, known, merged }),
+    watch([selected, sorts, repoOptions, mergedFilter, rail], ([repos, savedSorts, known, merged, collapsedRail]) =>
+      savePreferences({ repos: repoDefaulted ? repos : undefined, sorts: savedSorts, known, merged, rail: collapsedRail || undefined }),
     );
 
     // Each merged load (full reload or filter change) bumps this so only the newest one may write its result.
     let mergedVersion = 0;
-    const groupVersions: Record<InboxGroup, number> = { requested: 0, authored: 0, drafts: 0, reviewed: 0, merged: 0 };
+    const groupVersions: Record<InboxGroup, number> = { requested: 0, team: 0, authored: 0, drafts: 0, merged: 0 };
     const groupOrders: Partial<Record<InboxGroup, SearchOrder>> = {};
     const initialGroupOrder = (group: InboxGroup) => {
       const choices = sections.filter(section => section.group === group).map(section => sortChoice(section.id));
@@ -410,7 +414,7 @@ export default defineComponent(
       ) as Partial<Record<InboxGroup, ReturnType<typeof withSnapshots>>>;
     });
     const sectionItems = (section: Section) =>
-      (corrected.value[section.group]?.items ?? []).filter(item => !section.review || reviewOf(item) === section.review);
+      (corrected.value[section.group]?.items ?? []).filter(item => !section.authored || authoredSection(item) === section.authored);
     const items = (section: Section): { item: InboxItem; priority?: PriorityResult }[] => {
       const q = query.value.toLowerCase();
       const choice = sortChoice(section.id);
@@ -446,11 +450,11 @@ export default defineComponent(
     // Review sections count loaded items; a trailing + means more authored pages can still arrive.
     const sectionCount = (section: Section) => {
       const result = data.value[section.group];
-      if (!result || !section.review) return groupTotal(section.group);
+      if (!result || !section.authored) return groupTotal(section.group);
       return `${sectionItems(section).length}${result.items.length < result.total_count ? '+' : ''}`;
     };
 
-    const collapsed = shallowRef<Set<string>>(new Set(['reviewed', 'merged']));
+    const collapsed = shallowRef<Set<string>>(new Set(['merged']));
     const allCollapsed = () => collapsed.value.size === sections.length;
     function toggleGroup(id: string) {
       const next = new Set(collapsed.value);
@@ -462,19 +466,31 @@ export default defineComponent(
     const navItem = (id: string, title: string, Icon: typeof InboxIcon, label: string, total: Section) => (
       <button
         class={`nav-item ${active.value === id ? 'selected' : ''}`}
-        title={title}
+        title={rail.value ? label : title}
+        aria-label={label}
         onClick={() => {
           active.value = id;
         }}
       >
         <Icon size={17} />
-        {label}
+        <span class={styles['nav-label']}>{label}</span>
         <span class="nav-count">{sectionCount(total)}</span>
       </button>
     );
+    const sectionNav = (ids: InboxSectionId[]) =>
+      ids.map(id => {
+        const section = sectionById(id);
+        return navItem(
+          id,
+          `Show ${section.description.charAt(0).toLowerCase()}${section.description.slice(1)}`,
+          section.icon,
+          section.label,
+          section,
+        );
+      });
     return () => (
-      <div class="inbox-layout">
-        <aside class="app-sidebar">
+      <div class={`inbox-layout ${rail.value ? styles['rail-layout'] : ''}`}>
+        <aside class={`app-sidebar ${rail.value ? styles.rail : ''}`}>
           <div class={`${styles['workspace-label']}`}>
             <span class={`grid place-items-center w-7 h-7 bg-accent-soft text-indigo ${styles['font-display']} text-xs rounded-lg border`}>
               {props.info.user.login.slice(0, 1).toUpperCase()}
@@ -486,29 +502,10 @@ export default defineComponent(
           </div>
           <div class={`${styles['nav-caption']}`}>WORKSPACE</div>
           {navItem('all', 'Show all pull request inbox sections', InboxIcon, 'Inbox', sectionById('requested'))}
-          {navItem(
-            'requested',
-            'Show ready-for-review PRs requesting your review, excluding drafts',
-            CircleDot,
-            'Review requests',
-            sectionById('requested'),
-          )}
-          {navItem(
-            'returned',
-            'Show your pull requests reviewers returned to you',
-            MessageSquareReply,
-            'Returned to you',
-            sectionById('returned'),
-          )}
-          {navItem('approved', 'Show your open pull requests that reviewers approved', ThumbsUp, 'Approved', sectionById('approved'))}
-          {navItem(
-            'waiting',
-            'Show your open, non-draft pull requests waiting on reviewers',
-            Hourglass,
-            'Waiting for review',
-            sectionById('waiting'),
-          )}
-          {navItem('drafts', 'Show your work-in-progress draft pull requests', FilePenLine, 'Drafts', sectionById('drafts'))}
+          <div class={`${styles['nav-caption']} ${styles['nav-group']}`}>YOUR PRS</div>
+          {sectionNav(['attention', 'ready', 'waiting', 'drafts'])}
+          <div class={`${styles['nav-caption']} ${styles['nav-group']}`}>REVIEWS</div>
+          {sectionNav(['requested', 'team'])}
           <div class={`${styles['nav-caption']} ${styles['repo-caption']}`}>
             REPOSITORIES<span>{repoOptions.value.length}</span>
           </div>
@@ -536,7 +533,17 @@ export default defineComponent(
               GitHub review guide <ArrowUpRight size={13} />
             </a>
           </div>
-          <div class="border-t border-t-border py-3 px-2 flex items-center gap-1.5 text-muted text-xs">
+          <button
+            class={`nav-item ${styles['rail-toggle']}`}
+            title={rail.value ? 'Expand the sidebar' : 'Collapse the sidebar to icons'}
+            aria-label="Collapse sidebar"
+            aria-pressed={rail.value}
+            onClick={() => (rail.value = !rail.value)}
+          >
+            <PanelLeft size={17} />
+            <span class={styles['nav-label']}>Collapse</span>
+          </button>
+          <div class={`border-t border-t-border py-3 px-2 flex items-center gap-1.5 text-muted text-xs ${styles['sidebar-status']}`}>
             <span class="status-dot" />
             Connected to GitHub
             <span class="version ml-auto text-xs">v0.2</span>
@@ -697,7 +704,6 @@ export default defineComponent(
                         >
                           {query.value ? shown.length : sectionCount(section)}
                         </span>
-                        <span class={`${styles['group-hint']}`}>{section.id === 'requested' ? 'YOUR TURN' : ''}</span>
                       </button>
                       {section.group === 'merged' && (
                         <div class={`segmented ${styles['merged-filter']}`} role="radiogroup" aria-label="Merged pull requests">
@@ -824,6 +830,27 @@ export default defineComponent(
                                     {lane.id === 'now' && !laneRows.length && (
                                       <div class={styles['priority-empty']}>Nothing is waiting on you.</div>
                                     )}
+                                  </div>
+                                );
+                              })
+                            ) : section.id === 'team' && shown.length ? (
+                              [...new Set(shown.map(row => teamOf(row.item, props.info.teams)))].map(team => {
+                                const teamRows = shown.filter(row => teamOf(row.item, props.info.teams) === team);
+                                return (
+                                  <div key={team} class={styles['priority-lane']} data-team={team}>
+                                    <div class={styles['priority-lane-heading']}>
+                                      <Users size={13} />
+                                      <strong>@{team}</strong>
+                                      <span>{teamRows.length}</span>
+                                    </div>
+                                    {teamRows.map(row => (
+                                      <InboxRow
+                                        key={row.item.id}
+                                        item={row.item}
+                                        group={section.group}
+                                        viewerLogin={props.info.user.login}
+                                      />
+                                    ))}
                                   </div>
                                 );
                               })
