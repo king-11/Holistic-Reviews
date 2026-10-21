@@ -187,8 +187,12 @@
   justify-content: flex-end;
   margin-bottom: 8px;
 }
-.history {
+.history,
+.history-commits ul {
   position: relative;
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
 .history::before {
   content: '';
