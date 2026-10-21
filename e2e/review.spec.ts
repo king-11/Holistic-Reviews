@@ -325,7 +325,7 @@ test.describe('routing', () => {
     // toBeVisible ignores opacity, and rows used to stay faded out after returning to the kept-alive inbox.
     await expect(page.getByRole('link', { name: /Draft reviewed earlier/ })).toHaveCSS('opacity', '1');
     await expect(row).toHaveCSS('opacity', '1');
-    await expect(page).toHaveTitle(/^Review — /);
+    await expect(page).toHaveTitle('Holistic Reviews - A little more focus');
     expect(fake.searches.length).toBe(searches);
     await page.goForward();
     await expect(page).toHaveURL(prRoute);

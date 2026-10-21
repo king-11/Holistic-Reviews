@@ -9,7 +9,7 @@ export default defineNuxtConfig({
   app: {
     head: {
       htmlAttrs: { lang: 'en' },
-      title: 'Review — A little more focus. A better review.',
+      title: 'Holistic Reviews - A little more focus',
       meta: [
         { name: 'theme-color', content: '#f7f5f0' },
         {
