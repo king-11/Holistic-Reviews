@@ -2,7 +2,7 @@ import { computed, defineComponent, nextTick, onMounted, onUnmounted, shallowRef
 import { AnimatePresence, motion } from 'motion-v';
 import { pop } from './motion';
 import { unrefElement } from '@vueuse/core';
-import { Check, ChevronRight, ChevronsDownUp, Folder, FolderOpen, ListFilter, PanelLeftClose, X } from '@lucide/vue';
+import { Check, ChevronRight, ChevronsDownUp, Eye, EyeClosed, Folder, FolderOpen, ListFilter, PanelLeftClose, X } from '@lucide/vue';
 import type { ChangedFile } from './github';
 import { IconButton, Loader, SearchField, useWidth, Dismiss } from './ui';
 import { fileStatus, fileStatuses, toggleFileStatus, type FileStatus } from './file_filters';
@@ -15,6 +15,7 @@ interface TreeNode {
   children: TreeNode[];
   file?: ChangedFile;
 }
+const treeFiles = (node: TreeNode): string[] => (node.file ? [node.path] : node.children.flatMap(treeFiles));
 function buildTree(files: ChangedFile[]): TreeNode[] {
   const root: TreeNode = { name: '', path: '', children: [] };
   for (const file of files) {
@@ -50,6 +51,7 @@ type Props = {
   allFiles: ChangedFile[];
   selected: string;
   viewed: Set<string>;
+  onViewed: (filenames: string[]) => void;
   onSelect: (filename: string) => void;
   query: string;
   onQuery: (value: string) => void;
@@ -106,40 +108,61 @@ export default defineComponent(
       else next.add(path);
       folders.value = next;
     }
+    // Open eye: still to review; closed eye: viewed. Unviewed rows only show it on hover, in place of the status letter.
+    function eye(item: TreeNode) {
+      const files = treeFiles(item);
+      const seen = files.every(file => props.viewed.has(file));
+      return (
+        <span class={styles.eye} data-viewed={seen ? '' : undefined}>
+          {!item.file && (
+            <span class={styles['folder-count']}>
+              {files.filter(file => props.viewed.has(file)).length}/{files.length}
+            </span>
+          )}
+          <IconButton label={`Mark ${item.name} ${seen ? 'unviewed' : 'viewed'}`} active={seen} onClick={() => props.onViewed(files)}>
+            {seen ? <EyeClosed size={14} /> : <Eye size={14} />}
+          </IconButton>
+        </span>
+      );
+    }
     function node(item: TreeNode, depth: number): unknown {
       if (item.file) {
         const status = fileStatus(item.file.status);
         return (
-          <button
-            key={item.path}
-            class={`tree-file ${props.selected === item.path ? 'selected' : ''} ${props.viewed.has(item.path) ? 'viewed' : ''}`}
-            data-file-status={status.value}
-            style={{ 'padding-left': `${27 + depth * 15}px` }}
-            title={`${status.label} · ${item.path}${item.file.previous_filename ? ` (was ${item.file.previous_filename})` : ''}`}
-            onClick={() => props.onSelect(item.path)}
-          >
-            <FileIcon filename={item.path} />
-            <span>{item.name}</span>
-            <span class={`ml-auto text-xs ${styles['font-semibold']} pl-2 shrink-0`} aria-label={status.label}>
-              {status.letter}
-            </span>
-          </button>
+          <div key={item.path} class={styles['tree-row']}>
+            <button
+              class={`tree-file ${props.selected === item.path ? 'selected' : ''} ${props.viewed.has(item.path) ? 'viewed' : ''}`}
+              data-file-status={status.value}
+              style={{ 'padding-left': `${27 + depth * 15}px` }}
+              title={`${status.label} · ${item.path}${item.file.previous_filename ? ` (was ${item.file.previous_filename})` : ''}`}
+              onClick={() => props.onSelect(item.path)}
+            >
+              <FileIcon filename={item.path} />
+              <span>{item.name}</span>
+              <span class={`ml-auto text-xs ${styles['font-semibold']} ${styles.letter} pl-2 shrink-0`} aria-label={status.label}>
+                {status.letter}
+              </span>
+            </button>
+            {eye(item)}
+          </div>
         );
       }
       const open = (!allClosed.value && !folders.value.has(item.path)) || !!props.query;
       return [
-        <button
-          key={item.path}
-          class="tree-folder"
-          style={{ 'padding-left': `${12 + depth * 15}px` }}
-          title={`${open ? 'Collapse' : 'Expand'} ${item.path}`}
-          aria-expanded={open}
-          onClick={() => toggleFolder(item.path)}
-        >
-          <ChevronRight size={13} class={`chevron ${open ? 'rotated' : ''}`} />
-          {open ? <FolderOpen size={14} /> : <Folder size={14} />}
-          <span>{item.name}</span>
-        </button>,
+        <div key={item.path} class={styles['tree-row']}>
+          <button
+            class="tree-folder"
+            style={{ 'padding-left': `${12 + depth * 15}px` }}
+            title={`${open ? 'Collapse' : 'Expand'} ${item.path}`}
+            aria-expanded={open}
+            onClick={() => toggleFolder(item.path)}
+          >
+            <ChevronRight size={13} class={`chevron ${open ? 'rotated' : ''}`} />
+            {open ? <FolderOpen size={14} /> : <Folder size={14} />}
+            <span>{item.name}</span>
+          </button>
+          {eye(item)}
+        </div>,
         open && item.children.map(child => node(child, depth + 1)),
       ];
     }
@@ -313,6 +336,7 @@ export default defineComponent(
       'allFiles',
       'selected',
       'viewed',
+      'onViewed',
       'onSelect',
       'query',
       'onQuery',

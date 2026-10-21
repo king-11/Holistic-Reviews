@@ -1,6 +1,6 @@
 .toolbar {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
   gap: 8px;
   margin: 24px 24px 0;
 }
@@ -11,13 +11,64 @@
   background: var(--color-surface);
   overflow: hidden;
 }
-.list > li {
+.total {
+  font-family: var(--font-mono-compact);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-green);
+}
+.total[data-state='pending'] {
+  color: var(--color-amber);
+}
+.total[data-state='failure'] {
+  color: var(--color-red);
+}
+.bar {
+  flex: 0 1 240px;
+  display: flex;
+  gap: 2px;
+  height: 4px;
+  margin-right: auto;
+}
+.bar > span {
+  border-radius: 2px;
+  background: var(--color-border-strong);
+}
+.list li {
   display: flex;
   align-items: center;
   padding-right: 12px;
-}
-.list > li + li {
   border-top: 1px solid var(--color-border);
+}
+.list > section + section {
+  border-top: 1px solid var(--color-border);
+}
+.section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 16px;
+  background: var(--color-sidebar);
+  color: var(--color-secondary);
+  font-size: var(--text-xs);
+  font-weight: 500;
+}
+.section:hover {
+  background: var(--color-hover);
+}
+.section > span {
+  color: var(--color-muted);
+  font-family: var(--font-mono-compact);
+}
+.duration {
+  margin-left: auto;
+  color: var(--color-muted);
+  font-family: var(--font-mono-compact);
+  font-size: var(--text-xs);
+}
+.duration + .out {
+  margin-left: 0;
 }
 .row {
   flex: 1;
@@ -43,17 +94,28 @@
   flex-shrink: 0;
   color: var(--color-muted);
 }
-.row[data-state='success'] .icon {
+[data-state='success'] > .icon,
+.bar > [data-state='success'] {
   color: var(--color-green);
+  background: var(--color-green);
 }
-.row[data-state='failure'] .icon {
+[data-state='failure'] > .icon,
+.bar > [data-state='failure'] {
   color: var(--color-red);
+  background: var(--color-red);
 }
-.row[data-state='cancelled'] .icon {
+[data-state='cancelled'] > .icon,
+.bar > [data-state='cancelled'] {
   color: var(--color-secondary);
+  background: var(--color-secondary);
 }
-.row[data-state='pending'] .icon {
+[data-state='pending'] > .icon,
+.bar > [data-state='pending'] {
   color: var(--color-amber);
+  background: var(--color-amber);
+}
+[data-state] > .icon {
+  background: none;
 }
 .out {
   margin-left: auto;

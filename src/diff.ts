@@ -51,15 +51,19 @@ export function metadataForFile(file: ChangedFile) {
   return metadata;
 }
 
-export function toggleViewedFile(filename: string, viewed: ReadonlySet<string>, collapsed: ReadonlySet<string>) {
+// A folder counts as viewed only when every file in it is, so toggling a partly viewed folder marks the rest.
+export function toggleViewedFiles(filenames: string[], viewed: ReadonlySet<string>, collapsed: ReadonlySet<string>) {
   const nextViewed = new Set(viewed),
     nextCollapsed = new Set(collapsed);
-  if (nextViewed.has(filename)) {
-    nextViewed.delete(filename);
-    nextCollapsed.delete(filename);
-  } else {
-    nextViewed.add(filename);
-    nextCollapsed.add(filename);
+  const unview = filenames.every(filename => viewed.has(filename));
+  for (const filename of filenames) {
+    if (unview) {
+      nextViewed.delete(filename);
+      nextCollapsed.delete(filename);
+    } else {
+      nextViewed.add(filename);
+      nextCollapsed.add(filename);
+    }
   }
   return { viewed: nextViewed, collapsed: nextCollapsed };
 }

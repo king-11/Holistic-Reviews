@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { HEAD, mockGitHub, openPR } from './fake-github.ts';
+import { FIRST, HEAD, mockGitHub, openPR } from './fake-github.ts';
 
 type Fake = Awaited<ReturnType<typeof mockGitHub>>;
 const card = (page: Page, path: string) => page.locator('article').filter({ has: page.getByRole('button', { name: path, exact: true }) });
@@ -1155,8 +1155,14 @@ test.describe('sequence shortcuts', () => {
 test('Checks tab lists CI checks failures first and links to each run', async ({ page }) => {
   await mockGitHub(page);
   await openPR(page);
-  await page.locator('button[title="See CI status checks for the latest commit and open their runs"]').click();
-  const links = page.getByRole('list', { name: 'Status checks' }).getByRole('link');
+  const tab = page.locator('button[title="See CI status checks for the latest commit and open their runs"]');
+  await expect(tab.locator('span[data-state="failure"]')).toHaveText('2/3');
+  await tab.click();
+  const checks = page.getByRole('list', { name: 'Status checks' });
+  await expect(checks.locator('button[aria-expanded]')).toHaveText([/Failed\s*1/, /Running\s*1/, /Passed\s*1/]);
+  await expect(checks.getByRole('button', { name: /Passed/ })).toHaveAttribute('aria-expanded', 'false');
+  await checks.getByRole('button', { name: /Passed/ }).click();
+  const links = checks.getByRole('link');
   await expect(links).toHaveText([/lint.*1 error/, /deploy\/preview.*Building/, /test.*All tests passed/]);
   await expect(links.first()).toHaveAttribute('href', 'https://github.com/acme/app/actions/runs/9/job/2');
   await expect(links.nth(1)).toHaveAttribute('href', 'https://preview.example/42');
@@ -1625,6 +1631,24 @@ test.describe('workspace', () => {
     await expect(page.getByText('Please add retry tests.')).toBeVisible();
   });
 
+  test('Conversation interleaves timeline events with comments and links both commits of a force push', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    await page.getByRole('button', { name: /^Conversation/ }).click();
+    const history = page.getByRole('list', { name: 'Pull request history' });
+    const requested = history.locator('[data-event="review_requested"]');
+    await expect(requested).toHaveCount(1);
+    await expect(requested.locator('.avatar')).toHaveCount(3);
+    await expect(requested).toContainText(/alice\s*requested review from\s*carol\s*bob/);
+    const push = history.locator('[data-event="head_ref_force_pushed"]').getByRole('link');
+    await expect(push).toHaveText([FIRST.slice(0, 7), HEAD.slice(0, 7)]);
+    await expect(push.last()).toHaveAttribute('href', `https://github.com/acme/app/commit/${HEAD}`);
+    await expect(history.locator('[data-event="committed"]')).toContainText('Add retries');
+    await page.getByRole('button', { name: 'Show only comments and reviews' }).click();
+    await expect(history.locator('[data-event]')).toHaveCount(0);
+    await expect(history.getByText('Ready for review')).toBeVisible();
+  });
+
   test('shows review code comments with their snippet and local times on hover in Conversation', async ({ page }) => {
     await mockGitHub(page);
     await openPR(page);
@@ -1639,7 +1663,8 @@ test.describe('workspace', () => {
       '  void retry() {}',
     ]);
     await expect(review.getByText('Looks resolved now')).toBeVisible();
-    await expect(conversation.locator('.comment-author time').first()).toHaveText(/^commented \d+[mhd] ago$/);
+    await expect(conversation.locator('.comment-author time').first()).toHaveText(/^\d+[mhd] ago$/);
+    await expect(conversation.locator('.comment-author').first().getByRole('img', { name: 'Commented' })).toBeVisible();
     await expect(review.locator('.comment-author time')).toHaveText(/^\d+[mhd] ago$/);
     await expect(review.locator('.comment-author time')).toHaveAttribute('title', /\d{1,2}:\d{2}/);
   });
@@ -1742,6 +1767,18 @@ test.describe('diff view', () => {
     await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
     await file.getByRole('button', { name: 'Viewed' }).click();
     await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  test('the sidebar eye marks files and folders viewed in sync with the diff header', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    await page.getByRole('button', { name: 'Show file sidebar' }).click();
+    const sidebar = page.getByRole('complementary', { name: 'Changed files' });
+    await sidebar.getByRole('button', { name: 'Mark worker.py viewed' }).click();
+    await expect(sidebar.getByRole('button', { name: 'Mark worker.py unviewed' })).toBeVisible();
+    await expect(card(page, 'src/worker.py').getByRole('button', { name: 'Viewed' })).toHaveAttribute('aria-pressed', 'true');
+    await card(page, 'src/worker.py').getByRole('button', { name: 'Viewed' }).click();
+    await expect(sidebar.getByRole('button', { name: 'Mark worker.py viewed' })).toBeAttached();
   });
 
   test('collapses every diff and expands a file to full width', async ({ page }) => {

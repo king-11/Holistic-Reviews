@@ -8,7 +8,7 @@ import {
   patchForFile,
   textLineCount,
   threadsForComments,
-  toggleViewedFile,
+  toggleViewedFiles,
   verifiedContextLines,
 } from './diff.ts';
 import { demoWorkspace } from './fixtures.ts';
@@ -135,10 +135,21 @@ describe('diff patches and inline comment placement', () => {
     ['marks an already closed unviewed file', [], [file.filename], [file.filename], [file.filename]],
     ['reopens a manually expanded viewed file when unmarked', [file.filename], [], [], []],
   ];
+  const folder = ['src/a.ts', 'src/b.ts'];
+  const folderCases: [string, string[], string[], string[]][] = [
+    ['marks the rest of a partly viewed folder', ['src/a.ts'], ['src/a.ts', 'src/b.ts'], ['src/a.ts', 'src/b.ts']],
+    ['unmarks a fully viewed folder', folder, [], []],
+  ];
+  for (const [name, viewed, nextViewed, nextCollapsed] of folderCases) {
+    it(name, () => {
+      const next = toggleViewedFiles(folder, new Set(viewed), new Set(viewed));
+      assert.deepEqual([[...next.viewed], [...next.collapsed]], [nextViewed, nextCollapsed]);
+    });
+  }
   for (const [name, viewed, collapsed, nextViewed, nextCollapsed] of viewedCases) {
     it(name, () => {
       const input = { viewed: new Set(viewed), collapsed: new Set(collapsed) };
-      const next = toggleViewedFile(file.filename, input.viewed, input.collapsed);
+      const next = toggleViewedFiles([file.filename], input.viewed, input.collapsed);
       assert.deepEqual([[...next.viewed], [...next.collapsed]], [nextViewed, nextCollapsed]);
       assert.deepEqual([[...input.viewed], [...input.collapsed]], [viewed, collapsed]);
     });

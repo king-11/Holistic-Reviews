@@ -54,14 +54,14 @@ import {
   type WorkspaceSection,
 } from './github';
 import FileTree from './FileTree';
-import Checks from './Checks';
+import Checks, { checksDone, checksTone } from './Checks';
 import DetailsPanel, { MergeControls, MoreMenu, mergeOffered, reviewApproved, useDetails, type Details, type Mutate } from './DetailsPanel';
 import DiffView, { type ContextLoader, type DiffSettings } from './DiffView';
 import { IconButton, Loader, Modal, SearchField, Spinner, inputValue, update, Dismiss } from './ui';
 import MentionField from './MentionField';
 import { peopleDirectory, peopleKey } from './people';
 import { markInboxStale, recordPR } from './inboxUpdates';
-import { toggleViewedFile, verifiedContextLines } from './diff';
+import { toggleViewedFiles, verifiedContextLines } from './diff';
 import {
   commentEntries,
   commentLocationLabel,
@@ -781,8 +781,8 @@ export default defineComponent(
       );
       if (filename) revealFile(filename, 'auto');
     };
-    function toggleViewed(filename: string) {
-      const next = toggleViewedFile(filename, viewed.value, collapsed.value);
+    function toggleViewed(...filenames: string[]) {
+      const next = toggleViewedFiles(filenames, viewed.value, collapsed.value);
       viewed.value = next.viewed;
       collapsed.value = next.collapsed;
     }
@@ -1038,6 +1038,7 @@ export default defineComponent(
             allFiles={displayFiles.value}
             selected={selected.value}
             viewed={viewed.value}
+            onViewed={filenames => toggleViewed(...filenames)}
             onSelect={filename => revealFile(filename)}
             query={filenameQuery.value}
             onQuery={value => {
@@ -1177,6 +1178,7 @@ export default defineComponent(
                 >
                   <ShieldCheck size={14} />
                   Checks
+                  {!!ws().checks?.length && <span data-state={checksTone(ws().checks!)}>{checksDone(ws().checks!)}</span>}
                 </button>
               </div>
             </div>

@@ -274,6 +274,7 @@ export function demoWorkspace(pr = demoPR): Workspace {
       },
     ],
     draftComments: [],
+    timeline: [],
     reviewThreads: [{ id: 'demo-thread-20', rootCommentId: 20, resolved: false, canResolve: true, canUnresolve: false }],
     comments: [
       {

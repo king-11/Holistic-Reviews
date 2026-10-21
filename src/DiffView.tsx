@@ -20,7 +20,8 @@ import { errorMessage, type ChangedFile, type Comment, type ReviewThread } from 
 import {
   ArrowUpRight,
   ChevronRight,
-  CircleCheck,
+  Eye,
+  EyeClosed,
   FileCode2,
   Maximize2,
   Minimize2,
@@ -152,7 +153,7 @@ export default defineComponent(
             aria-pressed={props.viewed}
             onClick={() => props.onViewed()}
           >
-            <CircleCheck size={14} />
+            {props.viewed ? <EyeClosed size={14} /> : <Eye size={14} />}
             <span>Viewed</span>
           </button>
           {!!props.pendingCommentCount && <span class="pending-badge">{props.pendingCommentCount} pending</span>}

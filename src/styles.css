@@ -1917,6 +1917,12 @@ button.section-heading:hover {
   font-size: var(--text-xs);
   color: var(--color-secondary);
 }
+.review-tabs > button span[data-state='pending'] {
+  color: var(--color-amber);
+}
+.review-tabs > button span[data-state='failure'] {
+  color: var(--color-red);
+}
 .changes-icon {
   display: flex;
   gap: 0;
