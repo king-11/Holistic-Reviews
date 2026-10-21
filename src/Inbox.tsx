@@ -1,6 +1,8 @@
 import { computed, defineComponent, onActivated, onDeactivated, onUnmounted, shallowRef, watch } from 'vue';
 import {
+  ArrowDown,
   ArrowDownWideNarrow,
+  ArrowUp,
   ArrowUpRight,
   BookOpen,
   Check,
@@ -32,10 +34,23 @@ import {
   type InboxResult,
   type MergedFilter,
   type ReviewState,
+  type SearchOrder,
   type TokenInfo,
 } from './github';
-import { clientOrders, rankCounts, readPreferences, savePreferences, serverOrder, sortOptions, type SortChoice } from './inboxPreferences';
+import {
+  clientOrders,
+  defaultSort,
+  needsServerRefetch,
+  rankCounts,
+  readPreferences,
+  savePreferences,
+  serverOrder,
+  sortOptions,
+  type InboxSectionId,
+  type SortChoice,
+} from './inboxPreferences';
 import InboxRow from './InboxRow';
+import { priority, type PriorityResult } from './priority';
 import { inboxChangedAt, inboxSnapshots, withSnapshots } from './inboxUpdates';
 import { createShortcuts, modalOpen, step } from './shortcuts';
 import { Dismiss, IconButton, SearchField, Spinner, inputValue } from './ui';
@@ -43,7 +58,7 @@ import styles from './Inbox.module.css';
 
 // Each section is a view of one fetched group; the authored group splits by review state.
 type Section = {
-  id: string;
+  id: InboxSectionId;
   group: InboxGroup;
   review?: ReviewState;
   label: string;
@@ -100,6 +115,12 @@ const sections: Section[] = [
 ];
 const fetchedGroups = [...new Set(sections.map(section => section.group))];
 const sectionById = (id: string) => sections.find(section => section.id === id)!;
+const priorityLanes: { id: PriorityResult['lane']; label: string }[] = [
+  { id: 'now', label: 'Now' },
+  { id: 'soon', label: 'Soon' },
+  { id: 'later', label: 'Later' },
+];
+const visibleRowStep = 10;
 // Items GitHub search returns before review data arrives count as waiting.
 const reviewOf = (item: InboxItem) => item.review ?? 'waiting';
 
@@ -118,7 +139,7 @@ const effectiveMerged = (repos: string[], filter: MergedFilter): MergedFilter =>
 type Props = {
   api: GitHub;
   info: TokenInfo;
-  onOpenDialog: () => void;
+  onOpenCommandBar: () => void;
 };
 
 export default defineComponent(
@@ -180,17 +201,28 @@ export default defineComponent(
       repoError.value = '';
     }
 
-    const sortChoice = shallowRef<SortChoice>(preferences.sort ?? 'updated-desc');
-    const sortMenu = shallowRef(false);
-    const serverSort = computed(() => serverOrder(sortChoice.value));
-    watch([selected, sortChoice, repoOptions], ([repos, sort, known]) =>
-      savePreferences({ repos: repoDefaulted ? repos : undefined, sort, known }),
+    const sorts = shallowRef(preferences.sorts ?? {});
+    const sortMenu = shallowRef<InboxSectionId | null>(null);
+    const sortChoice = (section: InboxSectionId) => sorts.value[section] ?? defaultSort(section);
+    const visibleLimits = shallowRef<Record<string, number>>({});
+    const visibleLimit = (id: string) => visibleLimits.value[id] ?? visibleRowStep;
+    const mergedFilter = shallowRef<MergedFilter>(preferences.merged ?? 'all');
+    const mergedLoading = shallowRef(false);
+    watch(selected, () => (visibleLimits.value = {}));
+    watch([selected, sorts, repoOptions, mergedFilter], ([repos, savedSorts, known, merged]) =>
+      savePreferences({ repos: repoDefaulted ? repos : undefined, sorts: savedSorts, known, merged }),
     );
 
-    const mergedFilter = shallowRef<MergedFilter>('all');
-    const mergedLoading = shallowRef(false);
     // Each merged load (full reload or filter change) bumps this so only the newest one may write its result.
     let mergedVersion = 0;
+    const groupVersions: Record<InboxGroup, number> = { requested: 0, authored: 0, drafts: 0, reviewed: 0, merged: 0 };
+    const groupOrders: Partial<Record<InboxGroup, SearchOrder>> = {};
+    const initialGroupOrder = (group: InboxGroup) => {
+      const choices = sections.filter(section => section.group === group).map(section => sortChoice(section.id));
+      const firstChoice = choices[0] ?? 'updated-desc';
+      const choice = choices.every(candidate => candidate === firstChoice) ? firstChoice : 'updated-desc';
+      return serverOrder(choice);
+    };
 
     const data = shallowRef<Partial<Record<InboxGroup, InboxResult>>>({});
     const errors = shallowRef<Partial<Record<InboxGroup, string>>>({});
@@ -212,11 +244,11 @@ export default defineComponent(
     onActivated(() => {
       if (inboxChangedAt.value > fetchedAt) reload(true);
     });
-    const stale = (group: InboxGroup, version: number, stamp: number) =>
-      version !== request || (group === 'merged' && stamp !== mergedVersion);
+    const stale = (group: InboxGroup, version: number, stamp: number, groupVersion: number) =>
+      version !== request || groupVersion !== groupVersions[group] || (group === 'merged' && stamp !== mergedVersion);
     watch(
-      [() => props.api, () => props.info, selected, refresh, serverSort],
-      ([api, info, repos]) => {
+      [() => props.api, () => props.info.user.login, () => selected.value, () => refresh.value],
+      ([api, login, repos]) => {
         controller?.abort();
         const version = ++request;
         if (!repos.length) repoCounts.value = new Map();
@@ -228,25 +260,25 @@ export default defineComponent(
         const mergedStamp = ++mergedVersion;
         mergedLoading.value = false;
         if (!background) {
+          visibleLimits.value = {};
           loading.value = true;
           errors.value = {};
           data.value = {};
         }
         void Promise.all(
           fetchedGroups.map(async group => {
+            const groupVersion = ++groupVersions[group];
+            const order = initialGroupOrder(group);
+            groupOrders[group] = order;
             try {
-              const result = await client.inbox(
-                group,
-                { login: info.user.login, repos, merged: mergedFilter.value, order: serverSort.value },
-                signal,
-              );
-              if (stale(group, version, mergedStamp)) return;
+              const result = await client.inbox(group, { login, repos, merged: mergedFilter.value, order }, signal);
+              if (stale(group, version, mergedStamp, groupVersion)) return;
               data.value = { ...data.value, [group]: result };
               errors.value = { ...errors.value, [group]: undefined };
               countRepos(result.items, !repos.length);
             } catch (error) {
               // A failed background refetch keeps the rows already shown rather than replacing them with an error.
-              if (version === request && !signal.aborted && !(background && data.value[group]))
+              if (!stale(group, version, mergedStamp, groupVersion) && !signal.aborted && !(background && data.value[group]))
                 errors.value = { ...errors.value, [group]: errorMessage(error, 'Could not load this section.') };
             }
           }),
@@ -258,26 +290,60 @@ export default defineComponent(
       },
       { immediate: true },
     );
+    function reloadGroup(group: InboxGroup, order: SearchOrder) {
+      const version = request;
+      const mergedStamp = mergedVersion;
+      const groupVersion = ++groupVersions[group];
+      groupOrders[group] = order;
+      errors.value = { ...errors.value, [group]: undefined };
+      if (group === 'merged') mergedLoading.value = true;
+      props.api.inbox(group, { login: props.info.user.login, repos: selected.value, merged: mergedFilter.value, order }).then(
+        result => {
+          if (stale(group, version, mergedStamp, groupVersion)) return;
+          data.value = { ...data.value, [group]: result };
+          if (group === 'merged') mergedLoading.value = false;
+        },
+        error => {
+          if (stale(group, version, mergedStamp, groupVersion)) return;
+          errors.value = { ...errors.value, [group]: errorMessage(error, 'Could not load this section.') };
+          if (group === 'merged') mergedLoading.value = false;
+        },
+      );
+    }
+    function setSortChoice(section: Section, choice: SortChoice) {
+      sortMenu.value = null;
+      if (sortChoice(section.id) === choice) return;
+      sorts.value = { ...sorts.value, [section.id]: choice };
+      visibleLimits.value = { ...visibleLimits.value, [section.id]: visibleRowStep };
+      const result = data.value[section.group];
+      if (result && needsServerRefetch(choice, result.items.length, result.total_count)) {
+        const order = serverOrder(choice);
+        const currentOrder = groupOrders[section.group];
+        if (!currentOrder || currentOrder.sort !== order.sort || currentOrder.order !== order.order) reloadGroup(section.group, order);
+      }
+    }
     // Only the merged group reloads on a filter change; the other sections keep their results.
     function reloadMerged() {
+      visibleLimits.value = { ...visibleLimits.value, merged: visibleRowStep };
       const version = ++mergedVersion;
+      const groupVersion = ++groupVersions.merged;
+      const order = serverOrder(sortChoice('merged'));
+      groupOrders.merged = order;
       errors.value = { ...errors.value, merged: undefined };
       mergedLoading.value = true;
       data.value = { ...data.value, merged: undefined };
-      props.api
-        .inbox('merged', { login: props.info.user.login, repos: selected.value, merged: mergedFilter.value, order: serverSort.value })
-        .then(
-          result => {
-            if (version !== mergedVersion) return;
-            data.value = { ...data.value, merged: result };
-            mergedLoading.value = false;
-          },
-          error => {
-            if (version !== mergedVersion) return;
-            errors.value = { ...errors.value, merged: errorMessage(error, 'Could not load this section.') };
-            mergedLoading.value = false;
-          },
-        );
+      props.api.inbox('merged', { login: props.info.user.login, repos: selected.value, merged: mergedFilter.value, order }).then(
+        result => {
+          if (version !== mergedVersion || groupVersion !== groupVersions.merged) return;
+          data.value = { ...data.value, merged: result };
+          mergedLoading.value = false;
+        },
+        error => {
+          if (version !== mergedVersion || groupVersion !== groupVersions.merged) return;
+          errors.value = { ...errors.value, merged: errorMessage(error, 'Could not load this section.') };
+          mergedLoading.value = false;
+        },
+      );
     }
     watch(mergedFilter, reloadMerged);
     onUnmounted(() => {
@@ -287,9 +353,11 @@ export default defineComponent(
     async function loadMore(id: InboxGroup) {
       const current = data.value[id],
         version = request,
-        stamp = mergedVersion;
-      if (!current || moreBusy.value) return;
+        stamp = mergedVersion,
+        groupVersion = groupVersions[id];
+      if (!current || moreBusy.value) return false;
       moreBusy.value = id;
+      let loaded = false;
       try {
         const next = await props.api.inbox(
           id,
@@ -298,19 +366,33 @@ export default defineComponent(
             repos: selected.value,
             page: Math.floor(current.items.length / searchPageSize) + 1,
             merged: mergedFilter.value,
-            order: serverSort.value,
+            order: groupOrders[id] ?? initialGroupOrder(id),
           },
           controller?.signal,
         );
-        if (!stale(id, version, stamp)) {
+        if (!stale(id, version, stamp, groupVersion)) {
           data.value = { ...data.value, [id]: { ...next, items: [...current.items, ...next.items] } };
           countRepos(next.items, !selected.value.length);
+          loaded = true;
         }
       } catch (error) {
-        if (!stale(id, version, stamp)) errors.value = { ...errors.value, [id]: errorMessage(error, 'Could not load more.') };
+        if (!stale(id, version, stamp, groupVersion)) errors.value = { ...errors.value, [id]: errorMessage(error, 'Could not load more.') };
       } finally {
         moreBusy.value = null;
       }
+      return loaded;
+    }
+    async function revealMore(section: Section) {
+      const nextLimit = visibleLimit(section.id) + visibleRowStep;
+      const result = data.value[section.group];
+      if (!result) return;
+      if (
+        nextLimit > items(section).length &&
+        result.items.length < Math.min(result.total_count, searchResultCap) &&
+        !(await loadMore(section.group))
+      )
+        return;
+      visibleLimits.value = { ...visibleLimits.value, [section.id]: nextLimit };
     }
 
     const active = shallowRef('all');
@@ -329,11 +411,33 @@ export default defineComponent(
     });
     const sectionItems = (section: Section) =>
       (corrected.value[section.group]?.items ?? []).filter(item => !section.review || reviewOf(item) === section.review);
-    const items = (section: Section) => {
+    const items = (section: Section): { item: InboxItem; priority?: PriorityResult }[] => {
       const q = query.value.toLowerCase();
-      return sectionItems(section)
-        .filter(item => `${item.title} ${item.number} ${item.user.login} ${itemRepository(item)}`.toLowerCase().includes(q))
-        .sort(clientOrders[sortChoice.value]);
+      const choice = sortChoice(section.id);
+      const filtered = sectionItems(section).filter(item =>
+        `${item.title} ${item.number} ${item.user.login} ${itemRepository(item)}`.toLowerCase().includes(q),
+      );
+      if (section.id === 'requested' && choice === 'priority') {
+        const now = new Date();
+        return filtered
+          .map(item => ({
+            item,
+            priority: priority(
+              item.details?.priority ?? {
+                waitStart: item.details?.createdAt ?? item.created_at,
+                newCommits: 0,
+                moreThanTwentyNewCommits: false,
+                reviewedWithoutNewCommits: false,
+                stackedReady: 0,
+                codeOwner: false,
+                checks: item.details?.checks ?? null,
+              },
+              now,
+            ),
+          }))
+          .sort((a, b) => b.priority.score - a.priority.score || clientOrders['size-asc'](a.item, b.item));
+      }
+      return filtered.sort(clientOrders[choice]).map(item => ({ item }));
     };
     const groupTotal = (group: InboxGroup) => {
       const result = data.value[group];
@@ -449,7 +553,7 @@ export default defineComponent(
                 <RefreshCw size={15} class={loading.value ? 'spin' : ''} />
               </IconButton>
               <span class="divider" />
-              <button class="button small" title="Open a GitHub pull request by URL" onClick={() => props.onOpenDialog()}>
+              <button class="button small" title="Open the command bar" onClick={props.onOpenCommandBar}>
                 <Plus size={14} />
                 Open pull request
               </button>
@@ -548,39 +652,6 @@ export default defineComponent(
                     </>
                   )}
                 </div>
-                <div class="popover-anchor">
-                  <IconButton label="Sort pull requests" active={sortMenu.value} onClick={() => (sortMenu.value = !sortMenu.value)}>
-                    <ArrowDownWideNarrow size={15} />
-                  </IconButton>
-                  {sortMenu.value && (
-                    <>
-                      <Dismiss onClose={() => (sortMenu.value = false)} />
-                      <div class="popover" role="menu" aria-label="Sort by">
-                        <div class="popover-title">Sort by</div>
-                        {sortOptions.map(option => {
-                          const checked = sortChoice.value === option.value;
-                          return (
-                            <button
-                              key={option.value}
-                              type="button"
-                              role="menuitemradio"
-                              aria-checked={checked}
-                              class={styles['sort-option']}
-                              onClick={() => {
-                                sortChoice.value = option.value;
-                                sortMenu.value = false;
-                              }}
-                            >
-                              {option.label}
-                              <span class={styles['sort-detail']}>{option.detail}</span>
-                              {checked && <Check size={14} />}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </>
-                  )}
-                </div>
                 <button
                   class="button small"
                   title={allCollapsed() ? 'Expand every inbox section' : 'Collapse every inbox section'}
@@ -603,9 +674,12 @@ export default defineComponent(
                 const GroupIcon = section.icon,
                   result = data.value[section.group],
                   open = !collapsed.value.has(section.id),
-                  shown = items(section);
+                  allRows = items(section),
+                  limit = visibleLimit(section.id),
+                  shown = allRows.slice(0, limit),
+                  prioritized = section.id === 'requested' && sortChoice(section.id) === 'priority';
                 return (
-                  <section key={section.id} class={`mb-5 ${section.group}`}>
+                  <section key={section.id} data-section={section.id} class={`mb-5 ${section.group}`}>
                     <div class={styles['group-row']}>
                       <button
                         class={`${styles['group-heading']}`}
@@ -650,6 +724,72 @@ export default defineComponent(
                           })}
                         </div>
                       )}
+                      <div class="popover-anchor">
+                        <IconButton
+                          label={`Sort ${section.label}`}
+                          active={sortMenu.value === section.id}
+                          onClick={() => (sortMenu.value = sortMenu.value === section.id ? null : section.id)}
+                        >
+                          <ArrowDownWideNarrow size={15} />
+                        </IconButton>
+                        {sortMenu.value === section.id && (
+                          <>
+                            <Dismiss onClose={() => (sortMenu.value = null)} />
+                            <div class={`popover ${styles['sort-popover']}`} role="menu" aria-label={`Sort ${section.label} by`}>
+                              <div class="popover-title">Sort by</div>
+                              {sortOptions
+                                .filter(option => section.id === 'requested' || !('value' in option) || option.value !== 'priority')
+                                .map(option => {
+                                  if ('value' in option) {
+                                    const checked = sortChoice(section.id) === option.value;
+                                    return (
+                                      <button
+                                        key={option.value}
+                                        type="button"
+                                        role="menuitemradio"
+                                        aria-checked={checked}
+                                        class={styles['sort-option']}
+                                        onClick={() => setSortChoice(section, option.value)}
+                                      >
+                                        <span class={styles['sort-label']} data-sort-label={option.label}>
+                                          {option.label}
+                                        </span>
+                                        {checked && <Check size={14} />}
+                                      </button>
+                                    );
+                                  }
+                                  return (
+                                    <div key={option.label} class={styles['sort-field']} role="group" aria-label={`Sort ${option.label}`}>
+                                      <span class={styles['sort-label']} data-sort-label={option.label}>
+                                        {option.label}
+                                      </span>
+                                      <div class={styles['sort-directions']}>
+                                        {option.directions.map(direction => {
+                                          const checked = sortChoice(section.id) === direction.value;
+                                          const Icon = direction.direction === 'up' ? ArrowUp : ArrowDown;
+                                          return (
+                                            <button
+                                              key={direction.value}
+                                              type="button"
+                                              role="menuitemradio"
+                                              aria-checked={checked}
+                                              aria-label={direction.ariaLabel}
+                                              title={direction.title}
+                                              class={styles['sort-direction']}
+                                              onClick={() => setSortChoice(section, direction.value)}
+                                            >
+                                              <Icon size={14} />
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                            </div>
+                          </>
+                        )}
+                      </div>
                     </div>
                     {open && (
                       <>
@@ -663,9 +803,33 @@ export default defineComponent(
                           </div>
                         ) : (
                           <>
-                            {shown.length ? (
-                              shown.map(item => (
-                                <InboxRow key={item.id} item={item} group={section.group} viewerLogin={props.info.user.login} />
+                            {prioritized ? (
+                              priorityLanes.map(lane => {
+                                const laneRows = shown.filter(row => row.priority?.lane === lane.id);
+                                return (
+                                  <div key={lane.id} class={styles['priority-lane']} data-priority-lane={lane.id}>
+                                    <div class={styles['priority-lane-heading']}>
+                                      <strong>{lane.label}</strong>
+                                      <span>{laneRows.length}</span>
+                                    </div>
+                                    {laneRows.map(row => (
+                                      <InboxRow
+                                        key={row.item.id}
+                                        item={row.item}
+                                        group={section.group}
+                                        viewerLogin={props.info.user.login}
+                                        priority={row.priority}
+                                      />
+                                    ))}
+                                    {lane.id === 'now' && !laneRows.length && (
+                                      <div class={styles['priority-empty']}>Nothing is waiting on you.</div>
+                                    )}
+                                  </div>
+                                );
+                              })
+                            ) : shown.length ? (
+                              shown.map(row => (
+                                <InboxRow key={row.item.id} item={row.item} group={section.group} viewerLogin={props.info.user.login} />
                               ))
                             ) : (
                               <div class={`${styles['group-empty']}`}>
@@ -673,20 +837,20 @@ export default defineComponent(
                                 {query.value ? 'No loaded PRs match your search.' : 'Nothing here. You’re all caught up.'}
                               </div>
                             )}
-                            {result.items.length < Math.min(result.total_count, searchResultCap) && (
+                            {allRows.length > limit || result.items.length < Math.min(result.total_count, searchResultCap) ? (
                               <button
                                 class="py-3 px-5 text-xs text-accent"
                                 title={`Load the next page of ${section.label.toLowerCase()}`}
                                 disabled={!!moreBusy.value}
-                                onClick={() => void loadMore(section.group)}
+                                onClick={() => void revealMore(section)}
                               >
                                 {moreBusy.value === section.group ? (
                                   <Spinner text="Loading…" />
                                 ) : (
-                                  `Load more · ${result.items.length} of ${result.total_count}`
+                                  `Load more · ${shown.length} of ${query.value ? allRows.length : result.total_count}`
                                 )}
                               </button>
-                            )}
+                            ) : null}
                             {(result.incomplete_results || result.total_count > searchResultCap) && (
                               <p class="group-warning">GitHub search may be incomplete and caps results at 1,000. Narrow by repository.</p>
                             )}
@@ -716,5 +880,5 @@ export default defineComponent(
       </div>
     );
   },
-  { props: ['api', 'info', 'onOpenDialog'] },
+  { props: ['api', 'info', 'onOpenCommandBar'] },
 );

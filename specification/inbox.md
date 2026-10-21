@@ -21,10 +21,11 @@ Rendered as a segmented radio group (`All`, `By me`, `Review requested`) in the 
 - **All:** `is:merged` when at least one repository is selected; disabled when no repository is selected (falls back to `By me`).
 - **By me:** `is:merged author:<viewer>`.
 - **Review requested:** `is:merged (review-requested:<viewer> OR reviewed-by:<viewer>) -author:<viewer>` with `advanced_search=true`.
+- The selected filter is saved in `review.inbox` preferences and restored after reload.
 
 ## Authored PR Classification (`classifyReview`)
 
-Each page of search results is enriched in a single aliased GraphQL batch (`InboxDetails`). For the `authored` group, each PR is classified into `returned`, `approved`, or `waiting` ignoring bots (`__typename !== 'User'`) and the PR author:
+Each search page is enriched with parallel aliased GraphQL batches of up to 25 items (`InboxDetails`) to stay within GitHub's GraphQL resource limit; a failed batch leaves only its own items unenriched. For the `authored` group, each PR is classified into `returned`, `approved`, or `waiting` ignoring bots (`__typename !== 'User'`) and the PR author:
 
 1. `reviewDecision === 'CHANGES_REQUESTED'` → **`returned`**.
 2. `reviewDecision === 'APPROVED'`, or `reviewDecision === null` with at least one human `APPROVED` review → **`approved`**.
@@ -37,15 +38,37 @@ Each row (`InboxRow`) is a `<NuxtLink>` to `/<owner>/<repo>/pull/<number>` displ
 
 - Status icon (`merged`, `draft`, or `open`), repository `owner/name#number`, title, author, relative update time, and labels.
 - **Participants:** Up to 4 avatars (excluding the PR author) plus a `+N` overflow badge.
-- **Checks:** Latest commit `statusCheckRollup` mapped to `success` (green check), `failure`/`error` (red cross), `pending`/`expected` (amber dashed circle), or empty when no checks exist.
+- **Checks:** Latest commit `statusCheckRollup` mapped to `success` (green check), `failure`/`error` (red cross), `pending`/`expected` (amber dashed circle), or empty when no checks exist. The 16px icon is centered in a 20px cell aligned across rows.
 - **Diff size:** `+additions` and `−deletions`.
+- **Pending review comments:** A dashed `N pending` pill when the viewer has unpublished inline comments on the PR.
 
 ## Repository Filter & Sorting
 
-- **Default repository:** After the first unfiltered load, the repository with the highest PR count is selected automatically. Subsequent changes are persisted in `localStorage` (`review.inbox`: `repos`, `sort`, `known`).
-- **Sorting:**
+- **Default repository:** After the first unfiltered load, the repository with the highest PR count is selected automatically. Subsequent changes are persisted in `localStorage` (`review.inbox`: `repos`, `sorts`, `merged`, `known`).
+- **Sorting per section:**
   - `Updated` (`updated-desc` / `updated-asc`) and `Created` (`created-desc` / `created-asc`) sort on the server via `/search/issues` parameters and also sort loaded items client-side.
   - `Title` (`title-asc` / `title-desc`) and `Size of change` (`size-desc` / `size-asc`, where `size = additions + deletions`) sort loaded items client-side.
+  - `Priority` is offered only for **Needs your review** and is its default; it ranks that section into Now (score ≥ 50), Soon (≥ 20), and Later. Other sections default to `Updated · Latest first`.
+  - Each section saves its own sort. Changing a sort reorders only that section's loaded rows. Updated/Created choices refetch only that section's search group when more results remain beyond those loaded; client-only choices never refetch. The authored search group is shared by Returned, Approved, Waiting, and Drafts: a sort-triggered refetch uses the changed section's order while sibling sections keep client-sorting by their own choices.
+  - Initial group loads use the saved server order when all sections sharing the group agree; otherwise the group defaults to updated-desc.
+
+## Search Result Loading
+
+GitHub search requests up to 100 results per page (its maximum), while each inbox section initially reveals 10. Rows are filtered and sorted before the visible limit is applied, so priority mode shows the highest-ranked loaded PRs first and lane counts include only visible rows. **Load more** reveals the next 10 loaded matches, requesting another 100-result API page only when needed. When searching locally, the visible count is measured against loaded rows matching the search. Limits reset to 10 after a full reload, repository change, the changed section's sort change, or merged-filter change; quiet background refreshes preserve the current limits. The button does not change the viewport when rows are revealed.
+
+## Needs Your Review Priority
+
+The `InboxDetails` batches provide the last ready-for-review event (falling back to `createdAt`), the latest commit check rollup, the latest 20 commit OIDs and timestamps, the viewer's latest submitted review and reviewed OID, and code-owner review requests. A separate set of aliased stack queries runs in parallel in the same 25-item chunks for requested PRs; a failed chunk gets zero stack points for its items. Stack entries above the current PR count only when open and not draft.
+
+The score adds:
+
+- Stack points: `min(30, 15 × log₂(1 + n))`, where `n` is the count of ready PRs stacked above this one.
+- Waiting points: `min(30, 30 × ln(1 + h) / ln(17))`, where `h` is weekday 09:00–17:00 working time in the viewer's local time zone. A viewer review with no new commits earns no waiting points.
+- 20 points for a code-owner request assigned to the viewer or a team, and 15 for successful checks. Failing checks always put the PR in Later.
+
+Rows show reason chips rather than a bare score. The ready-time chip shows real elapsed time and its tooltip explains the working-hours score. New commits are counted after the reviewed OID; if it is absent from the recent 20, the chip says `20+ new commits since your review` and waiting starts at the oldest listed commit. Labels do not affect priority. Within a lane, higher scores come first and ties are broken by smaller total diff size.
+
+Priority mode shows a count in each Now, Soon, and Later heading. When Now is empty, its only empty-state message is “Nothing is waiting on you.”
 
 ## Immediate Updates After PR Actions (`inboxUpdates`)
 

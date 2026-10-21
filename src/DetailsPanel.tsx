@@ -93,18 +93,13 @@ const checkWords = {
   neutral: 'neutral',
 };
 const checkKind = (check: StatusCheck) => checkKinds.find(kind => check.state === kind) ?? 'neutral';
-const describeChecks = (checks?: StatusCheck[]) =>
-  checkCounts(checks)
-    .filter(([, count]) => count)
-    .map(([kind, count]) => `${count} ${checkWords[kind]}`)
-    .join(', ') || 'No checks';
 export const reviewApproved = (pr: PullRequest, reviews: Review[], onBehalfOf?: Record<string, string[]>) =>
   reviewDecision(pullRequestReviewers(pr, reviews, onBehalfOf)) === 'APPROVED';
 // GitHub rejects review requests for the PR author and for bots.
 const requestable = (pr: PullRequest, login: string) => login !== pr.user.login && !login.endsWith('[bot]');
 
 // On busy repositories GitHub can report `unknown` almost constantly, so an approved PR stays mergeable meanwhile.
-const mergeOffered = (pr: PullRequest, approved: boolean) => mergeReady(pr) || (!pr.draft && mergeabilityPending(pr) && approved);
+export const mergeOffered = (pr: PullRequest, approved: boolean) => mergeReady(pr) || (!pr.draft && mergeabilityPending(pr) && approved);
 // The most specific blocker we can name; branch protection details beyond approvals aren't exposed on the PR.
 const notReadyReason = (pr: PullRequest, approved: boolean) => {
   if (pr.draft) return 'Draft pull requests can’t be merged';
@@ -209,32 +204,14 @@ const MergeMenu = defineComponent(
 export const MergeControls = defineComponent(
   (props: {
     pr: PullRequest;
-    prRef: PRRef;
     methods: MergeMethod[];
     autoMerge: boolean;
     approved: boolean;
     disabled: boolean;
-    onMutate: Mutate;
+    onMerge: (method: MergeMethod) => void;
+    onAutoMerge: (enabled: boolean) => Promise<boolean>;
   }) => {
     const autoMergeMethod = () => props.pr.auto_merge?.merge_method ?? props.methods[0];
-    const toggleAutoMerge = async (input: HTMLInputElement) => {
-      const enable = input.checked;
-      const method = autoMergeMethod();
-      const saved = await props.onMutate(
-        async api => {
-          try {
-            await api.setAutoMerge(props.pr, enable && method ? method : null);
-          } catch (error) {
-            if (enable && error instanceof Error && /clean status/i.test(error.message))
-              throw new Error('This pull request is already mergeable. Use Merge.');
-            throw error;
-          }
-        },
-        { toast: enable ? 'Auto-merge enabled' : 'Auto-merge turned off', refresh: 'all' },
-      );
-      // A failed write leaves the PR unchanged, so the switch must not keep the rejected position.
-      if (!saved) input.checked = !enable;
-    };
     return () => {
       const { pr } = props;
       return (
@@ -257,7 +234,11 @@ export const MergeControls = defineComponent(
                 class={switchStyles.switch}
                 checked={!!pr.auto_merge}
                 disabled={props.disabled || pr.mergeable_state === 'dirty' || !autoMergeMethod()}
-                onChange={e => void toggleAutoMerge(e.target as HTMLInputElement)}
+                onChange={async e => {
+                  const input = e.target as HTMLInputElement;
+                  const saved = await props.onAutoMerge(input.checked);
+                  if (!saved) input.checked = !input.checked;
+                }}
               />
             </label>
           )}
@@ -267,15 +248,13 @@ export const MergeControls = defineComponent(
             autoMerge={props.autoMerge}
             approved={props.approved}
             disabled={props.disabled}
-            onMerge={method =>
-              props.onMutate(api => api.merge(props.prRef, pr.head.sha, method), { toast: 'Pull request merged', refresh: 'all' })
-            }
+            onMerge={props.onMerge}
           />
         </>
       );
     };
   },
-  { props: ['pr', 'prRef', 'methods', 'autoMerge', 'approved', 'disabled', 'onMutate'] },
+  { props: ['pr', 'methods', 'autoMerge', 'approved', 'disabled', 'onMerge', 'onAutoMerge'] },
 );
 
 export const MoreMenu = defineComponent(
@@ -663,6 +642,45 @@ const SummaryGroup = defineComponent(
   { props: ['label', 'state'] },
 );
 
+const CheckSummary = defineComponent(
+  (props: { checks?: StatusCheck[] }) => () => {
+    const { checks } = props;
+    if (!checks) return <Loader label="Loading checks…" />;
+    return (
+      <div class={styles['check-summary']}>
+        {checkCounts(checks)
+          .filter(([, count]) => count)
+          .map(([kind, count]) => {
+            const Icon = checkIcons[kind];
+            return (
+              <SummaryGroup key={kind} label={`Checks ${checkWords[kind]}`} state={kind}>
+                {{
+                  chip: () => (
+                    <>
+                      <Icon size={14} />
+                      {count} {checkWords[kind]}
+                    </>
+                  ),
+                  default: () =>
+                    checks
+                      .filter(check => checkKind(check) === kind)
+                      .map(check => (
+                        <a key={check.id} class={styles.option} href={check.url} target="_blank" rel="noopener noreferrer">
+                          <Icon size={14} />
+                          <span class={styles.name}>{check.name}</span>
+                        </a>
+                      )),
+                }}
+              </SummaryGroup>
+            );
+          })}
+        {!checks.length && <span class={styles.muted}>No checks</span>}
+      </div>
+    );
+  },
+  { props: ['checks'] },
+);
+
 // Graphite's succinct summary, shown in place of the side panel when it is hidden.
 export const Information = defineComponent(
   (props: { details: Details }) => {
@@ -678,43 +696,13 @@ export const Information = defineComponent(
           </button>
           {open.value && (
             <dl class={styles.grid}>
-              <dt>Checks</dt>
+              <dt>
+                <button class={styles['checks-label']} title="Open the Checks tab" onClick={details.source().onChecks}>
+                  Checks
+                </button>
+              </dt>
               <dd>
-                {!checks ? (
-                  <Loader label="Loading checks…" />
-                ) : (
-                  <>
-                    {checkCounts(checks)
-                      .filter(([, count]) => count)
-                      .map(([kind, count]) => {
-                        const Icon = checkIcons[kind];
-                        return (
-                          <SummaryGroup key={kind} label={`Checks ${checkWords[kind]}`} state={kind}>
-                            {{
-                              chip: () => (
-                                <>
-                                  <Icon size={14} />
-                                  {count} {checkWords[kind]}
-                                </>
-                              ),
-                              default: () =>
-                                checks
-                                  .filter(check => checkKind(check) === kind)
-                                  .map(check => (
-                                    <a key={check.id} class={styles.option} href={check.url} target="_blank" rel="noopener noreferrer">
-                                      <Icon size={14} />
-                                      <span class={styles.name}>{check.name}</span>
-                                    </a>
-                                  )),
-                            }}
-                          </SummaryGroup>
-                        );
-                      })}
-                    <button class={styles.chip} title="Open the Checks tab" onClick={details.source().onChecks}>
-                      {checks.length ? 'View all' : 'No checks'}
-                    </button>
-                  </>
-                )}
+                <CheckSummary checks={checks} />
               </dd>
               <dt>Reviewers</dt>
               <dd>
@@ -800,24 +788,12 @@ export default defineComponent(
                 </section>
               )}
               <section class={styles.section}>
-                {/* Loading keeps the same heading and bar so the counts fill in place instead of swapping layouts. */}
-                <button
-                  class={styles.checks}
-                  title="Open the Checks tab"
-                  aria-label="Open the Checks tab"
-                  aria-busy={!checks}
-                  disabled={!checks}
-                  onClick={details.source().onChecks}
-                >
-                  <h3>
-                    Checks<span>{checks ? describeChecks(checks) : 'Loading…'}</span>
-                  </h3>
-                  <span class={styles.bar} data-loading={!checks}>
-                    {checkCounts(checks).map(([kind, count]) => (
-                      <span key={kind} data-state={kind} style={{ flexGrow: count }} />
-                    ))}
-                  </span>
-                </button>
+                <h3>
+                  <button class={styles['checks-label']} title="Open the Checks tab" onClick={details.source().onChecks}>
+                    Checks
+                  </button>
+                </h3>
+                <CheckSummary checks={checks} />
               </section>
               <section class={styles.section}>
                 <h3>

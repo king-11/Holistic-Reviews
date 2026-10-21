@@ -11,6 +11,7 @@ const composer = (page: Page) => page.getByRole('textbox', { name: /^Comment on 
 const writes = (fake: Fake, path: string | RegExp) =>
   fake.writes.filter(write => (typeof path === 'string' ? write.path === path || write.operation === path : path.test(write.path)));
 const lastWrite = (fake: Fake, path: string | RegExp) => writes(fake, path).at(-1)?.body;
+const groupButton = (page: Page, name: RegExp) => page.getByRole('main').locator('button[aria-expanded]').filter({ hasText: name });
 
 async function drag(page: Page, from: Locator, to: Locator) {
   await from.hover();
@@ -27,7 +28,7 @@ async function startLineReview(page: Page, body: string) {
 }
 
 // Inbox repositories default to the most-used one, so tests that need every repository seed an explicit choice.
-async function seedInbox(page: Page, preferences: { repos?: string[]; sort?: string }) {
+async function seedInbox(page: Page, preferences: { repos?: string[]; sorts?: Record<string, string>; merged?: string }) {
   await page.addInitScript(saved => {
     if (!localStorage.getItem('review.inbox')) localStorage.setItem('review.inbox', JSON.stringify(saved));
   }, preferences);
@@ -38,7 +39,7 @@ test.describe('inbox', () => {
     await mockGitHub(page);
     await seedInbox(page, { repos: [] });
     await page.goto('/');
-    const group = (name: RegExp) => page.getByRole('main').getByRole('button', { name });
+    const group = (name: RegExp) => groupButton(page, name);
     for (const name of [
       /Needs your review\s*3/,
       /Returned to you\s*1/,
@@ -53,8 +54,36 @@ test.describe('inbox', () => {
     await expect(page.getByRole('link', { name: /Tighten cache keys/ })).toBeVisible();
     await expect(page.getByRole('link', { name: /Speed up CI cache/ })).toBeVisible();
     await expect(page.getByRole('link', { name: /Sketch retry dashboard/ })).toBeVisible();
-    await group(/Reviewed by you/).click();
-    await expect(page.getByRole('link', { name: /Draft reviewed earlier/ })).toBeVisible();
+    const pendingRows = [
+      ['requested', /Improve worker retries/],
+      ['returned', /Retry the sync backoff/],
+      ['approved', /Tighten cache keys/],
+      ['waiting', /Speed up CI cache/],
+      ['drafts', /Sketch retry dashboard/],
+      ['reviewed', /Draft reviewed earlier/],
+      ['merged', /Ship metrics exporter/],
+    ] as const;
+    for (const [section, title] of pendingRows) {
+      if (section === 'reviewed' || section === 'merged')
+        await group(new RegExp(section === 'merged' ? 'Recently merged' : 'Reviewed by you')).click();
+      await expect(page.getByRole('main').getByRole('link', { name: title })).toContainText('1 pending');
+    }
+  });
+
+  test('defaults to priority lanes with reasons for requested reviews', async ({ page }) => {
+    await mockGitHub(page);
+    await seedInbox(page, { repos: [] });
+    await page.goto('/');
+    const now = page.locator('[data-priority-lane="now"]');
+    await expect(now.locator('strong')).toHaveText('Now');
+    await expect(now.getByRole('link', { name: /Improve worker retries/ })).toBeVisible();
+    await expect(now).toContainText('1 ready stacked on this');
+    await expect(now).toContainText('code owner');
+    await expect(now).toContainText('checks green');
+    const soon = page.locator('[data-priority-lane="soon"]');
+    await expect(soon).toBeVisible();
+    await expect(soon.locator('a.pr-row').first()).toHaveAttribute('title', /Rotate infra credentials/);
+    await expect(page.locator('[data-priority-lane="later"]')).toBeVisible();
   });
 
   test('filters pull requests by search text and repository', async ({ page }) => {
@@ -74,7 +103,7 @@ test.describe('inbox', () => {
   test('a merged filter in the collapsed section bar expands the section and queries all, yours, or review requests', async ({ page }) => {
     const fake = await mockGitHub(page);
     await page.goto('/');
-    const merged = page.getByRole('main').getByRole('button', { name: /Recently merged/ });
+    const merged = groupButton(page, /Recently merged/);
     const radios = page.getByRole('radiogroup', { name: 'Merged pull requests' });
     const row = (title: RegExp) => page.getByRole('link', { name: title });
     // Inbox sections search concurrently, so only the latest merged query reflects the chosen filter.
@@ -96,6 +125,9 @@ test.describe('inbox', () => {
       advanced: true,
       q: expect.stringContaining('(review-requested:reviewer OR reviewed-by:reviewer)'),
     });
+    await page.reload();
+    await expect(page.getByRole('radio', { name: 'Review requested' })).toHaveAttribute('aria-checked', 'true');
+    await expect.poll(() => mergedSearch()?.q).toContain('(review-requested:reviewer OR reviewed-by:reviewer)');
   });
 
   test('disables All for recently merged pull requests until a repository is selected', async ({ page }) => {
@@ -104,7 +136,8 @@ test.describe('inbox', () => {
     await page.goto('/');
     await page
       .getByRole('main')
-      .getByRole('button', { name: /Recently merged/ })
+      .locator('button[aria-expanded]')
+      .filter({ hasText: /Recently merged/ })
       .click();
     const radios = page.getByRole('radiogroup', { name: 'Merged pull requests' });
     await expect(radios.getByRole('radio', { name: 'All' })).toBeDisabled();
@@ -128,19 +161,98 @@ test.describe('inbox', () => {
     await expect(page.getByRole('checkbox', { name: 'acme/app' })).not.toBeChecked();
   });
 
-  test('sorts by title client-side and by creation date on the server, remembering the choice', async ({ page }) => {
+  test('sorts sections independently without fetching complete results', async ({ page }) => {
     const fake = await mockGitHub(page);
+    await seedInbox(page, { repos: ['acme/app', 'acme/infra'] });
     await page.goto('/');
-    await expect(page.getByRole('button', { name: '1 repository' })).toBeVisible();
-    await page.getByRole('button', { name: 'Sort pull requests' }).click();
-    await page.getByRole('menuitemradio', { name: /^Title Z–A/ }).click();
-    await expect(page.locator('section.requested .pr-row-title').first()).toContainText('Tune cache eviction');
-    await page.getByRole('button', { name: 'Sort pull requests' }).click();
-    await page.getByRole('menuitemradio', { name: /Created Oldest first/ }).click();
-    await expect.poll(() => fake.searches.at(-1)).toMatchObject({ sort: 'created', order: 'asc' });
+    const requested = page.locator('[data-section="requested"]');
+    const returned = page.locator('[data-section="returned"]');
+    await expect.poll(() => fake.searches.length).toBe(5);
+    await expect(requested.locator('.pr-row')).toHaveCount(3);
+    const returnedTitles = await returned.locator('.pr-row-title').allTextContents();
+    const searches = fake.searches.length;
+    await page.getByRole('button', { name: 'Sort Needs your review' }).click();
+    await expect(page.getByRole('menuitemradio', { name: 'Priority', exact: true })).toBeVisible();
+    const priorityFontSize = await page
+      .getByRole('menuitemradio', { name: 'Priority' })
+      .locator('[data-sort-label]')
+      .evaluate(element => getComputedStyle(element).fontSize);
+    const titleFontSize = await page.locator('[data-sort-label="Title"]').evaluate(element => getComputedStyle(element).fontSize);
+    expect(priorityFontSize).toBe(titleFontSize);
+    await expect(page.getByText('Waiting on you first')).toHaveCount(0);
+    await page.getByRole('menuitemradio', { name: 'Title: Z–A' }).click();
+    await expect(requested.locator('.pr-row-title').first()).toContainText('Tune cache eviction');
+    expect(fake.searches.length).toBe(searches);
+    expect(await returned.locator('.pr-row-title').allTextContents()).toEqual(returnedTitles);
+    await page.getByRole('button', { name: 'Sort Returned to you' }).click();
+    await expect(page.getByRole('menuitemradio', { name: 'Priority' })).toHaveCount(0);
     await page.reload();
-    await page.getByRole('button', { name: 'Sort pull requests' }).click();
-    await expect(page.getByRole('menuitemradio', { name: /Created Oldest first/ })).toHaveAttribute('aria-checked', 'true');
+    await page.getByRole('button', { name: 'Sort Needs your review' }).click();
+    await expect(page.getByRole('menuitemradio', { name: 'Title: Z–A' })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  for (const viewportWidth of [1280, 375, 320]) {
+    test(`keeps the sort menu aligned and in the viewport at ${viewportWidth}px`, async ({ page }) => {
+      await page.setViewportSize({ width: viewportWidth, height: 900 });
+      await mockGitHub(page);
+      await seedInbox(page, { repos: ['acme/app'] });
+      await page.goto('/');
+      await expect(page.getByRole('button', { name: 'Sort Needs your review' })).toBeVisible();
+      await page.getByRole('button', { name: 'Sort Needs your review' }).click();
+      const menu = page.getByRole('menu', { name: 'Sort Needs your review by' });
+      const menuBounds = await menu.boundingBox();
+      expect(menuBounds).not.toBeNull();
+      expect(menuBounds!.x).toBeGreaterThanOrEqual(0);
+      expect(menuBounds!.x + menuBounds!.width).toBeLessThanOrEqual(viewportWidth);
+      await expect(menu.locator('[data-sort-label="Size of change"]')).toHaveCSS('white-space', 'nowrap');
+
+      const directions = {
+        Title: ['Title: A–Z', 'Title: Z–A'],
+        'Size of change': ['Size: Smallest first', 'Size: Largest first'],
+        Updated: ['Updated: Oldest first', 'Updated: Latest first'],
+        Created: ['Created: Oldest first', 'Created: Latest first'],
+      };
+      const columns: number[][] = [];
+      for (const [field, labels] of Object.entries(directions)) {
+        const buttons = menu.getByRole('group', { name: `Sort ${field}` }).getByRole('menuitemradio');
+        const actualLabels = await buttons.evaluateAll(elements => elements.map(element => element.getAttribute('aria-label')));
+        expect(actualLabels).toEqual(labels);
+        columns.push(await buttons.evaluateAll(elements => elements.map(element => element.getBoundingClientRect().x)));
+      }
+      for (const index of [0, 1]) {
+        const positions = columns.map(column => column[index]);
+        expect(Math.max(...positions) - Math.min(...positions)).toBeLessThan(0.5);
+      }
+    });
+  }
+
+  test('refetches only an incomplete section group for a server-ordered sort', async ({ page }) => {
+    const fake = await mockGitHub(page, { requestedPRCount: 105 });
+    await seedInbox(page, { repos: ['acme/app'] });
+    await page.goto('/');
+    await expect.poll(() => fake.searches.length).toBe(5);
+    const searches = fake.searches.length;
+    await page.getByRole('button', { name: 'Sort Needs your review' }).click();
+    await page.getByRole('menuitemradio', { name: 'Created: Oldest first' }).click();
+    await expect.poll(() => fake.searches.length).toBe(searches + 1);
+    expect(fake.searches.slice(searches)).toHaveLength(1);
+    expect(fake.searches.at(-1)).toMatchObject({
+      q: expect.stringContaining('review-requested:'),
+      sort: 'created',
+      order: 'asc',
+    });
+  });
+
+  test('does not refetch Inbox after refreshed team info resolves', async ({ page }) => {
+    const fake = await mockGitHub(page, { teamsDelayMs: 2000 });
+    await seedInbox(page, { repos: ['acme/app'] });
+    const teamsResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/user/teams');
+    await page.goto('/');
+    await expect.poll(() => fake.searches.length).toBe(5);
+    await expect(page.getByRole('button', { name: 'Refresh inbox' })).toBeEnabled();
+    await teamsResponse;
+    await page.waitForTimeout(100);
+    expect(fake.searches).toHaveLength(5);
   });
 
   test('shows changes, checks, and people involved on each inbox row', async ({ page }) => {
@@ -151,7 +263,106 @@ test.describe('inbox', () => {
     await expect(row.getByText('−3')).toBeVisible();
     await expect(row.getByRole('img', { name: 'Checks passed' })).toBeVisible();
     await expect(row.getByTitle('bob, carol')).toBeVisible();
+    await expect(page.getByRole('link', { name: /Tune cache eviction/ }).getByRole('img', { name: 'Checks running' })).toBeVisible();
+    const checkGeometry = await page.locator('section.requested .pr-row').evaluateAll(rows =>
+      rows.flatMap(row => {
+        const time = row.querySelector('.row-time')?.textContent?.trim();
+        const icon = row.querySelector('[aria-label^="Checks"] svg');
+        if (!time || !icon) return [];
+        const rect = icon.getBoundingClientRect();
+        return [{ time, centerX: Math.round((rect.left + rect.width / 2) * 1000) / 1000, width: rect.width }];
+      }),
+    );
+    expect(new Set(checkGeometry.map(row => row.time)).size).toBeGreaterThan(1);
+    expect(new Set(checkGeometry.map(row => row.centerX)).size).toBe(1);
+    expect(checkGeometry.every(row => row.width === 16)).toBe(true);
   });
+
+  test('reveals 10 requested PRs at a time and keeps the viewport steady', async ({ page }) => {
+    const fake = await mockGitHub(page, { requestedPRCount: 105 });
+    await seedInbox(page, { repos: ['acme/app', 'acme/infra'] });
+    await page.goto('/');
+    const section = page.locator('section.requested');
+    const rows = section.locator('.pr-row');
+    const loadMore = section.getByRole('button', { name: /^Load more ·/ });
+    await expect(rows).toHaveCount(10);
+    await expect(loadMore).toHaveText('Load more · 10 of 105');
+    await expect.poll(() => fake.searches.length).toBe(5);
+    await loadMore.scrollIntoViewIfNeeded();
+    const lastRow = await rows.last().elementHandle();
+    if (!lastRow) throw new Error('Expected a requested PR row.');
+    const measure = () =>
+      page.evaluate(
+        row => ({
+          scrollY,
+          top: row.getBoundingClientRect().top,
+        }),
+        lastRow,
+      );
+    const before = await measure();
+    const searches = fake.searches.length;
+
+    await loadMore.click();
+    await expect(rows).toHaveCount(20);
+    expect(fake.searches.length).toBe(searches);
+    const after = await measure();
+    expect(after.scrollY).toBe(before.scrollY);
+    expect(after.top).toBe(before.top);
+
+    for (let visible = 30; visible <= 100; visible += 10) {
+      await loadMore.click();
+      await expect(rows).toHaveCount(visible);
+    }
+    expect(fake.searches.length).toBe(searches);
+
+    await loadMore.click();
+    await expect(rows).toHaveCount(105);
+    await expect.poll(() => fake.searches.length).toBe(searches + 1);
+    expect(fake.searches.at(-1)).toMatchObject({
+      q: expect.stringContaining('review-requested:'),
+      page: 2,
+      perPage: 100,
+    });
+  });
+});
+
+test('lists pending comments in the review sheet and reuses comment edit and delete actions', async ({ page }) => {
+  const fake = await mockGitHub(page, { stalePendingReadAfterEdit: true });
+  await openPR(page);
+  await startLineReview(page, 'First pending');
+  await expect(page.locator('.pr-title-row .pending-badge')).toHaveText('1 pending');
+  await expect(card(page, 'src/worker.py').locator('.diff-file-header .pending-badge')).toHaveText('1 pending');
+  await page.getByRole('button', { name: 'Review changes' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Submit your review' });
+  const location = dialog.getByRole('button', { name: /src\/worker.py:10/ });
+  await expect(location).toBeVisible();
+  await expect(location).toHaveText('src/worker.py:10');
+  await location.click();
+  await expect(dialog).toHaveCount(0);
+  await page.getByRole('button', { name: 'Review changes' }).click();
+  const reopened = page.getByRole('dialog', { name: 'Submit your review' });
+  await expect(reopened.getByText('First pending')).toBeVisible();
+  await reopened.getByRole('button', { name: 'Edit comment' }).click();
+  await reopened.getByRole('textbox', { name: 'Edit comment' }).fill('Edited pending');
+  await reopened.getByRole('button', { name: 'Save' }).click();
+  await expect(reopened.getByText('Edited pending')).toBeVisible();
+  await expect(reopened.getByText('First pending')).toHaveCount(0);
+  await reopened.getByRole('button', { name: 'Close dialog' }).click();
+  fake.armStalePendingRead();
+  await page.getByRole('button', { name: 'Refresh pull request' }).click();
+  await expect(page.locator('.review-layout[aria-busy="false"]')).toBeVisible();
+  await expect.poll(() => fake.stalePendingReadServed).toBe(true);
+  expect(fake.stalePendingReadBody).toBe('First pending');
+  await expect(page.locator('.thread-comment').filter({ hasText: 'Edited pending' })).toHaveCount(1);
+  await page.getByRole('button', { name: 'Review changes' }).click();
+  const refreshed = page.getByRole('dialog', { name: 'Submit your review' });
+  await expect(refreshed.getByText('Edited pending')).toBeVisible();
+  await expect(refreshed.getByText('First pending')).toHaveCount(0);
+  expect(writes(fake, 'UpdatePullRequestReviewComment')).toHaveLength(1);
+  await reopened.getByRole('button', { name: 'Delete comment' }).click();
+  await reopened.getByRole('button', { name: 'Delete?', exact: true }).click();
+  await expect(reopened.locator('[aria-label="Pending review comments"] section')).toHaveCount(0);
+  expect(writes(fake, 'DeletePullRequestReviewComment')).toHaveLength(1);
 });
 
 test.describe('inbox after acting on a pull request', () => {
@@ -187,7 +398,8 @@ test.describe('inbox after acting on a pull request', () => {
     await expect(page.getByRole('main').getByRole('button', { name: /Needs your review\s*1/ })).toBeVisible();
     await page
       .getByRole('main')
-      .getByRole('button', { name: /Reviewed by you/ })
+      .locator('button[aria-expanded]')
+      .filter({ hasText: /Reviewed by you/ })
       .click();
     await expect(row(page, 'reviewed')).toBeVisible();
     await expect.poll(() => fake.searches.length).toBeGreaterThan(searches);
@@ -207,7 +419,8 @@ test.describe('inbox after acting on a pull request', () => {
     await expect(row(page, 'requested')).toHaveCount(0);
     await page
       .getByRole('main')
-      .getByRole('button', { name: /Recently merged/ })
+      .locator('button[aria-expanded]')
+      .filter({ hasText: /Recently merged/ })
       .click();
     await expect(row(page, 'merged')).toBeVisible();
   });
@@ -242,7 +455,8 @@ test.describe('routing', () => {
     await page.goto('/');
     await page
       .getByRole('main')
-      .getByRole('button', { name: /Reviewed by you/ })
+      .locator('button[aria-expanded]')
+      .filter({ hasText: /Reviewed by you/ })
       .click();
     await expect(page.getByRole('link', { name: /Draft reviewed earlier/ })).toBeVisible();
     await page.waitForLoadState('networkidle');
@@ -258,7 +472,7 @@ test.describe('routing', () => {
     // toBeVisible ignores opacity, and rows used to stay faded out after returning to the kept-alive inbox.
     await expect(page.getByRole('link', { name: /Draft reviewed earlier/ })).toHaveCSS('opacity', '1');
     await expect(row).toHaveCSS('opacity', '1');
-    await expect(page).toHaveTitle(/^Review — /);
+    await expect(page).toHaveTitle('Holistic Reviews - A little more focus');
     expect(fake.searches.length).toBe(searches);
     await page.goForward();
     await expect(page).toHaveURL(prRoute);
@@ -386,13 +600,13 @@ test.describe('motion', () => {
     });
 
   for (const [key, name] of [
-    ['ControlOrMeta+K', 'Open a pull request'],
+    ['ControlOrMeta+K', 'Command bar'],
     ['?', 'Keyboard shortcuts'],
   ])
     test(`${name} opens and closes from the keyboard without animating`, async ({ page }) => {
       await mockGitHub(page);
       await page.goto('/');
-      await expect(page.getByRole('button', { name: /Needs your review/ })).toBeVisible();
+      await expect(groupButton(page, /Needs your review/)).toBeVisible();
       const dialog = frames(page, '[role="dialog"]');
       const backdrop = frames(page, '.modal-backdrop');
       await page.keyboard.press(key);
@@ -402,6 +616,83 @@ test.describe('motion', () => {
       await page.keyboard.press('Escape');
       expect(await page.evaluate(() => document.querySelectorAll('.modal-backdrop').length)).toBe(0);
     });
+
+  test('the PR command bar offers approval options, Undo, and PR shorthand navigation', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    await page.keyboard.press('ControlOrMeta+K');
+    let dialog = page.getByRole('dialog', { name: 'Command bar' });
+    await expect(dialog.getByRole('option', { name: /^Approve/ })).toBeVisible();
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowRight');
+
+    const approve = page.getByRole('dialog', { name: 'Approve' });
+    await expect(approve.getByText('Approves #42 as reviewer')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog', { name: 'Command bar' })).toBeVisible();
+    await page.keyboard.press('Backspace');
+    await expect(page.getByRole('dialog', { name: 'Command bar' })).toHaveCount(0);
+
+    await page.keyboard.press('ControlOrMeta+K');
+    dialog = page.getByRole('dialog', { name: 'Command bar' });
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('Enter');
+    await expect(approve.getByRole('button', { name: /Undo/ })).toBeVisible();
+    await page.keyboard.press('z');
+    await expect(approve.getByRole('button', { name: /Undo/ })).toHaveCount(0);
+
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    const review = page.getByRole('dialog', { name: 'Submit your review' });
+    await expect(review).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(review).toHaveCount(0);
+    await page.keyboard.press('ControlOrMeta+K');
+    dialog = page.getByRole('dialog', { name: 'Command bar' });
+    await dialog.getByRole('textbox', { name: 'Search commands' }).fill('acme/app#42');
+    await expect(dialog.getByRole('option', { name: 'Open acme/app#42' })).toBeVisible();
+    await expect(dialog.getByRole('option')).toHaveCount(1);
+    await page.keyboard.press('Enter');
+    await expect(dialog).toHaveCount(0);
+    await expect(page).toHaveURL(/\/acme\/app\/pull\/42$/);
+
+    await page.keyboard.press('ControlOrMeta+K');
+    dialog = page.getByRole('dialog', { name: 'Command bar' });
+    await dialog.getByRole('textbox', { name: 'Search commands' }).fill('not a pull request');
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+
+    await page.keyboard.press('ControlOrMeta+K');
+    dialog = page.getByRole('dialog', { name: 'Command bar' });
+    await dialog.getByRole('option', { name: 'Theme', exact: true }).click();
+    const theme = page.getByRole('dialog', { name: 'Theme' });
+    await expect(theme.getByRole('option', { name: /^Paper/ })).toHaveAttribute('aria-selected', 'true');
+    await expect(theme.getByText('Current', { exact: true })).toBeVisible();
+    await theme.getByRole('option', { name: 'Solarized Light', exact: true }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'solarized-light');
+  });
+
+  test('Escape and empty Backspace leave the disabled Approve page before closing the command bar', async ({ page }) => {
+    await mockGitHub(page, { ownPR: true });
+    await openPR(page);
+    await page.keyboard.press('ControlOrMeta+K');
+    const commandBar = page.getByRole('dialog', { name: 'Command bar' });
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowRight');
+    const approve = page.getByRole('dialog', { name: 'Approve' });
+    await expect(approve.getByRole('option').first()).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await expect(commandBar).toBeVisible();
+
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowRight');
+    await expect(page.getByRole('dialog', { name: 'Approve' })).toBeVisible();
+    await page.keyboard.press('Backspace');
+    await expect(commandBar).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(commandBar).toHaveCount(0);
+  });
 
   for (const [key, panel] of [
     ['f', 'Changed files'],
@@ -748,8 +1039,8 @@ test.describe('keyboard shortcuts', () => {
     await page.keyboard.press('Escape');
     await expect(review).toHaveCount(0);
     await page.keyboard.press('ControlOrMeta+K');
-    await expect(page.getByRole('dialog', { name: 'Open a pull request' })).toBeVisible();
-    await expect(page.getByRole('textbox', { name: 'GitHub pull request URL' })).toBeFocused();
+    await expect(page.getByRole('dialog', { name: 'Command bar' })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'Search commands' })).toBeFocused();
   });
 });
 
@@ -864,7 +1155,7 @@ test.describe('sequence shortcuts', () => {
 test('Checks tab lists CI checks failures first and links to each run', async ({ page }) => {
   await mockGitHub(page);
   await openPR(page);
-  await page.getByRole('button', { name: /^Checks/ }).click();
+  await page.locator('button[title="See CI status checks for the latest commit and open their runs"]').click();
   const links = page.getByRole('list', { name: 'Status checks' }).getByRole('link');
   await expect(links).toHaveText([/lint.*1 error/, /deploy\/preview.*Building/, /test.*All tests passed/]);
   await expect(links.first()).toHaveAttribute('href', 'https://github.com/acme/app/actions/runs/9/job/2');
@@ -909,7 +1200,15 @@ test.describe('details panel', () => {
       'href',
       'https://github.com/acme/app/issues/7',
     );
-    await panel.getByTitle('Open the Checks tab').click();
+    await expect(panel.getByRole('button', { name: '1 pending' })).toBeVisible();
+    await panel.getByRole('button', { name: '1 pending' }).click();
+    await expect(panel.getByRole('dialog', { name: 'Checks pending' }).getByRole('link')).toHaveCount(1);
+    await page.keyboard.press('Escape');
+    await panel.getByRole('heading', { name: 'Checks' }).getByRole('button', { name: 'Checks' }).click();
+    await expect(panel.getByRole('heading', { name: 'Checks' }).getByRole('button', { name: 'Checks' })).toHaveAttribute(
+      'title',
+      'Open the Checks tab',
+    );
     await expect(page.getByRole('list', { name: 'Status checks' })).toBeVisible();
   });
 
@@ -1108,7 +1407,9 @@ test.describe('details panel', () => {
     await info.getByRole('button', { name: /1 pending/ }).click();
     await expect(page.getByRole('dialog', { name: 'Checks pending' }).getByRole('link')).toHaveCount(1);
     await page.keyboard.press('Escape');
-    await info.getByRole('button', { name: 'View all' }).click();
+    const checksLabel = info.getByRole('button', { name: 'Checks', exact: true });
+    await expect(checksLabel).toHaveAttribute('title', 'Open the Checks tab');
+    await checksLabel.click();
     await expect(page.getByRole('list', { name: 'Status checks' })).toBeVisible();
     await expect(page.locator('.review-tabs-bar')).toBeInViewport();
   });
@@ -1261,12 +1562,23 @@ test.describe('workspace', () => {
   test('shows branch-linked parent and child PRs and closes the stack panel', async ({ page }) => {
     await mockGitHub(page);
     await openPR(page);
-    await expect(page.getByRole('button', { name: /Parent #41/ })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /#41 Prepare worker base/ })).toHaveCount(0);
     await page.getByRole('button', { name: 'Dependent pull requests' }).click();
-    await expect(page.getByRole('button', { name: /Parent #41 Prepare worker base/ })).toBeVisible();
-    await expect(page.getByRole('button', { name: /Child #43 Use retries in scheduler/ })).toBeVisible();
+    const parent = page.getByRole('button', { name: /#41 Prepare worker base/ });
+    const child = page.getByRole('button', { name: /#43 Use retries in scheduler/ });
+    const current = page.locator('.dependency-current');
+    await expect(parent).toBeVisible();
+    await expect(parent).toHaveAttribute('title', 'Open parent PR #41: Prepare worker base');
+    await expect(child).toBeVisible();
+    await expect(child).toHaveAttribute('title', 'Open child PR #43: Use retries in scheduler');
+    await expect(current).toHaveAttribute('aria-current', 'page');
+    await expect(page.locator('.dependency-node')).toHaveCount(0);
+    const numberPositions = await Promise.all(
+      [parent, current, child].map(async row => (await row.locator('span').first().boundingBox())!.x),
+    );
+    expect(Math.max(...numberPositions) - Math.min(...numberPositions)).toBeLessThan(0.5);
     await page.getByRole('button', { name: 'Close stack panel' }).click();
-    await expect(page.getByRole('button', { name: /Parent #41/ })).toHaveCount(0);
+    await expect(parent).toHaveCount(0);
   });
 
   test('renders Markdown emoji, nested read-only checklists, details and review summaries', async ({ page }) => {
@@ -1473,6 +1785,96 @@ test.describe('diff view', () => {
 });
 
 test.describe('inline comments and reviews', () => {
+  test('opening a composer on a visible line keeps the diff still', async ({ page }) => {
+    await mockGitHub(page, { prState: 'merged' });
+    await openPR(page);
+    const line = lineNumber(page, 'src/worker.py', 10, 'addition');
+    await line.evaluate(element => {
+      const scroller = document.querySelector<HTMLElement>('[class*=review-scroll]')!;
+      const viewport = scroller.getBoundingClientRect();
+      scroller.scrollTop += element.getBoundingClientRect().top - (viewport.top + scroller.clientHeight * 0.4);
+    });
+    const before = await line.evaluate(element => {
+      const scroller = document.querySelector<HTMLElement>('[class*=review-scroll]')!;
+      return {
+        scrollTop: scroller.scrollTop,
+        lineTop: element.getBoundingClientRect().top,
+        viewportTop: scroller.getBoundingClientRect().top,
+        clientHeight: scroller.clientHeight,
+      };
+    });
+    expect(before.lineTop).toBeGreaterThan(before.viewportTop + before.clientHeight * 0.3);
+    expect(before.lineTop).toBeLessThan(before.viewportTop + before.clientHeight * 0.5);
+
+    await line.click();
+    await expect(composer(page)).toBeVisible();
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+    const after = await line.evaluate(element => {
+      const scroller = document.querySelector<HTMLElement>('[class*=review-scroll]')!;
+      return { scrollTop: scroller.scrollTop, lineTop: element.getBoundingClientRect().top };
+    });
+    expect(after.scrollTop).toBe(before.scrollTop);
+    expect(after.lineTop).toBeCloseTo(before.lineTop, 1);
+  });
+
+  test('opening a composer near the bottom reveals only its textarea immediately', async ({ page }) => {
+    type InlineRevealRecord = {
+      options: boolean | ScrollIntoViewOptions | undefined;
+      scrollTop: number;
+      textareaBottom: number;
+      viewportBottom: number;
+      containerBottom: number;
+    };
+    await mockGitHub(page, { prState: 'merged' });
+    await openPR(page);
+    const scroller = page.locator('[class*=review-scroll]').first();
+    const line = lineNumber(page, 'src/worker.py', 10, 'addition');
+    await line.evaluate(element => {
+      const scroller = document.querySelector<HTMLElement>('[class*=review-scroll]')!;
+      const viewport = scroller.getBoundingClientRect();
+      scroller.scrollTop += element.getBoundingClientRect().top - (viewport.bottom - 55);
+    });
+    await page.evaluate(() => {
+      const original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function (options?: boolean | ScrollIntoViewOptions) {
+        if (this instanceof HTMLTextAreaElement) {
+          const scroller = document.querySelector<HTMLElement>('[class*=review-scroll]');
+          const container = this.closest<HTMLElement>('.inline-composer');
+          if (scroller && container) {
+            (window as Window & { __inlineReveal?: InlineRevealRecord }).__inlineReveal = {
+              options,
+              scrollTop: scroller.scrollTop,
+              textareaBottom: this.getBoundingClientRect().bottom,
+              viewportBottom: scroller.getBoundingClientRect().bottom,
+              containerBottom: container.getBoundingClientRect().bottom,
+            };
+          }
+        }
+        return original.call(this, options);
+      };
+    });
+
+    await line.click();
+    const textarea = composer(page);
+    await expect(textarea).toBeVisible();
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+    const record = await page.evaluate(() => (window as Window & { __inlineReveal?: InlineRevealRecord }).__inlineReveal);
+    expect(record).toBeDefined();
+    if (!record) throw new Error('Expected the textarea to be revealed.');
+    const scrollerBox = await scroller.boundingBox();
+    const textareaBox = await textarea.boundingBox();
+    if (!scrollerBox || !textareaBox) throw new Error('Expected the textarea and review scroller to be visible.');
+    const scrollTop = await scroller.evaluate(element => element.scrollTop);
+    const textareaOverflow = record.textareaBottom - record.viewportBottom;
+    const containerOverflow = record.containerBottom - record.viewportBottom;
+    expect(record.options).toEqual({ block: 'nearest' });
+    expect(textareaOverflow).toBeGreaterThan(0);
+    expect(containerOverflow).toBeGreaterThan(textareaOverflow);
+    expect(scrollTop - record.scrollTop).toBeCloseTo(textareaOverflow, 0);
+    expect(scrollTop - record.scrollTop).toBeLessThan(containerOverflow);
+    expect(textareaBox.y + textareaBox.height).toBeLessThanOrEqual(scrollerBox.y + scrollerBox.height + 1);
+  });
+
   for (const [layout, kind, side] of [
     ['Unified diff', 'addition', 'RIGHT'],
     ['Split diff', 'deletion', 'LEFT'],

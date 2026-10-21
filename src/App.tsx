@@ -1,11 +1,13 @@
-import { defineComponent, onMounted, onUnmounted, shallowRef } from 'vue';
+import { computed, defineComponent, onMounted, onUnmounted, shallowRef } from 'vue';
 import { AnimatePresence } from 'motion-v';
 import { ArrowRight, Check, ChevronDown, Command, Keyboard, KeyRound, LogOut, Palette, Search, ShieldCheck, X } from '@lucide/vue';
 import { navigateTo, useRouter } from 'nuxt/app';
 import AuthDialog from './AuthDialog';
-import { comboKeys, eventCombo, modalOpen, shortcutGroups } from './shortcuts';
-import { Avatar, Github, IconButton, Modal, Spinner, inputValue, useTheme, Dismiss } from './ui';
-import { themes } from './themes';
+import CommandBar from './CommandBar';
+import { commandDefinitions, comboKeys, createShortcuts, eventCombo, modalOpen, shortcutGroups, type CommandContext } from './shortcuts';
+import { Avatar, Github, IconButton, Modal, Spinner, useTheme, Dismiss } from './ui';
+import { themes, type ThemeId } from './themes';
+import { commandBarOpen, openCommandBar, registeredPRCommands } from './commandRegistry';
 import {
   api,
   authOpen,
@@ -14,14 +16,10 @@ import {
   disconnect,
   info,
   mutationBusy,
-  openDialog,
-  openError,
-  openPR,
-  prUrl,
+  openPRRef,
   restoreSession,
   restoring,
   settings,
-  showOpenDialog,
   storageNotice,
 } from './session';
 import '@fontsource-variable/geist';
@@ -36,16 +34,53 @@ export default defineComponent((_, { slots }) => {
   const accountOpen = shallowRef(false);
   const themeOpen = shallowRef(false);
   useTheme(() => settings.value.theme);
+  const setTheme = (theme: ThemeId) => changeSettings({ ...settings.value, theme });
+  const commandContext = computed<CommandContext>(() => {
+    const registered = registeredPRCommands.value.at(-1)?.();
+    return {
+      ...registered,
+      busy: mutationBusy.value,
+      actions: {
+        'open-command-bar': openCommandBar,
+        theme: () => (themeOpen.value = true),
+        inbox: () => void navigateTo('/'),
+        ...registered?.actions,
+      },
+    };
+  });
+  const globalShortcuts = createShortcuts(
+    () =>
+      Object.fromEntries(
+        commandDefinitions
+          .filter(command => !command.prOnly && command.id !== 'open-command-bar' && (command.id !== 'inbox' || !commandContext.value.pr))
+          .flatMap(command =>
+            command.keys.map(key => [
+              key,
+              () => {
+                const context = commandContext.value;
+                if (!command.enabled(context)) command.run(context, 'shortcut');
+              },
+            ]),
+          ),
+      ),
+    modalOpen,
+  );
   // Leaving mid-write would drop the response that reconciles local review state, matching the disabled header controls.
   onUnmounted(useRouter().beforeEach(() => !mutationBusy.value));
   onMounted(() => {
     restoreSession();
     const keyHandler = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k' && !mutationBusy.value) {
-        event.preventDefault();
-        showOpenDialog();
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k' && !modalOpen()) {
+        const command = commandDefinitions.find(entry => entry.id === 'open-command-bar');
+        const context = commandContext.value;
+        if (command && !command.enabled(context)) {
+          event.preventDefault();
+          command.run(context, 'shortcut');
+        }
       }
-      if (eventCombo(event, modalOpen()) === '?') {
+      globalShortcuts(event);
+      const combo = eventCombo(event, modalOpen());
+      if (combo === '?') {
         event.preventDefault();
         shortcutsOpen.value = true;
       }
@@ -92,14 +127,9 @@ export default defineComponent((_, { slots }) => {
         <span class="header-divider" />
         <span class="header-subtitle">A little more focus.</span>
         <div class="header-right">
-          <button
-            class="quick-open"
-            title="Open a GitHub pull request by URL (⌘K or Ctrl+K)"
-            onClick={showOpenDialog}
-            disabled={mutationBusy.value}
-          >
+          <button class="quick-open" title="Open the command bar (⌘K or Ctrl+K)" onClick={openCommandBar} disabled={mutationBusy.value}>
             <Search size={14} />
-            <span>Open a pull request</span>
+            <span>Command bar</span>
             <kbd>
               <Command size={10} /> K
             </kbd>
@@ -126,7 +156,7 @@ export default defineComponent((_, { slots }) => {
                           aria-selected={settings.value.theme === theme.id}
                           class={styles['menu-option']}
                           onClick={() => {
-                            changeSettings({ ...settings.value, theme: theme.id });
+                            setTheme(theme.id);
                             themeOpen.value = false;
                           }}
                         >
@@ -229,61 +259,14 @@ export default defineComponent((_, { slots }) => {
       {slots.default?.()}
       <AnimatePresence>
         {!!authOpen.value && <AuthDialog key="auth" onClose={() => (authOpen.value = false)} onConnect={connect} />}
-        {!!openDialog.value && (
-          <Modal
-            key="open-pr"
-            instant
-            title="Open a pull request"
-            subtitle="Bring a little context to your code review."
-            onClose={() => (openDialog.value = false)}
-          >
-            <form
-              onSubmit={event => {
-                event.preventDefault();
-                openPR(prUrl.value);
-              }}
-            >
-              <label class="input-label" for="pr-url">
-                GitHub pull request URL
-              </label>
-              <div class="url-input">
-                <Github size={16} />
-                <input
-                  id="pr-url"
-                  type="url"
-                  placeholder="https://github.com/owner/repo/pull/123"
-                  value={prUrl.value}
-                  onInput={e => (prUrl.value = inputValue(e))}
-                  required
-                />
-              </div>
-              {!!openError.value && (
-                <>
-                  <p class="error-message" role="alert">
-                    {openError.value}
-                  </p>
-                </>
-              )}
-              <p class="submission-note">
-                {api.value
-                  ? 'Uses your connected GitHub token. Private repository and SSO access may be required.'
-                  : 'You’ll connect GitHub next, then this pull request opens.'}
-              </p>
-              <div class="modal-footer">
-                <button
-                  class="button primary"
-                  title={
-                    api.value ? 'Load this pull request using your GitHub connection' : 'Connect to GitHub before opening this pull request'
-                  }
-                  type="submit"
-                >
-                  {api.value ? 'Open pull request' : 'Continue to GitHub'}
-                  <ArrowRight size={14} />
-                </button>
-              </div>
-            </form>
-          </Modal>
-        )}
+        <CommandBar
+          open={commandBarOpen.value}
+          context={commandContext.value}
+          theme={settings.value.theme}
+          onClose={() => (commandBarOpen.value = false)}
+          onTheme={setTheme}
+          onOpenPR={openPRRef}
+        />
         {!!shortcutsOpen.value && (
           <Modal
             key="shortcuts"

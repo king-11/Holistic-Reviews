@@ -7,7 +7,6 @@ import {
   inboxQuery,
   parsePRUrl,
   prPath,
-  searchPageSize,
   workspaceSections,
   type Comment,
   type PullRequest,
@@ -358,9 +357,25 @@ describe('review state, auto-merge and merge settings', () => {
     deletions: 1,
     reviewDecision: decision,
     commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+    recentCommits: { nodes: [{ commit: { oid: 'head', committedDate: '2026-01-01T00:00:00Z' } }] },
+    viewerLatestReview: null,
+    readyEvents: { nodes: [] },
+    pendingReviews: { nodes: [] },
     participants: { totalCount: 0, nodes: [] },
     latestReviews: { nodes: latestReviews },
     reviewRequests: { nodes: [] },
+  });
+  const stackResponse = (entries: unknown[] = []) => ({
+    data: {
+      data: {
+        pr0: {
+          pullRequest: {
+            number: 1,
+            stack: { entries: { nodes: entries } },
+          },
+        },
+      },
+    },
   });
 
   for (const [name, input, expected] of [
@@ -382,11 +397,74 @@ describe('review state, auto-merge and merge settings', () => {
       fake([
         { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
         { data: { errors: [{ message: 'Something went wrong' }] } },
+        stackResponse(),
       ]);
       const result = await new GitHub('test-only-token').inbox(group, { login: 'me' });
       assert.equal(result.items.length, 1);
       assert.equal(result.items[0].review, undefined);
       assert.equal(result.items[0].details, undefined);
+    });
+  for (const failedQuery of ['InboxDetails', 'InboxStacks'] as const)
+    it(`chunks 60 requested items into 25/25/10 and isolates a failed ${failedQuery} chunk`, async () => {
+      const items = Array.from({ length: 60 }, (_, index) => authoredItem(index + 1));
+      const chunks = [items.slice(0, 25), items.slice(25, 50), items.slice(50)];
+      const details = (chunk: typeof items) => ({
+        data: {
+          data: Object.fromEntries(
+            chunk.map((item, index) => [`pr${index}`, { pullRequest: { ...reviewData(null), additions: item.number } }]),
+          ),
+        },
+      });
+      const stacks = (chunk: typeof items) => ({
+        data: {
+          data: Object.fromEntries(
+            chunk.map((item, index) => [
+              `pr${index}`,
+              {
+                pullRequest: {
+                  number: item.number,
+                  stack: {
+                    entries: {
+                      nodes: [
+                        { position: 1, pullRequest: { number: item.number + 1000, state: 'OPEN', isDraft: false } },
+                        { position: 2, pullRequest: { number: item.number, state: 'OPEN', isDraft: false } },
+                      ],
+                    },
+                  },
+                },
+              },
+            ]),
+          ),
+        },
+      });
+      const failed = { data: { errors: [{ message: 'Resource limits for this query exceeded.' }] } };
+      const calls = fake([
+        { data: { items, total_count: items.length, incomplete_results: false } },
+        ...chunks.map((chunk, index) => (failedQuery === 'InboxDetails' && index === 1 ? failed : details(chunk))),
+        ...chunks.map((chunk, index) => (failedQuery === 'InboxStacks' && index === 1 ? failed : stacks(chunk))),
+      ]);
+
+      const { items: result } = await new GitHub('test-only-token').inbox('requested', { login: 'me' });
+      const queries = calls.filter(call => call.url.endsWith('/graphql'));
+      const detailQueries = queries.filter(call => String(call.body?.query).startsWith('query InboxDetails'));
+      const stackQueries = queries.filter(call => String(call.body?.query).startsWith('query InboxStacks'));
+      const aliases = (call: Call) => (String(call.body?.query).match(/\bpr\d+: repository\(/g) ?? []).length;
+
+      assert.deepEqual(
+        result.map(item => item.number),
+        items.map(item => item.number),
+      );
+      assert.deepEqual(detailQueries.map(aliases), [25, 25, 10]);
+      assert.deepEqual(stackQueries.map(aliases), [25, 25, 10]);
+      assert.deepEqual(
+        result.map(item => item.details?.additions),
+        items.map((item, index) => (failedQuery === 'InboxDetails' && index >= 25 && index < 50 ? undefined : item.number)),
+      );
+      if (failedQuery === 'InboxStacks')
+        assert.deepEqual(
+          result.map(item => item.details?.priority.stackedReady),
+          items.map((_, index) => (index >= 25 && index < 50 ? 0 : 1)),
+        );
     });
   for (const [rollup, checks] of [
     ['SUCCESS', 'success'],
@@ -411,10 +489,147 @@ describe('review state, auto-merge and merge settings', () => {
             },
           },
         },
+        stackResponse(),
       ]);
       const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
       assert.equal(item.details?.checks, checks);
+      assert.equal(item.details?.pendingComments, 0);
     });
+  it('counts comments in the viewer-specific pending review from the same detail batch', async () => {
+    const calls = fake([
+      { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
+      {
+        data: {
+          data: {
+            pr0: {
+              pullRequest: {
+                ...reviewData(null),
+                pendingReviews: { nodes: [{ comments: { totalCount: 3 } }] },
+              },
+            },
+          },
+        },
+      },
+      stackResponse(),
+    ]);
+    const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
+    assert.equal(item.details?.pendingComments, 3);
+    assert.match(String(calls[1].body?.query), /pendingReviews:\s*reviews\(states: PENDING, first: 1\)/);
+    assert.match(String(calls[2].body?.query), /stack \{ entries\(first: 100\)/);
+    assert.match(String(calls[2].body?.query), /pullRequest \{ number state isDraft \}/);
+  });
+  it('uses recent commits, code-owner requests, and only ready non-draft stack entries for priority', async () => {
+    const calls = fake([
+      { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
+      {
+        data: {
+          data: {
+            pr0: {
+              pullRequest: {
+                ...reviewData(null),
+                readyEvents: { nodes: [{ createdAt: '2026-01-02T00:00:00Z' }] },
+                recentCommits: {
+                  nodes: [
+                    { commit: { oid: 'reviewed', committedDate: '2026-01-01T00:00:00Z' } },
+                    { commit: { oid: 'new-1', committedDate: '2026-01-03T00:00:00Z' } },
+                    { commit: { oid: 'new-2', committedDate: '2026-01-04T00:00:00Z' } },
+                  ],
+                },
+                viewerLatestReview: { submittedAt: '2026-01-01T00:00:00Z', commit: { oid: 'reviewed' } },
+                reviewRequests: {
+                  nodes: [
+                    { asCodeOwner: true, requestedReviewer: { __typename: 'User', login: 'me' } },
+                    { asCodeOwner: false, requestedReviewer: { __typename: 'Team', slug: 'backend' } },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+      stackResponse([
+        { position: 1, pullRequest: { number: 99, state: 'OPEN', isDraft: false } },
+        { position: 2, pullRequest: { number: 98, state: 'OPEN', isDraft: true } },
+        { position: 3, pullRequest: { number: 1, state: 'OPEN', isDraft: false } },
+        { position: 4, pullRequest: { number: 2, state: 'OPEN', isDraft: false } },
+        { position: 5, pullRequest: { number: 4, state: 'CLOSED', isDraft: false } },
+      ]),
+    ]);
+    const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
+    assert.deepEqual(item.details?.priority, {
+      waitStart: '2026-01-03T00:00:00Z',
+      newCommits: 2,
+      moreThanTwentyNewCommits: false,
+      reviewedWithoutNewCommits: false,
+      stackedReady: 1,
+      codeOwner: true,
+      checks: 'success',
+    });
+    assert.doesNotMatch(String(calls[1].body?.query), /\bstack\s*\{/);
+    assert.match(String(calls[1].body?.query), /recentCommits: commits\(last: 20\)/);
+    assert.match(String(calls[1].body?.query), /viewerLatestReview \{ submittedAt commit \{ oid \} \}/);
+    assert.match(String(calls[1].body?.query), /asCodeOwner/);
+  });
+  it('does not award waiting after a review with no new commits', async () => {
+    fake([
+      { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
+      {
+        data: {
+          data: {
+            pr0: {
+              pullRequest: {
+                ...reviewData(null),
+                viewerLatestReview: { submittedAt: '2026-01-02T00:00:00Z', commit: { oid: 'head' } },
+              },
+            },
+          },
+        },
+      },
+      stackResponse(),
+    ]);
+    const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
+    assert.equal(item.details?.priority.reviewedWithoutNewCommits, true);
+    assert.equal(item.details?.priority.newCommits, 0);
+  });
+  it('uses 20+ commits and the oldest listed commit when the reviewed OID is missing', async () => {
+    fake([
+      { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
+      {
+        data: {
+          data: {
+            pr0: {
+              pullRequest: {
+                ...reviewData(null),
+                recentCommits: {
+                  nodes: [
+                    { commit: { oid: 'oldest', committedDate: '2026-01-01T00:00:00Z' } },
+                    { commit: { oid: 'newest', committedDate: '2026-01-02T00:00:00Z' } },
+                  ],
+                },
+                viewerLatestReview: { submittedAt: '2025-12-01T00:00:00Z', commit: { oid: 'outside-recent-20' } },
+              },
+            },
+          },
+        },
+      },
+      stackResponse(),
+    ]);
+    const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
+    assert.equal(item.details?.priority.moreThanTwentyNewCommits, true);
+    assert.equal(item.details?.priority.newCommits, 20);
+    assert.equal(item.details?.priority.waitStart, '2026-01-01T00:00:00Z');
+  });
+  it('falls back to createdAt without a ready event and treats stack query failures as zero points', async () => {
+    const calls = fake([
+      { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
+      { data: { data: { pr0: { pullRequest: reviewData(null) } } } },
+      { data: { errors: [{ message: 'Stack is unavailable' }] } },
+    ]);
+    const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
+    assert.equal(item.details?.priority.waitStart, '2026-01-01T00:00:00Z');
+    assert.equal(item.details?.priority.stackedReady, 0);
+    assert.equal(calls.length, 3);
+  });
   for (const [group, reviews] of [
     ['reviewed', [undefined, undefined]],
     ['authored', ['approved', 'returned']],
@@ -465,7 +680,7 @@ describe('review state, auto-merge and merge settings', () => {
       await new GitHub('test-only-token').inbox('requested', { login: 'me', repos: ['acme/app'], page, merged: 'mine', order });
       const url = new URL(calls[0].url);
       assert.equal(url.searchParams.get('q'), inboxQuery('requested', 'me', ['acme/app']));
-      assert.equal(url.searchParams.get('per_page'), String(searchPageSize));
+      assert.equal(url.searchParams.get('per_page'), '100');
       assert.equal(url.searchParams.get('page'), String(page));
       assert.equal(url.searchParams.get('sort'), sort);
       assert.equal(url.searchParams.get('order'), direction);
@@ -527,6 +742,11 @@ describe('GitHub authentication and safe requests', () => {
       await api().pullRequest(ref);
       assert.equal(calls[0].init.cache, cache);
     });
+  it('reads pending review comments without using the browser HTTP cache', async () => {
+    const calls = fake([{ data: [reviewComment] }]);
+    assert.deepEqual(await new GitHub('test-only-token').reviewComments(ref, pending.id), [reviewComment]);
+    assert.equal(calls[0].init.cache, 'no-cache');
+  });
   it('memoises the fresh client and reuses it for fresh reads', () => {
     const client = new GitHub('test-only-token');
     assert.equal(client.fresh(), client.fresh());

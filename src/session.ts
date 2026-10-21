@@ -1,6 +1,6 @@
 import { computed, shallowRef } from 'vue';
 import { navigateTo } from 'nuxt/app';
-import { GitHub, errorMessage, parsePRUrl, prPath, type TokenInfo } from './github';
+import { GitHub, errorMessage, parsePRUrl, prPath, type PRRef, type TokenInfo } from './github';
 import { type DiffSettings } from './DiffView';
 import { isTheme } from './themes';
 import { clearPeople } from './people';
@@ -59,25 +59,16 @@ export function changeSettings(value: DiffSettings) {
   tryStorage(() => localStorage.setItem(settingsKey, JSON.stringify(value)));
 }
 
-export const openDialog = shallowRef(false);
-export const prUrl = shallowRef('');
-export const openError = shallowRef('');
-export function showOpenDialog() {
-  if (mutationBusy.value) return;
-  prUrl.value = '';
-  openError.value = '';
-  openDialog.value = true;
-}
 export function openPR(url: string) {
   let ref;
   try {
     ref = parsePRUrl(url);
-  } catch (error) {
-    openError.value = errorMessage(error, 'Invalid URL.');
+  } catch {
     return;
   }
-  openDialog.value = false;
-  openError.value = '';
+  openPRRef(ref);
+}
+export function openPRRef(ref: PRRef) {
   // The route waits behind the connect screen and renders once a token is in place.
   if (!api.value) authOpen.value = true;
   void navigateTo(prPath(ref));

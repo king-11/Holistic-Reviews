@@ -4,7 +4,6 @@ import {
   ChevronRight,
   CircleCheck,
   CircleX,
-  GitBranch,
   GitMerge,
   GitPullRequest,
   GitPullRequestClosed,
@@ -118,6 +117,7 @@ export default defineComponent(
                 </span>
               );
             })()}
+            {!!ws().draftComments.length && <span class="pending-badge">{ws().draftComments.length} pending</span>}
           </div>
           <div class="pr-details">
             <Avatar login={pr().user.login} src={pr().user.avatar_url} small />
@@ -177,7 +177,7 @@ export default defineComponent(
                           disabled={busy.value || entry.number === pr().number}
                           onClick={() => props.onOpen(entry.url)}
                         >
-                          <span class="dependency-kind">
+                          <span class="dependency-position">
                             {entry.position}.<GitPullRequest size={13} />
                           </span>
                           <span>#{entry.number}</span>
@@ -198,20 +198,14 @@ export default defineComponent(
                           disabled={busy.value}
                           onClick={() => props.onOpen(prUrl(parent.number))}
                         >
-                          <span class="dependency-kind">
-                            <GitBranch size={13} />
-                            Parent
-                          </span>
                           <span>#{parent.number}</span>
                           <strong>{parent.title}</strong>
                           <ChevronRight size={13} />
                         </button>
                       ))}
-                      <div class="dependency-current">
-                        <span class="dependency-node" />
+                      <div class="dependency-current" aria-current="page">
                         <span>#{pr().number}</span>
                         <strong>{pr().title}</strong>
-                        <span>Current</span>
                       </div>
                       {relations.value.children.map(child => (
                         <button
@@ -220,10 +214,6 @@ export default defineComponent(
                           disabled={busy.value}
                           onClick={() => props.onOpen(prUrl(child.number))}
                         >
-                          <span class="dependency-kind">
-                            <GitBranch size={13} />
-                            Child
-                          </span>
                           <span>#{child.number}</span>
                           <strong>{child.title}</strong>
                           <ChevronRight size={13} />

@@ -37,11 +37,13 @@ import {
 import {
   branchRelations,
   errorMessage,
+  mergeabilityPending,
   type ChangedFile,
   type Comment,
   type Commit,
   type Comparison,
   type GitHub,
+  type MergeMethod,
   type PRRef,
   type PullRequest,
   type Workspace,
@@ -53,19 +55,29 @@ import {
 } from './github';
 import FileTree from './FileTree';
 import Checks from './Checks';
-import DetailsPanel, { MergeControls, MoreMenu, reviewApproved, useDetails, type Details, type Mutate } from './DetailsPanel';
+import DetailsPanel, { MergeControls, MoreMenu, mergeOffered, reviewApproved, useDetails, type Details, type Mutate } from './DetailsPanel';
 import DiffView, { type ContextLoader, type DiffSettings } from './DiffView';
 import { IconButton, Loader, Modal, SearchField, Spinner, inputValue, update, Dismiss } from './ui';
 import MentionField from './MentionField';
 import { peopleDirectory, peopleKey } from './people';
 import { markInboxStale, recordPR } from './inboxUpdates';
 import { toggleViewedFile, verifiedContextLines } from './diff';
-import { commentEntries, commentRange, diffLinePreview, isBot, withThreadLocations, type CommentEntry, type LinePoint } from './comments';
+import {
+  commentEntries,
+  commentLocationLabel,
+  commentRange,
+  diffLinePreview,
+  isBot,
+  preservePendingCommentEdits,
+  withThreadLocations,
+  type CommentEntry,
+  type LinePoint,
+} from './comments';
 import CommentsPanel from './CommentsPanel';
 import InlineComposer, { type InlineLocation } from './InlineComposer';
 import type { ReplyActions } from './ReviewThread';
 import type { PRWorkspace } from './prWorkspace';
-import { isReview, type EditActions, type Editable } from './CommentEditor';
+import { CommentActions, CommentBody, isReview, type EditActions, type Editable } from './CommentEditor';
 import { createReactionActions, type ReactionActions } from './Reactions';
 import PRHeader from './PRHeader';
 import ConversationTab from './ConversationTab';
@@ -73,6 +85,8 @@ import { CommitHistory, CommitPicker, type CommitRange } from './Commits';
 import { FileCodeIcon } from './FileIcon';
 import { filterFiles, type FileStatus } from './file_filters';
 import { mutationBusy } from './session';
+import { registerPRCommands } from './commandRegistry';
+import { commandDefinitions, type CommandContext } from './shortcuts';
 import styles from './ReviewWorkspace.module.css';
 import switchStyles from './switch.module.css';
 
@@ -213,11 +227,13 @@ export default defineComponent(
       }
     };
 
+    const editedPendingBodies = new Map<number, string>();
     let draftLoadVersion = 0;
     async function loadPendingComments(review: Review, fresh = false) {
       const version = ++draftLoadVersion;
       const result = await (fresh ? props.api.fresh() : props.api).reviewComments(ref(), review.id);
-      if (active && version === draftLoadVersion && pending.value?.id === review.id) props.store.patch({ draftComments: result });
+      if (active && version === draftLoadVersion && pending.value?.id === review.id)
+        props.store.patch({ draftComments: preservePendingCommentEdits(result, ws().draftComments, editedPendingBodies) });
     }
     watchEffect(() => {
       const review = pending.value;
@@ -244,6 +260,7 @@ export default defineComponent(
         ws().reviewThreads,
       ),
     );
+    const pendingComments = computed(() => withThreadLocations(ws().draftComments, ws().reviewThreads));
     const shown = (item: { user: User }) => !props.settings.hideBotComments || !isBot(item.user);
     const panelEntries = computed(() =>
       commentEntries(ws().files, allComments.value, ws().comments, ws().reviewThreads, props.settings.hideBotComments),
@@ -274,15 +291,31 @@ export default defineComponent(
       can: item =>
         (moderator.value || item.user.id === viewer().id) && (!isReview(item) || (item.state !== 'PENDING' && !!item.body?.trim())),
       disabled: () => busy.value,
-      save: (item, text) =>
-        mutate(async () => {
-          const body = text.trim();
-          await (isReview(item)
-            ? props.api.editReview(ref(), item.id, body)
-            : props.api.editComment(ref(), item, body, inPendingReview(item)));
+      save: (item, text) => {
+        const body = text.trim();
+        const pendingEdit = inPendingReview(item);
+        const previousBody = item.body;
+        return mutate(async () => {
+          if (pendingEdit) {
+            ++draftLoadVersion;
+            editedPendingBodies.set(item.id, body);
+          }
+          changeComment(item, body);
+          try {
+            await (isReview(item) ? props.api.editReview(ref(), item.id, body) : props.api.editComment(ref(), item, body, pendingEdit));
+          } catch (failure) {
+            if (pendingEdit) {
+              ++draftLoadVersion;
+              editedPendingBodies.set(item.id, previousBody);
+            }
+            changeComment(item, previousBody);
+            throw failure;
+          }
+          if (pendingEdit) ++draftLoadVersion;
           changeComment(item, body);
           done('Comment updated on GitHub.');
-        }),
+        });
+      },
       remove: item =>
         mutate(async () => {
           const review = inPendingReview(item) ? pending.value : undefined;
@@ -523,6 +556,24 @@ export default defineComponent(
       const index = entries.findIndex(entry => entry.number === pr().number);
       const next = index < 0 ? undefined : entries[index + delta];
       if (next && !busy.value) props.onOpen(next.url);
+    };
+    const mergePR = (method: MergeMethod) =>
+      mutate(api => api.merge(ref(), pr().head.sha, method), { toast: 'Pull request merged', refresh: 'all' });
+    const setAutoMerge = (enable: boolean) => {
+      const method = pr().auto_merge?.merge_method ?? ws().mergeMethods?.[0];
+      return mutate(
+        async api => {
+          if (enable && !method) throw new Error('No merge method is available for auto-merge.');
+          try {
+            await api.setAutoMerge(pr(), enable ? method! : null);
+          } catch (error) {
+            if (enable && error instanceof Error && /clean status/i.test(error.message))
+              throw new Error('This pull request is already mergeable. Use Merge.');
+            throw error;
+          }
+        },
+        { toast: enable ? 'Auto-merge enabled' : 'Auto-merge turned off', refresh: 'all' },
+      );
     };
 
     const details = useDetails(() => ({
@@ -777,6 +828,11 @@ export default defineComponent(
       selectFile(entry.file.filename, false);
       requestAnimationFrame(() => scrollToThread(id));
     }
+    function navigatePendingComment(comment: Comment) {
+      dialog.value = null;
+      const entry = panelEntries.value.find(item => item.kind === 'thread' && item.comments.some(candidate => candidate.id === comment.id));
+      if (entry) navigateComment(entry);
+    }
     let commentCursor = -1;
     const moveComment = (delta: 1 | -1) => {
       const entries = panelEntries.value;
@@ -786,7 +842,86 @@ export default defineComponent(
       navigateComment(entry);
     };
 
+    const approvePR = () => {
+      if (!reviewable() || ownPR()) return;
+      event.value = 'APPROVE';
+      void submitReview();
+    };
+    const commandActions: CommandContext['actions'] = {
+      'submit-review': () => review('COMMENT'),
+      approve: approvePR,
+      'approve-comment': () => review('APPROVE'),
+      'request-changes': () => review('REQUEST_CHANGES'),
+      'squash-merge': () => void mergePR('squash'),
+      'merge-when-ready': () => void setAutoMerge(true),
+      'copy-branch-name': () => copy('branch name', pr().head.ref),
+      upstack: () => openStacked(1),
+      inbox: props.onBack,
+    };
+    const commandContext = (): CommandContext => {
+      const currentPR = pr();
+      const mergeMethods = ws().mergeMethods ?? [];
+      const checksPending = (ws().checks ?? []).some(check => check.state === 'pending');
+      const mergeAvailable = mergeOffered(currentPR, approved());
+      const autoMergeAvailable =
+        !!ws().autoMerge && currentPR.state === 'open' && !currentPR.draft && currentPR.mergeable_state !== 'dirty';
+      const mergeReason =
+        currentPR.mergeable_state === 'dirty'
+          ? 'Resolve merge conflicts first.'
+          : mergeabilityPending(currentPR)
+            ? 'GitHub is still checking mergeability.'
+            : 'Required checks or approvals are not satisfied.';
+      const autoMergeReason =
+        currentPR.mergeable_state === 'dirty'
+          ? 'Resolve merge conflicts first.'
+          : !ws().autoMerge
+            ? 'Auto-merge is not enabled for this repository.'
+            : !mergeMethods.length
+              ? 'No merge method is available.'
+              : undefined;
+      const entries = stack();
+      const stackIndex = entries.findIndex(entry => entry.number === currentPR.number);
+      return {
+        busy: busy.value,
+        pr: {
+          ref: ref(),
+          login: viewer().login,
+          pendingComments: ws().draftComments.length,
+          ownPR: ownPR(),
+          draft: currentPR.draft,
+          open: currentPR.state === 'open',
+          busy: busy.value,
+          canReview: canReview(),
+          stale: stalePending(),
+          mergeMethods,
+          mergeAvailable,
+          mergeReason,
+          checksPending,
+          autoMergeAvailable,
+          autoMergeEnabled: !!currentPR.auto_merge,
+          autoMergeReason,
+          upstackAvailable: stackIndex > 0,
+        },
+        actions: commandActions,
+      };
+    };
+    onUnmounted(registerPRCommands(commandContext));
+    const commandBindings = Object.fromEntries(
+      commandDefinitions
+        .filter(command => command.id !== 'open-command-bar')
+        .flatMap(command => [command, ...(command.children ?? [])])
+        .flatMap(command =>
+          command.keys.map(key => [
+            key,
+            () => {
+              const context = commandContext();
+              if (!command.enabled(context)) command.run(context, 'shortcut');
+            },
+          ]),
+        ),
+    );
     const shortcuts: Record<string, () => void> = {
+      ...commandBindings,
       '/': () => {
         focusedFile.value = null;
         sidebar.value = true;
@@ -818,25 +953,14 @@ export default defineComponent(
       '3': () => (tab.value = 'conversation'),
       '4': () => (tab.value = 'review'),
       '5': () => (tab.value = 'checks'),
-      'shift+mod+ArrowUp': () => openStacked(1),
       'shift+mod+ArrowDown': () => openStacked(-1),
       o: () => window.open(pr().html_url, '_blank', 'noopener,noreferrer'),
-      'g i': () => props.onBack(),
-      'r y': () => {
-        if (!reviewable() || ownPR()) return;
-        event.value = 'APPROVE';
-        void submitReview();
-      },
-      'r a': () => review('APPROVE'),
       'r c': () => {
         tab.value = 'conversation';
         focusSoon('#pr-comment');
       },
-      'r n': () => review('REQUEST_CHANGES'),
-      'r r': () => review('COMMENT'),
       'c l': () => copy('link to PR', window.location.href),
       'c t': () => copy('title', pr().title),
-      'c b': () => copy('branch name', pr().head.ref),
       'c c': () => copy('checkout command', `gh pr checkout ${pr().number} --repo ${ref().owner}/${ref().repo}`),
       'c g': () => copy('GitHub link', pr().html_url),
       'c s': () =>
@@ -973,18 +1097,18 @@ export default defineComponent(
                 class="button small"
                 title="Write a review, approve, or request changes"
                 disabled={busy.value || !canReview() || stalePending()}
-                onClick={() => openReview('COMMENT')}
+                onClick={() => review('COMMENT')}
               >
                 Review changes
               </button>
               <MergeControls
                 pr={pr()}
-                prRef={ref()}
                 methods={ws().mergeMethods ?? []}
                 autoMerge={!!ws().autoMerge}
                 approved={approved()}
                 disabled={busy.value}
-                onMutate={mutate}
+                onMerge={mergePR}
+                onAutoMerge={setAutoMerge}
               />
               <MoreMenu details={details} />
               <span class="header-divider" />
@@ -1280,6 +1404,9 @@ export default defineComponent(
                           focused={focusedFile.value === file.filename}
                           onFocus={() => focusFile(focusedFile.value ? null : file.filename)}
                           comments={selectedRange.value ? [] : allComments.value.filter(comment => comment.path === file.filename)}
+                          pendingCommentCount={
+                            selectedRange.value ? 0 : ws().draftComments.filter(comment => comment.path === file.filename).length
+                          }
                           threads={ws().reviewThreads}
                           onResolve={resolveThread}
                           replies={replyActions}
@@ -1366,6 +1493,26 @@ export default defineComponent(
           {dialog.value === 'review' && (
             <Modal key="review" title="Submit your review" subtitle={`${ref().owner}/${ref().repo} #${pr().number}`} onClose={safeClose}>
               <form onSubmit={submitReview}>
+                {!!pendingComments.value.length && (
+                  <div class={styles['pending-comment-list']} aria-label="Pending review comments">
+                    {pendingComments.value.map(comment => (
+                      <section class={styles['pending-comment']} key={comment.id}>
+                        <div class="flex items-center gap-2">
+                          <button
+                            class={styles['pending-comment-location']}
+                            title={`Jump to ${commentLocationLabel(comment)}`}
+                            onClick={() => navigatePendingComment(comment)}
+                            type="button"
+                          >
+                            {commentLocationLabel(comment)}
+                          </button>
+                          <CommentActions item={comment} actions={edits} />
+                        </div>
+                        <CommentBody item={comment} actions={edits} baseUrl={markdownBase()} />
+                      </section>
+                    ))}
+                  </div>
+                )}
                 <label class="input-label" for="review-body">
                   Review summary <span class="muted">{event.value === 'APPROVE' ? '(optional)' : ''}</span>
                 </label>
@@ -1432,12 +1579,6 @@ export default defineComponent(
                     </span>
                   </label>
                 </div>
-                {!!ws().draftComments.length && (
-                  <p class={`text-xs text-secondary flex items-center gap-1 ${styles['mt-4']}`}>
-                    <MessageSquare size={14} />
-                    Includes {ws().draftComments.length} pending inline {ws().draftComments.length === 1 ? 'comment' : 'comments'}.
-                  </p>
-                )}
                 {!!error.value && (
                   <p class="error-message" role="alert">
                     {error.value}

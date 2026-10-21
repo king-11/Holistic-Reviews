@@ -3,7 +3,7 @@ import { navigateTo, useHead, useRoute } from 'nuxt/app';
 import { parsePRUrl } from './github';
 import { createPRWorkspace } from './prWorkspace';
 import ReviewWorkspace from './ReviewWorkspace';
-import { api, changeSettings, info, mutationBusy, openPR, settings, showOpenDialog } from './session';
+import { api, changeSettings, info, mutationBusy, openPR, settings } from './session';
 import { Github, Loader } from './ui';
 
 const home = () => void navigateTo('/');
@@ -51,9 +51,6 @@ export default defineComponent(() => {
         </p>
         <button class="button" title="Return to your pull request inbox" onClick={home}>
           Back to inbox
-        </button>
-        <button class="text-button" title="Enter a different GitHub pull request URL" onClick={showOpenDialog}>
-          Try another URL
         </button>
       </main>
     );

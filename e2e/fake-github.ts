@@ -126,7 +126,12 @@ const inline = (id: number, author: typeof alice, path: string, line: number, bo
 const inbox = (
   number: number,
   title: string,
-  { draft = false, repository = repo.full_name, author = alice }: { draft?: boolean; repository?: string; author?: typeof alice } = {},
+  {
+    draft = false,
+    repository = repo.full_name,
+    author = alice,
+    updatedAt = at,
+  }: { draft?: boolean; repository?: string; author?: typeof alice; updatedAt?: string } = {},
 ) => ({
   id: number,
   number,
@@ -137,14 +142,18 @@ const inbox = (
   draft,
   state: 'open',
   created_at: at,
-  updated_at: at,
+  updated_at: updatedAt,
   comments: 1,
   labels: [],
 });
 const inboxGroups: [RegExp, ReturnType<typeof inbox>[]][] = [
   [
     /review-requested:/,
-    [inbox(42, pr.title), inbox(77, 'Tune cache eviction'), inbox(88, 'Rotate infra credentials', { repository: 'acme/infra' })],
+    [
+      inbox(42, pr.title, { updatedAt: new Date(NOW.getTime() - 52 * 60_000).toISOString() }),
+      inbox(77, 'Tune cache eviction', { updatedAt: new Date(NOW.getTime() - 5 * 60 * 60_000).toISOString() }),
+      inbox(88, 'Rotate infra credentials', { repository: 'acme/infra' }),
+    ],
   ],
   [/author:\S+ draft:true/, [inbox(90, 'Sketch retry dashboard', { draft: true, author: viewer })]],
   [
@@ -175,15 +184,54 @@ const basePullRequest: Payload = {
   deletions: 1,
   reviewDecision: null,
   commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+  recentCommits: { nodes: [{ commit: { oid: HEAD, committedDate: at } }] },
+  viewerLatestReview: null,
+  readyEvents: { nodes: [{ createdAt: at }] },
+  pendingReviews: { nodes: [] },
   participants: { totalCount: 0, nodes: [] },
   latestReviews: { nodes: [] },
   reviewRequests: { nodes: [] },
 };
 // #94 was commented on without a re-request, so it lands in Returned to you; #95 lands in Approved.
 const reviewSummaries: Record<number, Payload> = {
+  42: {
+    pendingReviews: { nodes: [{ comments: { totalCount: 1 } }] },
+    reviewRequests: {
+      nodes: [{ asCodeOwner: true, requestedReviewer: { __typename: 'Team', slug: 'backend' } }],
+    },
+  },
+  90: {
+    pendingReviews: { nodes: [{ comments: { totalCount: 1 } }] },
+  },
+  91: {
+    pendingReviews: { nodes: [{ comments: { totalCount: 1 } }] },
+  },
+  92: {
+    pendingReviews: { nodes: [{ comments: { totalCount: 1 } }] },
+  },
+  93: {
+    pendingReviews: { nodes: [{ comments: { totalCount: 1 } }] },
+  },
+  77: {
+    additions: 200,
+    deletions: 20,
+    commits: { nodes: [{ commit: { statusCheckRollup: { state: 'PENDING' } } }] },
+    recentCommits: { nodes: [{ commit: { oid: 'oid-77', committedDate: at } }] },
+    viewerLatestReview: { submittedAt: at, commit: { oid: 'oid-77' } },
+    reviewRequests: { nodes: [{ asCodeOwner: true, requestedReviewer: { __typename: 'Team', slug: 'backend' } }] },
+  },
+  88: {
+    additions: 10,
+    deletions: 1,
+    commits: { nodes: [{ commit: { statusCheckRollup: { state: 'PENDING' } } }] },
+    recentCommits: { nodes: [{ commit: { oid: 'oid-88', committedDate: at } }] },
+    viewerLatestReview: { submittedAt: at, commit: { oid: 'oid-88' } },
+    reviewRequests: { nodes: [{ asCodeOwner: true, requestedReviewer: { __typename: 'Team', slug: 'backend' } }] },
+  },
   94: {
     additions: 12,
     deletions: 3,
+    pendingReviews: { nodes: [{ comments: { totalCount: 1 } }] },
     reviewDecision: 'REVIEW_REQUIRED',
     participants: {
       totalCount: 2,
@@ -195,6 +243,7 @@ const reviewSummaries: Record<number, Payload> = {
     latestReviews: { nodes: [{ state: 'COMMENTED', author: reviewer('bob') }] },
   },
   95: {
+    pendingReviews: { nodes: [{ comments: { totalCount: 1 } }] },
     reviewDecision: 'APPROVED',
     latestReviews: { nodes: [{ state: 'APPROVED', author: reviewer('bob') }] },
   },
@@ -215,8 +264,19 @@ export async function mockGitHub(
     approved?: boolean;
     blockedUntilApproved?: boolean;
     viewerRequested?: boolean;
+    stalePendingReadAfterEdit?: boolean;
+    ownPR?: boolean;
+    requestedPRCount?: number;
+    teamsDelayMs?: number;
   } = {},
 ) {
+  const requestedPRCount = options.requestedPRCount ?? 3;
+  const requestedItems = [
+    ...inboxGroups[0][1],
+    ...Array.from({ length: Math.max(0, requestedPRCount - inboxGroups[0][1].length) }, (_, index) =>
+      inbox(1000 + index, `Requested change ${index + 1}`),
+    ),
+  ].slice(0, requestedPRCount);
   let release = () => {};
   const gate = new Promise<void>(resolve => (release = resolve));
   const state = {
@@ -251,13 +311,24 @@ export async function mockGitHub(
     reactions: new Map<string, Map<string, { count: number; viewer: boolean }>>(),
     restReactions: new Map<string, { id: number; content: string; user: typeof viewer }[]>(),
     writes: [] as { method: string; path: string; body: Record<string, unknown> | undefined; operation?: string }[],
-    searches: [] as { q: string; advanced: boolean; sort: string | null; order: string | null }[],
+    searches: [] as {
+      q: string;
+      advanced: boolean;
+      sort: string | null;
+      order: string | null;
+      page: number;
+      perPage: number;
+    }[],
     peopleSearches: [] as { kind: string; query: string; first: number }[],
     userReads: [] as string[],
     nextId: 1000,
     prEdits: {} as Record<string, unknown>,
     prReads: 0,
     autoMerge: null as null | { merge_method: string; enabled_by: typeof viewer },
+    stalePendingComment: null as null | { id: number; body: string },
+    stalePendingReadArmed: false,
+    stalePendingReadServed: false,
+    stalePendingReadBody: null as null | string,
   };
   const reactionGroups = (id: string) =>
     reactionContents.map(content => {
@@ -344,6 +415,7 @@ export async function mockGitHub(
       case 'UpdatePullRequestReviewComment': {
         const comment = pendingComment(input.pullRequestReviewCommentId);
         if (!comment) return { updatePullRequestReviewComment: { pullRequestReviewComment: null } };
+        if (options.stalePendingReadAfterEdit) state.stalePendingComment = { id: comment.id, body: comment.body };
         comment.body = input.body;
         return { updatePullRequestReviewComment: { pullRequestReviewComment: { id: comment.node_id, body: comment.body } } };
       }
@@ -367,6 +439,31 @@ export async function mockGitHub(
           Object.keys(variables)
             .filter(key => key.startsWith('number'))
             .map(key => [`pr${key.slice('number'.length)}`, { pullRequest: { ...basePullRequest, ...reviewSummaries[variables[key]] } }]),
+        );
+      case 'InboxStacks':
+        return Object.fromEntries(
+          Object.keys(variables)
+            .filter(key => key.startsWith('number'))
+            .map(key => {
+              const number = variables[key];
+              return [
+                `pr${key.slice('number'.length)}`,
+                {
+                  pullRequest: {
+                    number,
+                    stack: {
+                      entries: {
+                        nodes: [
+                          { position: 1, pullRequest: { number: number + 1, state: 'OPEN', isDraft: false } },
+                          { position: 2, pullRequest: { number, state: 'OPEN', isDraft: false } },
+                          { position: 3, pullRequest: { number: number + 2, state: 'OPEN', isDraft: true } },
+                        ],
+                      },
+                    },
+                  },
+                },
+              ];
+            }),
         );
       case 'ResolveReviewThread':
       case 'UnresolveReviewThread': {
@@ -440,11 +537,24 @@ export async function mockGitHub(
       const q = query.get('q') || '';
       // GitHub rejects OR outside advanced search.
       if (/\sOR\s/.test(q) && !query.has('advanced_search')) return [422, { message: 'Validation Failed' }];
-      state.searches.push({ q, advanced: query.has('advanced_search'), sort: query.get('sort'), order: query.get('order') });
+      const page = Number(query.get('page') || 1);
+      const perPage = Number(query.get('per_page') || Number.MAX_SAFE_INTEGER);
+      state.searches.push({ q, advanced: query.has('advanced_search'), sort: query.get('sort'), order: query.get('order'), page, perPage });
       const repos = [...q.matchAll(/repo:(\S+)/g)].map(match => match[1]);
-      const found = q.includes('is:merged') ? mergedResults(q) : inboxGroups.find(([pattern]) => pattern.test(q))?.[1] || [];
+      const found = q.includes('is:merged')
+        ? mergedResults(q)
+        : q.includes('review-requested:')
+          ? requestedItems
+          : inboxGroups.find(([pattern]) => pattern.test(q))?.[1] || [];
       const items = found.filter(item => !repos.length || repos.some(repo => item.repository_url.endsWith(`/${repo}`)));
-      return [200, { items, total_count: items.length, incomplete_results: false }];
+      return [
+        200,
+        {
+          items: items.slice((page - 1) * perPage, page * perPage),
+          total_count: items.length,
+          incomplete_results: false,
+        },
+      ];
     }
     if (path === prPath && method === 'PATCH') Object.assign(state.prEdits, body);
     if (path === prPath) {
@@ -460,6 +570,7 @@ export async function mockGitHub(
         200,
         {
           ...pr,
+          user: options.ownPR ? viewer : pr.user,
           requested_reviewers: options.viewerRequested ? [viewer, ...(pr.requested_reviewers ?? [])] : pr.requested_reviewers,
           state: options.prState ? 'closed' : 'open',
           merged: options.prState === 'merged',
@@ -554,7 +665,10 @@ export async function mockGitHub(
     if (reviewPath) {
       const review = state.reviews.find(review => review.id === Number(reviewPath[1]));
       if (!review) return [404, { message: 'Not Found' }];
-      if (reviewPath[2] === '/comments') return [200, state.inline.filter(comment => comment.pull_request_review_id === review.id)];
+      if (reviewPath[2] === '/comments') {
+        const comments = state.inline.filter(comment => comment.pull_request_review_id === review.id);
+        return [200, review.state === 'PENDING' ? comments.map(comment => ({ ...comment, line: null })) : comments];
+      }
       if (method === 'GET') return [200, review];
       if (method === 'DELETE') {
         state.reviews = state.reviews.filter(other => other !== review);
@@ -677,6 +791,7 @@ export async function mockGitHub(
     const body = request.postData() ? JSON.parse(request.postData()!) : undefined;
     if (options.hold?.test(path)) await gate;
     try {
+      if (path === '/user/teams' && options.teamsDelayMs) await new Promise<void>(resolve => setTimeout(resolve, options.teamsDelayMs));
       if (path === '/graphql') {
         const operation = body.query.match(/^(?:query|mutation) (\w+)/)?.[1];
         if (body.query.startsWith('mutation')) state.writes.push({ method: 'POST', path, body: body.variables, operation });
@@ -684,13 +799,29 @@ export async function mockGitHub(
         return await route.fulfill({ json: 'errors' in result ? result : { data: result } });
       }
       if (request.method() !== 'GET') state.writes.push({ method: request.method(), path, body });
-      const [status, data, headers] = rest(request.method(), path, url.searchParams, body);
+      let [status, data, headers] = rest(request.method(), path, url.searchParams, body);
+      if (
+        request.method() === 'GET' &&
+        state.stalePendingComment &&
+        state.stalePendingReadArmed &&
+        /^\/repos\/acme\/app\/pulls\/42\/reviews\/\d+\/comments$/.test(path)
+      ) {
+        const stale = state.stalePendingComment;
+        state.stalePendingComment = null;
+        state.stalePendingReadArmed = false;
+        state.stalePendingReadServed = true;
+        state.stalePendingReadBody = stale.body;
+        data = (data as Comment[]).map(comment => (comment.id === stale.id ? { ...comment, body: stale.body } : comment));
+      }
       await route.fulfill({ status, headers, body: status === 204 ? '' : JSON.stringify(data), contentType: 'application/json' });
     } catch (error) {
       await route.fulfill({ status: 500, json: { message: String(error) } });
     }
   });
-  return Object.assign(state, { release });
+  return Object.assign(state, {
+    release,
+    armStalePendingRead: () => (state.stalePendingReadArmed = true),
+  });
 }
 
 // Sections load after the header, so most tests wait for every request to settle before interacting.

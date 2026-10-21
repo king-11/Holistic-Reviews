@@ -2,6 +2,8 @@
 
 ## CI Checks (`Checks.tsx`, `DetailsPanel.tsx`)
 
+The narrow **Information** summary and the details sidebar show the same check-state chips with counts. Each state chip expands to links for its checks. The **Checks** label in either presentation opens the Checks tab; it remains visible above a loader while checks load. When there are no checks, show **No checks**.
+
 ### Loading & Deduplication (`checks()` in `src/github.ts`)
 
 Combines GitHub Actions / App check runs (`GET /commits/{sha}/check-runs`) and legacy commit statuses (`GET /commits/{sha}/status`):

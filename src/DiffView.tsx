@@ -63,6 +63,7 @@ type DiffViewProps = {
   search: string;
   baseUrl: string;
   comments: Comment[];
+  pendingCommentCount: number;
   githubUrl: string;
   onToggle: () => void;
   onCopyName: () => void;
@@ -154,6 +155,7 @@ export default defineComponent(
             <CircleCheck size={14} />
             <span>Viewed</span>
           </button>
+          {!!props.pendingCommentCount && <span class="pending-badge">{props.pendingCommentCount} pending</span>}
         </header>
         {!props.collapsed && (
           <>
@@ -221,6 +223,7 @@ export default defineComponent(
       'search',
       'baseUrl',
       'comments',
+      'pendingCommentCount',
       'githubUrl',
       'onToggle',
       'onCopyName',
@@ -412,8 +415,9 @@ const DiffRenderer = defineComponent(
               if (composer)
                 requestAnimationFrame(() => {
                   if (!host.isConnected) return;
-                  host.querySelector<HTMLElement>('.inline-composer textarea')?.focus({ preventScroll: true });
-                  host.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                  const textarea = host.querySelector<HTMLTextAreaElement>('.inline-composer textarea');
+                  textarea?.focus({ preventScroll: true });
+                  textarea?.scrollIntoView({ block: 'nearest' });
                 });
               disposers.set(key, () => render(null, host));
               return host;
