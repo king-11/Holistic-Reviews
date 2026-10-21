@@ -198,7 +198,7 @@ export interface SearchOrder {
   order: 'asc' | 'desc';
 }
 const defaultSearchOrder: SearchOrder = { sort: 'updated', order: 'desc' };
-export const searchPageSize = 30;
+export const searchPageSize = 100;
 // GitHub search returns at most 1,000 results.
 export const searchResultCap = 1000;
 const restPageSize = 100;
@@ -907,7 +907,7 @@ export class GitHub {
     }
   }
 
-  // One aliased query per page enriches every group; items the batch misses stay as search returned them.
+  // Items a detail batch misses stay as search returned them.
   private async withPullRequestDetails(group: InboxGroup, items: InboxItem[], login: string, signal?: AbortSignal): Promise<InboxItem[]> {
     type PullRequestData = {
       createdAt: string;
@@ -923,28 +923,43 @@ export class GitHub {
       latestReviews: { nodes: ReviewSummary['latestReviews'] };
       reviewRequests: { nodes: { asCodeOwner: boolean; requestedReviewer: { __typename: string; login?: string } | null }[] };
     };
-    const variables: Record<string, string | number> = {};
-    const declarations: string[] = [];
-    const selections = items.map((item, index) => {
-      const [owner, name] = itemRepository(item).split('/');
-      variables[`owner${index}`] = owner;
-      variables[`name${index}`] = name;
-      variables[`number${index}`] = item.number;
-      declarations.push(`$owner${index}: String!, $name${index}: String!, $number${index}: Int!`);
-      return `pr${index}: repository(owner: $owner${index}, name: $name${index}) { pullRequest(number: $number${index}) { ${pullRequestDetailFields} } }`;
-    });
-    const [data, stackCounts] = await Promise.all([
-      this.graphql<Record<string, { pullRequest: PullRequestData | null } | null>>(
-        `query InboxDetails(${declarations.join(', ')}) { ${selections.join(' ')} }`,
-        variables,
-        signal,
+    const chunkSize = 25; // GitHub's GraphQL resource limit rejects larger aliased batches.
+    const chunks = Array.from({ length: Math.ceil(items.length / chunkSize) }, (_, index) =>
+      items.slice(index * chunkSize, (index + 1) * chunkSize),
+    );
+    const [detailChunks, stackChunks] = await Promise.all([
+      Promise.all(
+        chunks.map(async chunk => {
+          const variables: Record<string, string | number> = {};
+          const declarations: string[] = [];
+          const selections = chunk.map((item, index) => {
+            const [owner, name] = itemRepository(item).split('/');
+            variables[`owner${index}`] = owner;
+            variables[`name${index}`] = name;
+            variables[`number${index}`] = item.number;
+            declarations.push(`$owner${index}: String!, $name${index}: String!, $number${index}: Int!`);
+            return `pr${index}: repository(owner: $owner${index}, name: $name${index}) { pullRequest(number: $number${index}) { ${pullRequestDetailFields} } }`;
+          });
+          try {
+            return await this.graphql<Record<string, { pullRequest: PullRequestData | null } | null>>(
+              `query InboxDetails(${declarations.join(', ')}) { ${selections.join(' ')} }`,
+              variables,
+              signal,
+            );
+          } catch {
+            return undefined;
+          }
+        }),
       ),
       group === 'requested'
-        ? this.requestedStackCounts(items, signal).catch(() => items.map(() => 0))
-        : Promise.resolve(items.map(() => 0)),
+        ? Promise.all(chunks.map(chunk => this.requestedStackCounts(chunk, signal).catch(() => chunk.map(() => 0))))
+        : Promise.resolve(chunks.map(chunk => chunk.map(() => 0))),
     ]);
+    const stackCounts = stackChunks.flat();
     return items.map((item, index) => {
-      const pr = data?.[`pr${index}`]?.pullRequest;
+      const chunkIndex = Math.floor(index / chunkSize);
+      const chunkItemIndex = index % chunkSize;
+      const pr = detailChunks[chunkIndex]?.[`pr${chunkItemIndex}`]?.pullRequest;
       if (!pr) return item;
       const requested = pr.reviewRequests.nodes.flatMap(node => (node.requestedReviewer?.login ? [node.requestedReviewer.login] : []));
       const participants = pr.participants.nodes.filter(user => user.login !== item.user.login);

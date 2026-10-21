@@ -7,7 +7,6 @@ import {
   inboxQuery,
   parsePRUrl,
   prPath,
-  searchPageSize,
   workspaceSections,
   type Comment,
   type PullRequest,
@@ -405,6 +404,68 @@ describe('review state, auto-merge and merge settings', () => {
       assert.equal(result.items[0].review, undefined);
       assert.equal(result.items[0].details, undefined);
     });
+  for (const failedQuery of ['InboxDetails', 'InboxStacks'] as const)
+    it(`chunks 60 requested items into 25/25/10 and isolates a failed ${failedQuery} chunk`, async () => {
+      const items = Array.from({ length: 60 }, (_, index) => authoredItem(index + 1));
+      const chunks = [items.slice(0, 25), items.slice(25, 50), items.slice(50)];
+      const details = (chunk: typeof items) => ({
+        data: {
+          data: Object.fromEntries(
+            chunk.map((item, index) => [`pr${index}`, { pullRequest: { ...reviewData(null), additions: item.number } }]),
+          ),
+        },
+      });
+      const stacks = (chunk: typeof items) => ({
+        data: {
+          data: Object.fromEntries(
+            chunk.map((item, index) => [
+              `pr${index}`,
+              {
+                pullRequest: {
+                  number: item.number,
+                  stack: {
+                    entries: {
+                      nodes: [
+                        { position: 1, pullRequest: { number: item.number + 1000, state: 'OPEN', isDraft: false } },
+                        { position: 2, pullRequest: { number: item.number, state: 'OPEN', isDraft: false } },
+                      ],
+                    },
+                  },
+                },
+              },
+            ]),
+          ),
+        },
+      });
+      const failed = { data: { errors: [{ message: 'Resource limits for this query exceeded.' }] } };
+      const calls = fake([
+        { data: { items, total_count: items.length, incomplete_results: false } },
+        ...chunks.map((chunk, index) => (failedQuery === 'InboxDetails' && index === 1 ? failed : details(chunk))),
+        ...chunks.map((chunk, index) => (failedQuery === 'InboxStacks' && index === 1 ? failed : stacks(chunk))),
+      ]);
+
+      const { items: result } = await new GitHub('test-only-token').inbox('requested', { login: 'me' });
+      const queries = calls.filter(call => call.url.endsWith('/graphql'));
+      const detailQueries = queries.filter(call => String(call.body?.query).startsWith('query InboxDetails'));
+      const stackQueries = queries.filter(call => String(call.body?.query).startsWith('query InboxStacks'));
+      const aliases = (call: Call) => (String(call.body?.query).match(/\bpr\d+: repository\(/g) ?? []).length;
+
+      assert.deepEqual(
+        result.map(item => item.number),
+        items.map(item => item.number),
+      );
+      assert.deepEqual(detailQueries.map(aliases), [25, 25, 10]);
+      assert.deepEqual(stackQueries.map(aliases), [25, 25, 10]);
+      assert.deepEqual(
+        result.map(item => item.details?.additions),
+        items.map((item, index) => (failedQuery === 'InboxDetails' && index >= 25 && index < 50 ? undefined : item.number)),
+      );
+      if (failedQuery === 'InboxStacks')
+        assert.deepEqual(
+          result.map(item => item.details?.priority.stackedReady),
+          items.map((_, index) => (index >= 25 && index < 50 ? 0 : 1)),
+        );
+    });
   for (const [rollup, checks] of [
     ['SUCCESS', 'success'],
     ['FAILURE', 'failure'],
@@ -619,7 +680,7 @@ describe('review state, auto-merge and merge settings', () => {
       await new GitHub('test-only-token').inbox('requested', { login: 'me', repos: ['acme/app'], page, merged: 'mine', order });
       const url = new URL(calls[0].url);
       assert.equal(url.searchParams.get('q'), inboxQuery('requested', 'me', ['acme/app']));
-      assert.equal(url.searchParams.get('per_page'), String(searchPageSize));
+      assert.equal(url.searchParams.get('per_page'), '100');
       assert.equal(url.searchParams.get('page'), String(page));
       assert.equal(url.searchParams.get('sort'), sort);
       assert.equal(url.searchParams.get('order'), direction);

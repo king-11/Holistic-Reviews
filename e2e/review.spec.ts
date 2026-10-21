@@ -180,6 +180,53 @@ test.describe('inbox', () => {
     await expect(row.getByRole('img', { name: 'Checks passed' })).toBeVisible();
     await expect(row.getByTitle('bob, carol')).toBeVisible();
   });
+
+  test('reveals 10 requested PRs at a time and keeps the viewport steady', async ({ page }) => {
+    const fake = await mockGitHub(page, { requestedPRCount: 105 });
+    await seedInbox(page, { repos: ['acme/app', 'acme/infra'] });
+    await page.goto('/');
+    const section = page.locator('section.requested');
+    const rows = section.locator('.pr-row');
+    const loadMore = section.getByRole('button', { name: /^Load more ·/ });
+    await expect(rows).toHaveCount(10);
+    await expect(loadMore).toHaveText('Load more · 10 of 105');
+    await expect.poll(() => fake.searches.length).toBe(10);
+    await loadMore.scrollIntoViewIfNeeded();
+    const lastRow = await rows.last().elementHandle();
+    if (!lastRow) throw new Error('Expected a requested PR row.');
+    const measure = () =>
+      page.evaluate(
+        row => ({
+          scrollY,
+          top: row.getBoundingClientRect().top,
+        }),
+        lastRow,
+      );
+    const before = await measure();
+    const searches = fake.searches.length;
+
+    await loadMore.click();
+    await expect(rows).toHaveCount(20);
+    expect(fake.searches.length).toBe(searches);
+    const after = await measure();
+    expect(after.scrollY).toBe(before.scrollY);
+    expect(after.top).toBe(before.top);
+
+    for (let visible = 30; visible <= 100; visible += 10) {
+      await loadMore.click();
+      await expect(rows).toHaveCount(visible);
+    }
+    expect(fake.searches.length).toBe(searches);
+
+    await loadMore.click();
+    await expect(rows).toHaveCount(105);
+    await expect.poll(() => fake.searches.length).toBe(searches + 1);
+    expect(fake.searches.at(-1)).toMatchObject({
+      q: expect.stringContaining('review-requested:'),
+      page: 2,
+      perPage: 100,
+    });
+  });
 });
 
 test('lists pending comments in the review sheet and reuses comment edit and delete actions', async ({ page }) => {

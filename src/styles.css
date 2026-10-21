@@ -882,6 +882,7 @@ a:hover,
   display: grid;
   grid-template-columns: 216px minmax(0, 1fr);
   min-height: calc(100vh - 60px);
+  overflow-anchor: none;
 }
 .app-sidebar {
   background: var(--color-sidebar);

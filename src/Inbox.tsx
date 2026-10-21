@@ -106,6 +106,7 @@ const priorityLanes: { id: PriorityResult['lane']; label: string }[] = [
   { id: 'soon', label: 'Soon' },
   { id: 'later', label: 'Later' },
 ];
+const visibleRowStep = 10;
 // Items GitHub search returns before review data arrives count as waiting.
 const reviewOf = (item: InboxItem) => item.review ?? 'waiting';
 
@@ -189,6 +190,9 @@ export default defineComponent(
     const sortChoice = shallowRef<SortChoice>(preferences.sort ?? 'priority');
     const sortMenu = shallowRef(false);
     const serverSort = computed(() => serverOrder(sortChoice.value));
+    const visibleLimits = shallowRef<Record<string, number>>({});
+    const visibleLimit = (id: string) => visibleLimits.value[id] ?? visibleRowStep;
+    watch([selected, sortChoice], () => (visibleLimits.value = {}));
     watch([selected, sortChoice, repoOptions], ([repos, sort, known]) =>
       savePreferences({ repos: repoDefaulted ? repos : undefined, sort, known }),
     );
@@ -234,6 +238,7 @@ export default defineComponent(
         const mergedStamp = ++mergedVersion;
         mergedLoading.value = false;
         if (!background) {
+          visibleLimits.value = {};
           loading.value = true;
           errors.value = {};
           data.value = {};
@@ -266,6 +271,7 @@ export default defineComponent(
     );
     // Only the merged group reloads on a filter change; the other sections keep their results.
     function reloadMerged() {
+      visibleLimits.value = { ...visibleLimits.value, merged: visibleRowStep };
       const version = ++mergedVersion;
       errors.value = { ...errors.value, merged: undefined };
       mergedLoading.value = true;
@@ -294,8 +300,9 @@ export default defineComponent(
       const current = data.value[id],
         version = request,
         stamp = mergedVersion;
-      if (!current || moreBusy.value) return;
+      if (!current || moreBusy.value) return false;
       moreBusy.value = id;
+      let loaded = false;
       try {
         const next = await props.api.inbox(
           id,
@@ -311,12 +318,26 @@ export default defineComponent(
         if (!stale(id, version, stamp)) {
           data.value = { ...data.value, [id]: { ...next, items: [...current.items, ...next.items] } };
           countRepos(next.items, !selected.value.length);
+          loaded = true;
         }
       } catch (error) {
         if (!stale(id, version, stamp)) errors.value = { ...errors.value, [id]: errorMessage(error, 'Could not load more.') };
       } finally {
         moreBusy.value = null;
       }
+      return loaded;
+    }
+    async function revealMore(section: Section) {
+      const nextLimit = visibleLimit(section.id) + visibleRowStep;
+      const result = data.value[section.group];
+      if (!result) return;
+      if (
+        nextLimit > items(section).length &&
+        result.items.length < Math.min(result.total_count, searchResultCap) &&
+        !(await loadMore(section.group))
+      )
+        return;
+      visibleLimits.value = { ...visibleLimits.value, [section.id]: nextLimit };
     }
 
     const active = shallowRef('all');
@@ -630,7 +651,9 @@ export default defineComponent(
                 const GroupIcon = section.icon,
                   result = data.value[section.group],
                   open = !collapsed.value.has(section.id),
-                  shown = items(section),
+                  allRows = items(section),
+                  limit = visibleLimit(section.id),
+                  shown = allRows.slice(0, limit),
                   prioritized = section.id === 'requested' && sortChoice.value === 'priority';
                 return (
                   <section key={section.id} class={`mb-5 ${section.group}`}>
@@ -725,20 +748,20 @@ export default defineComponent(
                                 {query.value ? 'No loaded PRs match your search.' : 'Nothing here. You’re all caught up.'}
                               </div>
                             )}
-                            {result.items.length < Math.min(result.total_count, searchResultCap) && (
+                            {allRows.length > limit || result.items.length < Math.min(result.total_count, searchResultCap) ? (
                               <button
                                 class="py-3 px-5 text-xs text-accent"
                                 title={`Load the next page of ${section.label.toLowerCase()}`}
                                 disabled={!!moreBusy.value}
-                                onClick={() => void loadMore(section.group)}
+                                onClick={() => void revealMore(section)}
                               >
                                 {moreBusy.value === section.group ? (
                                   <Spinner text="Loading…" />
                                 ) : (
-                                  `Load more · ${result.items.length} of ${result.total_count}`
+                                  `Load more · ${shown.length} of ${query.value ? allRows.length : result.total_count}`
                                 )}
                               </button>
-                            )}
+                            ) : null}
                             {(result.incomplete_results || result.total_count > searchResultCap) && (
                               <p class="group-warning">GitHub search may be incomplete and caps results at 1,000. Narrow by repository.</p>
                             )}

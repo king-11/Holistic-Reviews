@@ -24,7 +24,7 @@ Rendered as a segmented radio group (`All`, `By me`, `Review requested`) in the 
 
 ## Authored PR Classification (`classifyReview`)
 
-Each page of search results is enriched in a single aliased GraphQL batch (`InboxDetails`). For the `authored` group, each PR is classified into `returned`, `approved`, or `waiting` ignoring bots (`__typename !== 'User'`) and the PR author:
+Each search page is enriched with parallel aliased GraphQL batches of up to 25 items (`InboxDetails`) to stay within GitHub's GraphQL resource limit; a failed batch leaves only its own items unenriched. For the `authored` group, each PR is classified into `returned`, `approved`, or `waiting` ignoring bots (`__typename !== 'User'`) and the PR author:
 
 1. `reviewDecision === 'CHANGES_REQUESTED'` → **`returned`**.
 2. `reviewDecision === 'APPROVED'`, or `reviewDecision === null` with at least one human `APPROVED` review → **`approved`**.
@@ -49,9 +49,13 @@ Each row (`InboxRow`) is a `<NuxtLink>` to `/<owner>/<repo>/pull/<number>` displ
   - `Title` (`title-asc` / `title-desc`) and `Size of change` (`size-desc` / `size-asc`, where `size = additions + deletions`) sort loaded items client-side.
   - `Priority` is the default sort (`updated-desc` on GitHub); it ranks only **Needs your review** into Now (score ≥ 50), Soon (≥ 20), and Later. Other sections use updated-desc ordering while Priority is selected.
 
+## Search Result Loading
+
+GitHub search requests up to 100 results per page (its maximum), while each inbox section initially reveals 10. Rows are filtered and sorted before the visible limit is applied, so priority mode shows the highest-ranked loaded PRs first and lane counts include only visible rows. **Load more** reveals the next 10 loaded matches, requesting another 100-result API page only when needed. When searching locally, the visible count is measured against loaded rows matching the search. Limits reset to 10 after a full reload, repository or sort change, or merged-filter change; quiet background refreshes preserve the current limits. The button does not change the viewport when rows are revealed.
+
 ## Needs Your Review Priority
 
-The `InboxDetails` batch provides the last ready-for-review event (falling back to `createdAt`), the latest commit check rollup, the latest 20 commit OIDs and timestamps, the viewer's latest submitted review and reviewed OID, and code-owner review requests. A separate aliased stack query runs in parallel for the requested page; if it fails, stack points are zero. Stack entries above the current PR count only when open and not draft.
+The `InboxDetails` batches provide the last ready-for-review event (falling back to `createdAt`), the latest commit check rollup, the latest 20 commit OIDs and timestamps, the viewer's latest submitted review and reviewed OID, and code-owner review requests. A separate set of aliased stack queries runs in parallel in the same 25-item chunks for requested PRs; a failed chunk gets zero stack points for its items. Stack entries above the current PR count only when open and not draft.
 
 The score adds:
 

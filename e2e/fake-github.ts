@@ -257,8 +257,16 @@ export async function mockGitHub(
     viewerRequested?: boolean;
     stalePendingReadAfterEdit?: boolean;
     ownPR?: boolean;
+    requestedPRCount?: number;
   } = {},
 ) {
+  const requestedPRCount = options.requestedPRCount ?? 3;
+  const requestedItems = [
+    ...inboxGroups[0][1],
+    ...Array.from({ length: Math.max(0, requestedPRCount - inboxGroups[0][1].length) }, (_, index) =>
+      inbox(1000 + index, `Requested change ${index + 1}`),
+    ),
+  ].slice(0, requestedPRCount);
   let release = () => {};
   const gate = new Promise<void>(resolve => (release = resolve));
   const state = {
@@ -293,7 +301,14 @@ export async function mockGitHub(
     reactions: new Map<string, Map<string, { count: number; viewer: boolean }>>(),
     restReactions: new Map<string, { id: number; content: string; user: typeof viewer }[]>(),
     writes: [] as { method: string; path: string; body: Record<string, unknown> | undefined; operation?: string }[],
-    searches: [] as { q: string; advanced: boolean; sort: string | null; order: string | null }[],
+    searches: [] as {
+      q: string;
+      advanced: boolean;
+      sort: string | null;
+      order: string | null;
+      page: number;
+      perPage: number;
+    }[],
     peopleSearches: [] as { kind: string; query: string; first: number }[],
     userReads: [] as string[],
     nextId: 1000,
@@ -512,11 +527,24 @@ export async function mockGitHub(
       const q = query.get('q') || '';
       // GitHub rejects OR outside advanced search.
       if (/\sOR\s/.test(q) && !query.has('advanced_search')) return [422, { message: 'Validation Failed' }];
-      state.searches.push({ q, advanced: query.has('advanced_search'), sort: query.get('sort'), order: query.get('order') });
+      const page = Number(query.get('page') || 1);
+      const perPage = Number(query.get('per_page') || Number.MAX_SAFE_INTEGER);
+      state.searches.push({ q, advanced: query.has('advanced_search'), sort: query.get('sort'), order: query.get('order'), page, perPage });
       const repos = [...q.matchAll(/repo:(\S+)/g)].map(match => match[1]);
-      const found = q.includes('is:merged') ? mergedResults(q) : inboxGroups.find(([pattern]) => pattern.test(q))?.[1] || [];
+      const found = q.includes('is:merged')
+        ? mergedResults(q)
+        : q.includes('review-requested:')
+          ? requestedItems
+          : inboxGroups.find(([pattern]) => pattern.test(q))?.[1] || [];
       const items = found.filter(item => !repos.length || repos.some(repo => item.repository_url.endsWith(`/${repo}`)));
-      return [200, { items, total_count: items.length, incomplete_results: false }];
+      return [
+        200,
+        {
+          items: items.slice((page - 1) * perPage, page * perPage),
+          total_count: items.length,
+          incomplete_results: false,
+        },
+      ];
     }
     if (path === prPath && method === 'PATCH') Object.assign(state.prEdits, body);
     if (path === prPath) {
