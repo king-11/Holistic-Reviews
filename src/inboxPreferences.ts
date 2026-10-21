@@ -1,6 +1,7 @@
-import type { InboxItem, SearchOrder } from './github';
+import type { InboxItem, MergedFilter, SearchOrder } from './github';
 import { tryStorage } from './storage';
 
+const mergedFilters = ['all', 'mine', 'reviewing'] as const;
 const sortChoices = [
   'priority',
   'title-asc',
@@ -51,7 +52,7 @@ export const clientOrders: Record<SortChoice, (a: InboxItem, b: InboxItem) => nu
   'created-asc': byDate('created_at', 1),
 };
 
-type InboxPreferences = { repos?: string[]; sort?: SortChoice; known?: string[] };
+type InboxPreferences = { repos?: string[]; sort?: SortChoice; merged?: MergedFilter; known?: string[] };
 const preferencesKey = 'review.inbox';
 const stringList = (value: unknown) =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined;
@@ -60,6 +61,7 @@ export function readPreferences(): InboxPreferences {
   return {
     repos: stringList(saved?.repos),
     sort: sortChoices.find(choice => choice === saved?.sort),
+    merged: mergedFilters.find(filter => filter === saved?.merged),
     known: stringList(saved?.known),
   };
 }

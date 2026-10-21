@@ -124,6 +124,9 @@ test.describe('inbox', () => {
       advanced: true,
       q: expect.stringContaining('(review-requested:reviewer OR reviewed-by:reviewer)'),
     });
+    await page.reload();
+    await expect(page.getByRole('radio', { name: 'Review requested' })).toHaveAttribute('aria-checked', 'true');
+    await expect.poll(() => mergedSearch()?.q).toContain('(review-requested:reviewer OR reviewed-by:reviewer)');
   });
 
   test('disables All for recently merged pull requests until a repository is selected', async ({ page }) => {

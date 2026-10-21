@@ -192,13 +192,13 @@ export default defineComponent(
     const serverSort = computed(() => serverOrder(sortChoice.value));
     const visibleLimits = shallowRef<Record<string, number>>({});
     const visibleLimit = (id: string) => visibleLimits.value[id] ?? visibleRowStep;
+    const mergedFilter = shallowRef<MergedFilter>(preferences.merged ?? 'all');
+    const mergedLoading = shallowRef(false);
     watch([selected, sortChoice], () => (visibleLimits.value = {}));
-    watch([selected, sortChoice, repoOptions], ([repos, sort, known]) =>
-      savePreferences({ repos: repoDefaulted ? repos : undefined, sort, known }),
+    watch([selected, sortChoice, repoOptions, mergedFilter], ([repos, sort, known, merged]) =>
+      savePreferences({ repos: repoDefaulted ? repos : undefined, sort, known, merged }),
     );
 
-    const mergedFilter = shallowRef<MergedFilter>('all');
-    const mergedLoading = shallowRef(false);
     // Each merged load (full reload or filter change) bumps this so only the newest one may write its result.
     let mergedVersion = 0;
 

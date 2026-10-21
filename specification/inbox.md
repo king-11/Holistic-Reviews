@@ -21,6 +21,7 @@ Rendered as a segmented radio group (`All`, `By me`, `Review requested`) in the 
 - **All:** `is:merged` when at least one repository is selected; disabled when no repository is selected (falls back to `By me`).
 - **By me:** `is:merged author:<viewer>`.
 - **Review requested:** `is:merged (review-requested:<viewer> OR reviewed-by:<viewer>) -author:<viewer>` with `advanced_search=true`.
+- The selected filter is saved in `review.inbox` preferences and restored after reload.
 
 ## Authored PR Classification (`classifyReview`)
 
