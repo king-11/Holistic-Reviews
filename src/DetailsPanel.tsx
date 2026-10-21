@@ -643,7 +643,7 @@ const SummaryGroup = defineComponent(
 );
 
 const CheckSummary = defineComponent(
-  (props: { checks?: StatusCheck[]; onChecks: () => void }) => () => {
+  (props: { checks?: StatusCheck[] }) => () => {
     const { checks } = props;
     if (!checks) return <Loader label="Loading checks…" />;
     return (
@@ -674,13 +674,11 @@ const CheckSummary = defineComponent(
               </SummaryGroup>
             );
           })}
-        <button class={styles.chip} title="Open the Checks tab" onClick={props.onChecks}>
-          {checks.length ? 'View all' : 'No checks'}
-        </button>
+        {!checks.length && <span class={styles.muted}>No checks</span>}
       </div>
     );
   },
-  { props: ['checks', 'onChecks'] },
+  { props: ['checks'] },
 );
 
 // Graphite's succinct summary, shown in place of the side panel when it is hidden.
@@ -698,9 +696,13 @@ export const Information = defineComponent(
           </button>
           {open.value && (
             <dl class={styles.grid}>
-              <dt>Checks</dt>
+              <dt>
+                <button class={styles['checks-label']} title="Open the Checks tab" onClick={details.source().onChecks}>
+                  Checks
+                </button>
+              </dt>
               <dd>
-                <CheckSummary checks={checks} onChecks={details.source().onChecks} />
+                <CheckSummary checks={checks} />
               </dd>
               <dt>Reviewers</dt>
               <dd>
@@ -786,8 +788,12 @@ export default defineComponent(
                 </section>
               )}
               <section class={styles.section}>
-                <h3>Checks</h3>
-                <CheckSummary checks={checks} onChecks={details.source().onChecks} />
+                <h3>
+                  <button class={styles['checks-label']} title="Open the Checks tab" onClick={details.source().onChecks}>
+                    Checks
+                  </button>
+                </h3>
+                <CheckSummary checks={checks} />
               </section>
               <section class={styles.section}>
                 <h3>

@@ -47,6 +47,16 @@
   font-size: var(--text-xs);
   color: var(--color-secondary);
 }
+.checks-label {
+  all: unset;
+  padding: inherit;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.checks-label:hover {
+  text-decoration: underline;
+}
 .row {
   display: flex;
   justify-content: flex-start;

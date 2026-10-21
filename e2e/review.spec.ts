@@ -1089,7 +1089,7 @@ test.describe('sequence shortcuts', () => {
 test('Checks tab lists CI checks failures first and links to each run', async ({ page }) => {
   await mockGitHub(page);
   await openPR(page);
-  await page.getByRole('button', { name: /^Checks/ }).click();
+  await page.locator('button[title="See CI status checks for the latest commit and open their runs"]').click();
   const links = page.getByRole('list', { name: 'Status checks' }).getByRole('link');
   await expect(links).toHaveText([/lint.*1 error/, /deploy\/preview.*Building/, /test.*All tests passed/]);
   await expect(links.first()).toHaveAttribute('href', 'https://github.com/acme/app/actions/runs/9/job/2');
@@ -1138,7 +1138,11 @@ test.describe('details panel', () => {
     await panel.getByRole('button', { name: '1 pending' }).click();
     await expect(panel.getByRole('dialog', { name: 'Checks pending' }).getByRole('link')).toHaveCount(1);
     await page.keyboard.press('Escape');
-    await panel.getByRole('button', { name: 'View all' }).click();
+    await panel.getByRole('heading', { name: 'Checks' }).getByRole('button', { name: 'Checks' }).click();
+    await expect(panel.getByRole('heading', { name: 'Checks' }).getByRole('button', { name: 'Checks' })).toHaveAttribute(
+      'title',
+      'Open the Checks tab',
+    );
     await expect(page.getByRole('list', { name: 'Status checks' })).toBeVisible();
   });
 
@@ -1337,7 +1341,9 @@ test.describe('details panel', () => {
     await info.getByRole('button', { name: /1 pending/ }).click();
     await expect(page.getByRole('dialog', { name: 'Checks pending' }).getByRole('link')).toHaveCount(1);
     await page.keyboard.press('Escape');
-    await info.getByRole('button', { name: 'View all' }).click();
+    const checksLabel = info.getByRole('button', { name: 'Checks', exact: true });
+    await expect(checksLabel).toHaveAttribute('title', 'Open the Checks tab');
+    await checksLabel.click();
     await expect(page.getByRole('list', { name: 'Status checks' })).toBeVisible();
     await expect(page.locator('.review-tabs-bar')).toBeInViewport();
   });
