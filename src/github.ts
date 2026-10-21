@@ -215,7 +215,7 @@ const maxTextFileBytes = 1_048_576;
 const contentCacheSize = 32;
 // Review fields feed the authored classification; they are fetched for every page so one query serves all groups.
 const pullRequestDetailFields =
-  'createdAt additions deletions commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } recentCommits: commits(last: 20) { nodes { commit { oid committedDate } } } viewerLatestReview { submittedAt commit { oid } } readyEvents: timelineItems(itemTypes: [READY_FOR_REVIEW_EVENT], last: 1) { nodes { ... on ReadyForReviewEvent { createdAt } } } pendingReviews: reviews(states: PENDING, first: 1) { nodes { comments { totalCount } } } participants(first: 10) { totalCount nodes { login avatarUrl(size: 40) } } mergeable reviewDecision latestReviews(first: 50) { nodes { state submittedAt author { __typename login } } } reviewRequests(first: 50) { nodes { asCodeOwner requestedReviewer { __typename ... on User { login } ... on Team { combinedSlug } } } }';
+  'createdAt additions deletions commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state } } } } readyEvents: timelineItems(itemTypes: [READY_FOR_REVIEW_EVENT], last: 1) { nodes { ... on ReadyForReviewEvent { createdAt } } } requestEvents: timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 20) { nodes { ... on ReviewRequestedEvent { createdAt requestedReviewer { __typename ... on User { login } ... on Team { combinedSlug } } } } } pendingReviews: reviews(states: PENDING, first: 1) { nodes { comments { totalCount } } } participants(first: 10) { totalCount nodes { login avatarUrl(size: 40) } } mergeable reviewDecision latestReviews(first: 50) { nodes { state submittedAt author { __typename login } } } reviewRequests(first: 50) { nodes { asCodeOwner requestedReviewer { __typename ... on User { login } ... on Team { combinedSlug } } } }';
 // Pending and expected checks both mean the outcome is still open; absent rollups mean there are no checks.
 const rollupChecks: Record<string, 'success' | 'failure' | 'pending'> = {
   SUCCESS: 'success',
@@ -1027,10 +1027,9 @@ export class GitHub {
       additions: number;
       deletions: number;
       reviewDecision: ReviewSummary['reviewDecision'];
-      commits: { nodes: { commit: { statusCheckRollup: { state: string } | null } }[] };
-      recentCommits: { nodes: { commit: { oid: string; committedDate: string } }[] };
-      viewerLatestReview: { submittedAt: string; commit: { oid: string } | null } | null;
+      commits: { nodes: { commit: { committedDate?: string; statusCheckRollup: { state: string } | null } }[] };
       readyEvents: { nodes: { createdAt?: string }[] };
+      requestEvents?: { nodes: { createdAt?: string; requestedReviewer?: { login?: string; combinedSlug?: string } | null }[] };
       pendingReviews: { nodes: { comments: { totalCount: number } }[] };
       participants: { totalCount: number; nodes: { login: string; avatarUrl: string }[] };
       latestReviews: { nodes: ReviewSummary['latestReviews'] };
@@ -1067,7 +1066,7 @@ export class GitHub {
           }
         }),
       ),
-      group === 'requested'
+      group === 'requested' || group === 'team'
         ? Promise.all(chunks.map(chunk => this.requestedStackCounts(chunk, signal).catch(() => chunk.map(() => 0))))
         : Promise.resolve(chunks.map(chunk => chunk.map(() => 0))),
     ]);
@@ -1080,17 +1079,16 @@ export class GitHub {
       const requested = pr.reviewRequests.nodes.flatMap(node => (node.requestedReviewer?.login ? [node.requestedReviewer.login] : []));
       const participants = pr.participants.nodes.filter(user => user.login !== item.user.login);
       const waitReadyAt = pr.readyEvents.nodes[0]?.createdAt ?? pr.createdAt;
-      const reviewedOid = pr.viewerLatestReview?.commit?.oid;
-      const reviewedIndex = reviewedOid ? pr.recentCommits.nodes.findIndex(({ commit }) => commit.oid === reviewedOid) : -1;
-      const moreThanTwentyNewCommits = !!pr.viewerLatestReview && !!reviewedOid && reviewedIndex < 0;
-      const newCommits = moreThanTwentyNewCommits ? 20 : reviewedIndex >= 0 ? pr.recentCommits.nodes.length - reviewedIndex - 1 : 0;
-      const reviewedWithoutNewCommits = !!pr.viewerLatestReview && newCommits === 0 && !moreThanTwentyNewCommits;
-      const firstNewCommit = moreThanTwentyNewCommits
-        ? pr.recentCommits.nodes[0]?.commit.committedDate
-        : reviewedIndex >= 0
-          ? pr.recentCommits.nodes[reviewedIndex + 1]?.commit.committedDate
-          : undefined;
-      const waitStart = firstNewCommit ?? waitReadyAt;
+      const teams = pr.reviewRequests.nodes.flatMap(node =>
+        node.requestedReviewer?.combinedSlug ? [node.requestedReviewer.combinedSlug] : [],
+      );
+      // The wait starts when this review was asked for: of you by name, or of a team that is still requested.
+      const requestedAt = (pr.requestEvents?.nodes ?? [])
+        .filter(({ requestedReviewer: reviewer }) =>
+          group === 'team' ? !!reviewer?.combinedSlug && teams.includes(reviewer.combinedSlug) : reviewer?.login === login,
+        )
+        .at(-1)?.createdAt;
+      const waitStart = requestedAt && requestedAt > waitReadyAt ? requestedAt : waitReadyAt;
       const checks = rollupChecks[pr.commits.nodes[0]?.commit.statusCheckRollup?.state ?? ''] ?? null;
       const changeRequests = pr.latestReviews.nodes.filter(
         review => review.state === 'CHANGES_REQUESTED' && review.author?.__typename === 'User' && review.author.login !== item.user.login,
@@ -1109,9 +1107,6 @@ export class GitHub {
         pendingComments: pr.pendingReviews.nodes.reduce((total, review) => total + review.comments.totalCount, 0),
         priority: {
           waitStart,
-          newCommits,
-          moreThanTwentyNewCommits,
-          reviewedWithoutNewCommits,
           stackedReady: stackCounts[index] ?? 0,
           codeOwner,
           checks,
@@ -1119,13 +1114,13 @@ export class GitHub {
         participants,
         participantCount: pr.participants.totalCount - (participants.length < pr.participants.nodes.length ? 1 : 0),
         conflict: pr.mergeable === 'CONFLICTING',
-        teams: pr.reviewRequests.nodes.flatMap(node => (node.requestedReviewer?.combinedSlug ? [node.requestedReviewer.combinedSlug] : [])),
+        teams,
         changesBy: changeRequests.map(review => review.author!.login),
       };
       const classified =
         group === 'authored' ? classifyReview({ ...pr, latestReviews: pr.latestReviews.nodes, requested }, item.user.login) : undefined;
       // GitHub keeps a change request until the reviewer looks again; a push after it means the author has answered.
-      const lastPush = pr.recentCommits.nodes.at(-1)?.commit.committedDate ?? '';
+      const lastPush = pr.commits.nodes[0]?.commit.committedDate ?? '';
       const answered = changeRequests.length > 0 && changeRequests.every(review => !!review.submittedAt && review.submittedAt < lastPush);
       const review = classified === 'returned' && answered ? 'waiting' : classified;
       return { ...item, details, ...(review ? { review } : {}) };

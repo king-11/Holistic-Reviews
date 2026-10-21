@@ -54,7 +54,9 @@ export const sortOptions: SortOption[] = [
     ],
   },
 ];
-export const defaultSort = (section: InboxSectionId): SortChoice => (section === 'requested' ? 'priority' : 'updated-desc');
+// Review requests, by name or through a team, are the sections ranked by priority.
+export const prioritized = (section: InboxSectionId) => section === 'requested' || section === 'team';
+export const defaultSort = (section: InboxSectionId): SortChoice => (prioritized(section) ? 'priority' : 'updated-desc');
 // Updated and created also re-query, since only GitHub can order pages that aren't loaded yet.
 export const serverOrder = (choice: SortChoice): SearchOrder => ({
   sort: choice.startsWith('created') ? 'created' : 'updated',
@@ -102,7 +104,7 @@ const sectionSorts = (value: unknown) => {
       ([section, choice]) =>
         sectionIds.includes(section as InboxSectionId) &&
         sortChoices.includes(choice as SortChoice) &&
-        (section === 'requested' || choice !== 'priority'),
+        (prioritized(section as InboxSectionId) || choice !== 'priority'),
     ),
   ) as Partial<Record<InboxSectionId, SortChoice>>;
 };

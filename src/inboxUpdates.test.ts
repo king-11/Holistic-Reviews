@@ -131,9 +131,6 @@ describe('withSnapshots', () => {
       pendingComments: 0,
       priority: {
         waitStart: '',
-        newCommits: 0,
-        moreThanTwentyNewCommits: false,
-        reviewedWithoutNewCommits: false,
         stackedReady: 0,
         codeOwner: false,
         checks: 'success' as const,

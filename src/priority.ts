@@ -1,16 +1,11 @@
 export type PriorityInput = {
   waitStart: string;
-  newCommits: number;
-  moreThanTwentyNewCommits: boolean;
-  reviewedWithoutNewCommits: boolean;
   stackedReady: number;
   codeOwner: boolean;
   checks: 'success' | 'failure' | 'pending' | null;
 };
 
-// Rows show the kind as an icon with the short value; the label explains it on hover.
-export type PriorityReason = { kind: 'wait' | 'commits' | 'stack' | 'owner' | 'checks'; short?: string; label: string; title?: string };
-export type PriorityResult = { score: number; lane: 'now' | 'soon' | 'later'; reasons: PriorityReason[] };
+export type PriorityResult = { score: number; lane: 'now' | 'soon' | 'later' };
 
 const hour = 60 * 60 * 1000;
 
@@ -31,7 +26,7 @@ export function workingHours(from: Date, to: Date): number {
   return total;
 }
 
-function elapsedLabel(from: string, now: Date): string {
+export function elapsedLabel(from: string, now: Date): string {
   const elapsedMinutes = Math.max(0, Math.floor((now.getTime() - new Date(from).getTime()) / 60_000));
   const elapsedHours = Math.floor(elapsedMinutes / 60);
   if (elapsedHours < 1) return '<1h';
@@ -43,35 +38,10 @@ function elapsedLabel(from: string, now: Date): string {
 
 export function priority(input: PriorityInput, now: Date): PriorityResult {
   const stackPoints = Math.min(30, 15 * Math.log2(1 + Math.max(0, input.stackedReady)));
-  const waitingPoints = input.reviewedWithoutNewCommits
-    ? 0
-    : Math.min(30, (30 * Math.log(1 + workingHours(new Date(input.waitStart), now))) / Math.log(17));
+  const waitingPoints = Math.min(30, (30 * Math.log(1 + workingHours(new Date(input.waitStart), now))) / Math.log(17));
   const ownerPoints = input.codeOwner ? 20 : 0;
   const checksPoints = input.checks === 'success' ? 15 : 0;
   const score = stackPoints + waitingPoints + ownerPoints + checksPoints;
   const lane = input.checks === 'failure' ? 'later' : score >= 50 ? 'now' : score >= 20 ? 'soon' : 'later';
-  const reasons: PriorityReason[] = [];
-
-  if (!input.reviewedWithoutNewCommits) {
-    const workingHourCount = workingHours(new Date(input.waitStart), now);
-    const newCommitCount = input.moreThanTwentyNewCommits ? '20+' : String(input.newCommits);
-    const newCommitLabel =
-      input.newCommits > 0
-        ? `${newCommitCount} new commit${input.newCommits === 1 && !input.moreThanTwentyNewCommits ? '' : 's'} since your review · ${elapsedLabel(input.waitStart, now)}`
-        : undefined;
-    reasons.push({
-      kind: newCommitLabel ? 'commits' : 'wait',
-      short: newCommitLabel ? newCommitCount : elapsedLabel(input.waitStart, now),
-      label: newCommitLabel ?? `ready ${elapsedLabel(input.waitStart, now)} ago`,
-      title: `Waiting score: ${waitingPoints.toFixed(1)} points from ${workingHourCount.toFixed(1)} working hours (weekdays, 09:00–17:00 local time).`,
-    });
-  }
-  if (input.stackedReady > 0)
-    reasons.push({ kind: 'stack', short: String(input.stackedReady), label: `${input.stackedReady} ready stacked on this` });
-  if (input.codeOwner) reasons.push({ kind: 'owner', label: 'code owner' });
-  if (input.checks === 'success') reasons.push({ kind: 'checks', label: 'checks green' });
-  if (input.checks === 'failure') reasons.push({ kind: 'checks', label: 'checks failing' });
-  if (input.checks === 'pending') reasons.push({ kind: 'checks', label: 'checks running' });
-
-  return { score, lane, reasons };
+  return { score, lane };
 }

@@ -1,21 +1,10 @@
 import { defineComponent } from 'vue';
-import {
-  ChevronRight,
-  CircleX,
-  Clock,
-  FilePenLine,
-  GitCommitHorizontal,
-  GitMerge,
-  GitPullRequest,
-  Layers,
-  ShieldCheck,
-  TriangleAlert,
-} from '@lucide/vue';
+import { ChevronRight, CircleX, GitMerge, Layers, ShieldCheck, TriangleAlert, User, Users } from '@lucide/vue';
 import { navigateTo } from 'nuxt/app';
 import { itemRepository, prPath, type InboxGroup, type InboxItem } from './github';
 import { checkIcons } from './Checks';
 import { Avatar, timeAgo } from './ui';
-import type { PriorityReason, PriorityResult } from './priority';
+import { elapsedLabel, type PriorityResult } from './priority';
 import styles from './Inbox.module.css';
 
 type Mark = { icon: typeof GitMerge; tone: 'green' | 'red' | 'amber' | 'muted'; label: string };
@@ -23,13 +12,6 @@ const checkMarks: Record<'success' | 'failure' | 'pending', Mark> = {
   success: { icon: checkIcons.success, tone: 'green', label: 'Checks passed' },
   failure: { icon: checkIcons.failure, tone: 'red', label: 'Checks failed' },
   pending: { icon: checkIcons.pending, tone: 'amber', label: 'Checks running' },
-};
-
-const reasonIcons: Record<Exclude<PriorityReason['kind'], 'checks'>, typeof GitMerge> = {
-  wait: Clock,
-  commits: GitCommitHorizontal,
-  stack: Layers,
-  owner: ShieldCheck,
 };
 
 // Every cell keeps its width, even when empty, so the columns line up across rows.
@@ -46,28 +28,45 @@ function MarkCell(props: { name: string; mark?: Mark }) {
   );
 }
 
-function RowIndicators(props: { item: InboxItem }) {
+function RowIndicators(props: { item: InboxItem; group: InboxGroup }) {
   const details = props.item.details;
   const participants = details?.participants ?? [];
+  const stacked = details?.priority.stackedReady ?? 0;
+  const label = `${stacked} ready stacked on this`;
   return (
     <>
-      <span class={`${styles.cell} ${styles['cell-bubbles']}`} title={participants.map(user => user.login).join(', ')}>
-        {participants.slice(0, 4).map(user => (
-          <Avatar key={user.login} login={user.login} small src={user.avatarUrl} />
-        ))}
-        {!!details && details.participantCount > 4 && <span class={styles.more}>+{details.participantCount - 4}</span>}
-      </span>
-      <MarkCell name="checks" mark={details?.checks ? checkMarks[details.checks] : undefined} />
-      <span class={`${styles.cell} ${styles['cell-changes']}`}>
-        {!!details && (
-          <>
-            <span class={styles.changes} aria-label={`${details.additions} lines added, ${details.deletions} removed`}>
-              <span class={styles['tone-green']}>+{details.additions}</span>
-              <span class={styles['tone-red']}>−{details.deletions}</span>
-            </span>
-          </>
+      {props.group === 'authored' && (
+        <span class={`${styles.cell} ${styles['cell-bubbles']}`} title={participants.map(user => user.login).join(', ')}>
+          {participants.slice(0, 4).map(user => (
+            <Avatar key={user.login} login={user.login} small src={user.avatarUrl} />
+          ))}
+          {!!details && details.participantCount > 4 && <span class={styles.more}>+{details.participantCount - 4}</span>}
+        </span>
+      )}
+      <span class={`${styles.cell} ${styles['cell-stack']}`}>
+        {stacked > 0 && (
+          <span class={styles['priority-reason']} role="img" aria-label={label} title={label}>
+            <Layers size={14} />
+            {stacked}
+          </span>
         )}
       </span>
+      <span class={`${styles.cell} ${styles['cell-owner']}`}>
+        {details?.priority.codeOwner && (
+          <span class={styles['priority-reason']} role="img" aria-label="Code owner" title="Code owner">
+            <ShieldCheck size={14} />
+          </span>
+        )}
+      </span>
+      <span class={`${styles.cell} ${styles['cell-changes']}`}>
+        {!!details && (
+          <span class={styles.changes} aria-label={`${details.additions} lines added, ${details.deletions} removed`}>
+            <span class={styles['tone-green']}>+{details.additions}</span>
+            <span class={styles['tone-red']}>−{details.deletions}</span>
+          </span>
+        )}
+      </span>
+      <MarkCell name="checks" mark={details?.checks ? checkMarks[details.checks] : undefined} />
     </>
   );
 }
@@ -79,6 +78,9 @@ export default defineComponent(
     const { item, group } = props;
     const [owner, repo] = itemRepository(item).split('/');
     const href = prPath({ owner, repo, number: item.number });
+    const details = item.details;
+    const waiting = props.priority && details ? `Review requested ${elapsedLabel(details.priority.waitStart, new Date())} ago` : undefined;
+    const RequestedIcon = group === 'team' ? Users : User;
     return (
       <a
         class="pr-row fade-in"
@@ -91,13 +93,10 @@ export default defineComponent(
           void navigateTo(href);
         }}
       >
-        <span class={`pr-row-status ${item.draft ? 'draft' : group === 'merged' ? 'merged' : ''}`}>
-          {item.draft ? <FilePenLine size={17} /> : group === 'merged' ? <GitMerge size={17} /> : <GitPullRequest size={17} />}
-        </span>
+        <Avatar login={item.user.login} src={item.user.avatar_url} />
         <div class="flex-1 min-w-0">
           <div class="pr-row-title">
-            {item.title}
-            {!!item.details?.pendingComments && <span class="pending-badge">{item.details.pendingComments} pending</span>}
+            <span class="pr-row-title-text">{item.title}</span>
             {item.labels.slice(0, 1).map(label => (
               <span key={label.name} class="pr-label">
                 {label.name}
@@ -105,44 +104,36 @@ export default defineComponent(
             ))}
           </div>
           <div class="pr-row-meta">
-            <span>{itemRepository(item).split('/').at(-1)}</span>
-            <span>#{item.number}</span>
-            <span class="text-xs">·</span>
             <span>{item.user.login === props.viewerLogin ? 'you' : item.user.login}</span>
-            {group === 'authored' && item.review === 'returned' && (
-              <span class={`${styles.blocker} ${styles['tone-red']}`} role="img" aria-label="Changes requested" title="Changes requested">
-                <CircleX size={14} />
-                {(item.details?.changesBy ?? []).map(login => (
-                  <Avatar key={login} login={login} small src={item.details?.participants.find(user => user.login === login)?.avatarUrl} />
-                ))}
+            <span class="text-xs">·</span>
+            <span>
+              {itemRepository(item).split('/').at(-1)} #{item.number}
+            </span>
+            <span class="text-xs">·</span>
+            {waiting ? (
+              <span class={styles['priority-reason']} role="img" aria-label={waiting} title={waiting}>
+                <RequestedIcon size={13} />
+                {elapsedLabel(details!.priority.waitStart, new Date())}
               </span>
-            )}
-            {group === 'authored' && item.details?.conflict && (
-              <span class={`${styles.blocker} ${styles['tone-red']}`} role="img" aria-label="Merge conflict" title="Merge conflict">
-                <TriangleAlert size={14} />
-              </span>
+            ) : (
+              <span title={`Updated ${timeAgo(item.updated_at)}`}>{timeAgo(item.updated_at)}</span>
             )}
           </div>
-          {props.priority && (
-            <div class={styles['priority-reasons']}>
-              {props.priority.reasons.map(reason => {
-                // The checks column already shows check state.
-                if (reason.kind === 'checks') return null;
-                const Icon = reasonIcons[reason.kind];
-                const label = reason.title ? `${reason.label}. ${reason.title}` : reason.label;
-                return (
-                  <span key={reason.kind} class={styles['priority-reason']} role="img" aria-label={reason.label} title={label}>
-                    <Icon size={13} />
-                    {reason.short}
-                  </span>
-                );
-              })}
-            </div>
-          )}
         </div>
-        <RowIndicators item={item} />
-        <span class="row-time">{timeAgo(item.updated_at)}</span>
-        <Avatar login={item.user.login} src={item.user.avatar_url} small />
+        {group === 'authored' && item.review === 'returned' && (
+          <span class={`${styles.blocker} ${styles['tone-red']}`} role="img" aria-label="Changes requested" title="Changes requested">
+            <CircleX size={14} />
+            {(details?.changesBy ?? []).map(login => (
+              <Avatar key={login} login={login} small src={details?.participants.find(user => user.login === login)?.avatarUrl} />
+            ))}
+          </span>
+        )}
+        {group === 'authored' && details?.conflict && (
+          <span class={`${styles.blocker} ${styles['tone-red']}`} role="img" aria-label="Merge conflict" title="Merge conflict">
+            <TriangleAlert size={14} />
+          </span>
+        )}
+        <RowIndicators item={item} group={group} />
         <ChevronRight class="row-arrow" size={15} />
       </a>
     );

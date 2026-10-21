@@ -55,7 +55,7 @@ test.describe('inbox', () => {
       await expect(attention.getByRole('link', { name: title })).toBeVisible();
     await expect(attention.getByRole('img', { name: 'Changes requested' })).toBeVisible();
     await expect(attention.getByRole('img', { name: 'Merge conflict' })).toBeVisible();
-    await expect(page.locator('[data-section="team"] [data-team="acme/backend"]')).toContainText('@acme/backend');
+    await expect(page.locator('[data-section="team"] [data-priority-lane="soon"]')).toContainText('Document the cache layout');
     await expect(page.getByText('YOUR TURN')).toHaveCount(0);
     const pendingRows = [
       ['attention', /Retry the sync backoff/],
@@ -68,7 +68,7 @@ test.describe('inbox', () => {
     ] as const;
     for (const [section, title] of pendingRows) {
       if (section === 'merged') await group(/Recently merged/).click();
-      await expect(page.locator(`[data-section="${section}"]`).getByRole('link', { name: title })).toContainText('1 pending');
+      await expect(page.locator(`[data-section="${section}"]`).getByRole('link', { name: title })).not.toContainText('pending');
     }
   });
 
@@ -91,16 +91,17 @@ test.describe('inbox', () => {
     await mockGitHub(page);
     await seedInbox(page, { repos: [] });
     await page.goto('/');
-    const now = page.locator('[data-priority-lane="now"]');
+    const requested = page.locator('[data-section="requested"]');
+    const now = requested.locator('[data-priority-lane="now"]');
     await expect(now.locator('strong')).toHaveText('Now');
     await expect(now.getByRole('link', { name: /Improve worker retries/ })).toBeVisible();
     await expect(now.getByRole('img', { name: '1 ready stacked on this' })).toBeVisible();
-    await expect(now.getByRole('img', { name: 'code owner' })).toBeVisible();
+    await expect(now.getByRole('img', { name: 'Code owner' })).toBeVisible();
     await expect(now.getByText('checks green')).toHaveCount(0);
-    const soon = page.locator('[data-priority-lane="soon"]');
+    const soon = requested.locator('[data-priority-lane="soon"]');
     await expect(soon).toBeVisible();
     await expect(soon.locator('a.pr-row').first()).toHaveAttribute('title', /Rotate infra credentials/);
-    await expect(page.locator('[data-priority-lane="later"]')).toBeVisible();
+    await expect(requested.locator('[data-priority-lane="later"]')).toHaveCount(0);
   });
 
   test('filters pull requests by search text and repository', async ({ page }) => {
@@ -283,14 +284,14 @@ test.describe('inbox', () => {
     await expect(page.getByRole('link', { name: /Tune cache eviction/ }).getByRole('img', { name: 'Checks running' })).toBeVisible();
     const checkGeometry = await page.locator('section.requested .pr-row').evaluateAll(rows =>
       rows.flatMap(row => {
-        const time = row.querySelector('.row-time')?.textContent?.trim();
+        const title = row.getAttribute('title');
         const icon = row.querySelector('[aria-label^="Checks"] svg');
-        if (!time || !icon) return [];
+        if (!title || !icon) return [];
         const rect = icon.getBoundingClientRect();
-        return [{ time, centerX: Math.round((rect.left + rect.width / 2) * 1000) / 1000, width: rect.width }];
+        return [{ title, centerX: Math.round((rect.left + rect.width / 2) * 1000) / 1000, width: rect.width }];
       }),
     );
-    expect(new Set(checkGeometry.map(row => row.time)).size).toBeGreaterThan(1);
+    expect(new Set(checkGeometry.map(row => row.title)).size).toBeGreaterThan(1);
     expect(new Set(checkGeometry.map(row => row.centerX)).size).toBe(1);
     expect(checkGeometry.every(row => row.width === 16)).toBe(true);
   });

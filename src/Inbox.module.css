@@ -276,10 +276,16 @@
 .cell-checks {
   width: 20px;
 }
-.cell-changes {
-  width: 112px;
+.cell-stack {
+  width: 32px;
   justify-content: flex-end;
-  gap: 8px;
+}
+.cell-owner {
+  width: 16px;
+}
+.cell-changes {
+  width: 96px;
+  justify-content: flex-end;
 }
 .changes {
   display: inline-flex;
@@ -296,34 +302,50 @@
 .tone-amber {
   color: var(--color-amber);
 }
-.priority-lane + .priority-lane {
-  margin-top: 12px;
+.priority-lane {
+  --lane-color: var(--color-muted);
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  border-bottom: 1px solid var(--color-border);
+}
+.priority-lane[data-priority-lane='now'] {
+  --lane-color: var(--color-red);
+}
+.priority-lane[data-priority-lane='soon'] {
+  --lane-color: var(--color-amber);
+}
+/* Team groups share the lane look without the gutter. */
+.priority-lane[data-team] {
+  display: block;
+  border-bottom: 0;
 }
 .priority-lane-heading {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 20px 6px;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 0 0 12px;
+  border-right: 2px solid var(--lane-color);
   color: var(--color-secondary);
   font-size: var(--text-xs);
 }
+.priority-lane[data-team] .priority-lane-heading {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px 6px;
+  border-right: 0;
+}
 .priority-lane-heading > span {
-  padding: 1px 5px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
   color: var(--color-muted);
   font-variant-numeric: tabular-nums;
+}
+.priority-lane :global(.pr-row:last-child) {
+  border-bottom: 0;
 }
 .priority-empty {
   padding: 10px 20px 14px;
   color: var(--color-muted);
   font-size: var(--text-xs);
-}
-.priority-reasons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 6px;
 }
 .priority-reason {
   display: inline-flex;
@@ -332,14 +354,11 @@
   color: var(--color-muted);
   font-size: var(--text-xs);
 }
-.priority-reasons {
-  gap: 10px;
-}
 .blocker {
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 4px;
-  margin-left: 4px;
 }
 @media (max-width: 1100px) {
   .cell-bubbles {

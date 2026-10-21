@@ -50,6 +50,7 @@ import {
   sortOptions,
   type InboxSectionId,
   type SortChoice,
+  prioritized,
 } from './inboxPreferences';
 import InboxRow from './InboxRow';
 import { priority, type PriorityResult } from './priority';
@@ -421,7 +422,7 @@ export default defineComponent(
       const filtered = sectionItems(section).filter(item =>
         `${item.title} ${item.number} ${item.user.login} ${itemRepository(item)}`.toLowerCase().includes(q),
       );
-      if (section.id === 'requested' && choice === 'priority') {
+      if (prioritized(section.id) && choice === 'priority') {
         const now = new Date();
         return filtered
           .map(item => ({
@@ -429,9 +430,6 @@ export default defineComponent(
             priority: priority(
               item.details?.priority ?? {
                 waitStart: item.details?.createdAt ?? item.created_at,
-                newCommits: 0,
-                moreThanTwentyNewCommits: false,
-                reviewedWithoutNewCommits: false,
                 stackedReady: 0,
                 codeOwner: false,
                 checks: item.details?.checks ?? null,
@@ -684,7 +682,7 @@ export default defineComponent(
                   allRows = items(section),
                   limit = visibleLimit(section.id),
                   shown = allRows.slice(0, limit),
-                  prioritized = section.id === 'requested' && sortChoice(section.id) === 'priority';
+                  ranked = prioritized(section.id) && sortChoice(section.id) === 'priority';
                 return (
                   <section key={section.id} data-section={section.id} class={`mb-5 ${section.group}`}>
                     <div class={styles['group-row']}>
@@ -744,7 +742,7 @@ export default defineComponent(
                             <div class={`popover ${styles['sort-popover']}`} role="menu" aria-label={`Sort ${section.label} by`}>
                               <div class="popover-title">Sort by</div>
                               {sortOptions
-                                .filter(option => section.id === 'requested' || !('value' in option) || option.value !== 'priority')
+                                .filter(option => prioritized(section.id) || !('value' in option) || option.value !== 'priority')
                                 .map(option => {
                                   if ('value' in option) {
                                     const checked = sortChoice(section.id) === option.value;
@@ -809,27 +807,30 @@ export default defineComponent(
                           </div>
                         ) : (
                           <>
-                            {prioritized ? (
+                            {ranked ? (
                               priorityLanes.map(lane => {
                                 const laneRows = shown.filter(row => row.priority?.lane === lane.id);
+                                if (!laneRows.length && lane.id !== 'now') return null;
                                 return (
                                   <div key={lane.id} class={styles['priority-lane']} data-priority-lane={lane.id}>
                                     <div class={styles['priority-lane-heading']}>
                                       <strong>{lane.label}</strong>
                                       <span>{laneRows.length}</span>
                                     </div>
-                                    {laneRows.map(row => (
-                                      <InboxRow
-                                        key={row.item.id}
-                                        item={row.item}
-                                        group={section.group}
-                                        viewerLogin={props.info.user.login}
-                                        priority={row.priority}
-                                      />
-                                    ))}
-                                    {lane.id === 'now' && !laneRows.length && (
-                                      <div class={styles['priority-empty']}>Nothing is waiting on you.</div>
-                                    )}
+                                    <div class="min-w-0">
+                                      {laneRows.map(row => (
+                                        <InboxRow
+                                          key={row.item.id}
+                                          item={row.item}
+                                          group={section.group}
+                                          viewerLogin={props.info.user.login}
+                                          priority={row.priority}
+                                        />
+                                      ))}
+                                      {lane.id === 'now' && !laneRows.length && (
+                                        <div class={styles['priority-empty']}>Nothing is waiting on you.</div>
+                                      )}
+                                    </div>
                                   </div>
                                 );
                               })

@@ -327,9 +327,6 @@ function demoDetails(number: number, login: string): PullRequestDetails {
     pendingComments: 0,
     priority: {
       waitStart: now,
-      newCommits: 0,
-      moreThanTwentyNewCommits: false,
-      reviewedWithoutNewCommits: false,
       stackedReady: 0,
       codeOwner: false,
       checks,
