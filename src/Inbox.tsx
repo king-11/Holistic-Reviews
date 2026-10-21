@@ -56,7 +56,7 @@ import InboxRow from './InboxRow';
 import { priority, type PriorityResult } from './priority';
 import { inboxChangedAt, inboxSnapshots, withSnapshots } from './inboxUpdates';
 import { createShortcuts, modalOpen, step } from './shortcuts';
-import { Dismiss, IconButton, SearchField, Spinner, inputValue } from './ui';
+import { Dismiss, Github, IconButton, SearchField, Spinner, inputValue } from './ui';
 import styles from './Inbox.module.css';
 
 // Each section is a view of one fetched group; your open PRs split by what has to happen next.
@@ -542,9 +542,17 @@ export default defineComponent(
             <span class={styles['nav-label']}>Collapse</span>
           </button>
           <div class={`border-t border-t-border py-3 px-2 flex items-center gap-1.5 text-muted text-xs ${styles['sidebar-status']}`}>
-            <span class="status-dot" />
-            Connected to GitHub
-            <span class="version ml-auto text-xs">v0.2</span>
+            <a
+              class={styles['repo-link']}
+              href="https://github.com/king-11/Holistic-Reviews"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Holistic Reviews on GitHub"
+              aria-label="Holistic Reviews on GitHub"
+            >
+              <Github size={16} />
+            </a>
+            <span class="version ml-auto text-xs">v0.3</span>
           </div>
         </aside>
         <main class="min-w-0 bg-surface">

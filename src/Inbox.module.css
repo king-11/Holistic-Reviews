@@ -371,6 +371,13 @@
   }
 }
 
+.repo-link {
+  display: inline-flex;
+  color: var(--color-muted);
+}
+.repo-link:hover {
+  color: var(--color-secondary);
+}
 .rail-layout {
   grid-template-columns: 60px minmax(0, 1fr);
 }
