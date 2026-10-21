@@ -18,7 +18,7 @@
 - **Single-file focus:** Clicking **Expand** on a file header opens that file at full width and hides the file sidebar; **Restore**, **Back to all files**, or `Escape` returns to all files.
 - **Hunk context expansion:** Clicking a hidden-line control loads full UTF-8 file contents (up to 1 MiB) at the exact `base.sha` and `head.sha`, verifies them against the patch hunks, and reveals 20 lines in the nearest direction (or all lines on **Expand all**). Expanded context is read-only.
 - **Commit comparison:** The **All commits** popover and **Commits** tab let the user inspect a single commit or base-to-head commit range. Comparison ranges are read-only; selecting **All commits** or jumping to a comment restores the full commentable PR diff.
-- **Stacks & branch dependencies:** Displays native GitHub stack entries when available, falling back to parent/child PRs inferred by matching `head.ref` / `base.ref` within the same repository.
+- **Stacks & branch dependencies:** Displays native GitHub stack entries when available, falling back to parent/child PRs inferred by matching `head.ref` / `base.ref` within the same repository. Inferred parents appear above the current PR and children below it, with accessible titles identifying each relationship.
 
 ## Command Bar
 

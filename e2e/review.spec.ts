@@ -1496,12 +1496,16 @@ test.describe('workspace', () => {
   test('shows branch-linked parent and child PRs and closes the stack panel', async ({ page }) => {
     await mockGitHub(page);
     await openPR(page);
-    await expect(page.getByRole('button', { name: /Parent #41/ })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /#41 Prepare worker base/ })).toHaveCount(0);
     await page.getByRole('button', { name: 'Dependent pull requests' }).click();
-    await expect(page.getByRole('button', { name: /Parent #41 Prepare worker base/ })).toBeVisible();
-    await expect(page.getByRole('button', { name: /Child #43 Use retries in scheduler/ })).toBeVisible();
+    const parent = page.getByRole('button', { name: /#41 Prepare worker base/ });
+    const child = page.getByRole('button', { name: /#43 Use retries in scheduler/ });
+    await expect(parent).toBeVisible();
+    await expect(parent).toHaveAttribute('title', 'Open parent PR #41: Prepare worker base');
+    await expect(child).toBeVisible();
+    await expect(child).toHaveAttribute('title', 'Open child PR #43: Use retries in scheduler');
     await page.getByRole('button', { name: 'Close stack panel' }).click();
-    await expect(page.getByRole('button', { name: /Parent #41/ })).toHaveCount(0);
+    await expect(parent).toHaveCount(0);
   });
 
   test('renders Markdown emoji, nested read-only checklists, details and review summaries', async ({ page }) => {

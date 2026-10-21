@@ -1850,7 +1850,7 @@ button.section-heading:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.dependency-kind {
+.dependency-position {
   display: flex;
   gap: 4px;
   align-items: center;
@@ -2347,7 +2347,7 @@ form:has(.review-options input[value='REQUEST_CHANGES']:checked) .modal-footer .
     gap: 4px;
     padding: 0 8px;
   }
-  .dependency-kind {
+  .dependency-position {
     width: 40px;
   }
   .dependency-node {
