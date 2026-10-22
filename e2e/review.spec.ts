@@ -47,6 +47,7 @@ test.describe('inbox', () => {
       /Ready to merge\s*1/,
       /Awaiting review\s*1/,
       /Drafts\s*1/,
+      /Reviewed by you\s*1/,
       /Recently merged\s*1/,
     ])
       await expect(group(name)).toBeVisible();
@@ -64,6 +65,7 @@ test.describe('inbox', () => {
       ['ready', /Tighten cache keys/],
       ['waiting', /Speed up CI cache/],
       ['drafts', /Sketch retry dashboard/],
+      ['reviewed', /Trim worker logs/],
       ['merged', /Ship metrics exporter/],
     ] as const;
     for (const [section, title] of pendingRows) {
@@ -185,7 +187,7 @@ test.describe('inbox', () => {
     await page.goto('/');
     const requested = page.locator('[data-section="requested"]');
     const returned = page.locator('[data-section="attention"]');
-    await expect.poll(() => fake.searches.length).toBe(5);
+    await expect.poll(() => fake.searches.length).toBe(6);
     await expect(requested.locator('.pr-row')).toHaveCount(3);
     const returnedTitles = await returned.locator('.pr-row-title').allTextContents();
     const searches = fake.searches.length;
@@ -248,7 +250,7 @@ test.describe('inbox', () => {
     const fake = await mockGitHub(page, { requestedPRCount: 105 });
     await seedInbox(page, { repos: ['acme/app'] });
     await page.goto('/');
-    await expect.poll(() => fake.searches.length).toBe(5);
+    await expect.poll(() => fake.searches.length).toBe(6);
     const searches = fake.searches.length;
     await page.getByRole('button', { name: 'Sort Requested from you', exact: true }).click();
     await page.getByRole('menuitemradio', { name: 'Created: Oldest first' }).click();
@@ -266,11 +268,11 @@ test.describe('inbox', () => {
     await seedInbox(page, { repos: ['acme/app'] });
     const teamsResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/user/teams');
     await page.goto('/');
-    await expect.poll(() => fake.searches.length).toBe(5);
+    await expect.poll(() => fake.searches.length).toBe(6);
     await expect(page.getByRole('button', { name: 'Refresh inbox' })).toBeEnabled();
     await teamsResponse;
     await page.waitForTimeout(100);
-    expect(fake.searches).toHaveLength(5);
+    expect(fake.searches).toHaveLength(6);
   });
 
   test('shows changes, checks, and people involved on each inbox row', async ({ page }) => {
@@ -305,7 +307,7 @@ test.describe('inbox', () => {
     const loadMore = section.getByRole('button', { name: /^Load more ·/ });
     await expect(rows).toHaveCount(10);
     await expect(loadMore).toHaveText('Load more · 10 of 105');
-    await expect.poll(() => fake.searches.length).toBe(5);
+    await expect.poll(() => fake.searches.length).toBe(6);
     await loadMore.scrollIntoViewIfNeeded();
     const lastRow = await rows.last().elementHandle();
     if (!lastRow) throw new Error('Expected a requested PR row.');

@@ -52,6 +52,7 @@ export function placement(pr: PullRequest, reviews: Review[], comments: Comment[
     team: ready && !direct && (reviewed ? false : team),
     authored: open && mine && !pr.draft,
     drafts: open && mine && pr.draft,
+    reviewed: open && !mine && reviewed && !direct,
     merged: pr.merged,
   };
 }

@@ -227,7 +227,7 @@ const rollupChecks: Record<string, 'success' | 'failure' | 'pending'> = {
 
 // Derived from GraphQL review data; GitHub search cannot tell comment-only reviews from none.
 export type ReviewState = 'approved' | 'returned' | 'waiting';
-export type InboxGroup = 'requested' | 'team' | 'authored' | 'drafts' | 'merged';
+export type InboxGroup = 'requested' | 'team' | 'authored' | 'drafts' | 'reviewed' | 'merged';
 export interface InboxResult {
   items: InboxItem[];
   total_count: number;
@@ -338,6 +338,25 @@ export interface TokenInfo {
   scopes: string[];
   fineGrained: boolean;
   teams?: string[];
+}
+
+export function parsePRCommandInput(value: string, currentPR?: PRRef): PRRef | null {
+  const input = value.trim();
+  if (!input) return null;
+  let parsed: PRRef | null;
+  try {
+    parsed = parsePRUrl(input);
+  } catch {
+    parsed = null;
+  }
+  if (parsed) return parsed;
+  const shorthand = input.match(/^([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)#([1-9]\d*)$/);
+  if (shorthand && Number.isSafeInteger(Number(shorthand[3])))
+    return { owner: shorthand[1]!, repo: shorthand[2]!, number: Number(shorthand[3]) };
+  const localNumber = input.match(/^#([1-9]\d*)$/);
+  if (localNumber && currentPR && Number.isSafeInteger(Number(localNumber[1])))
+    return { owner: currentPR.owner, repo: currentPR.repo, number: Number(localNumber[1]) };
+  return null;
 }
 
 export function parsePRUrl(value: string): PRRef {
@@ -466,6 +485,8 @@ export function inboxQuery(group: InboxGroup, login: string, repos: string[] = [
     team: `is:open review-requested:${login} -user-review-requested:${login} draft:false`,
     authored: `is:open author:${login} draft:false`,
     drafts: `is:open author:${login} draft:true`,
+    // Re-requested reviews already show under the two requested sections.
+    reviewed: `is:open reviewed-by:${login} -author:${login} -review-requested:${login}`,
     merged: mergedQueries[merged],
   };
   return `${base} ${queries[group]}`.trim();

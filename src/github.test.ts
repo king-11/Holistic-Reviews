@@ -288,6 +288,7 @@ describe('PR references and inbox queries', () => {
     assert.match(inboxQuery('team', 'me'), /is:open review-requested:me -user-review-requested:me draft:false/);
     assert.match(inboxQuery('authored', 'me'), /author:me draft:false/);
     assert.match(inboxQuery('drafts', 'me'), /author:me draft:true/);
+    assert.match(inboxQuery('reviewed', 'me'), /is:open reviewed-by:me -author:me -review-requested:me$/);
     assert.match(inboxQuery('requested', 'me', ['acme/app', 'acme/other']), /repo:acme\/app repo:acme\/other/);
   });
   for (const [name, repos, merged, expected] of [

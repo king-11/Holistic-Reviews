@@ -2,7 +2,7 @@ import { searchResultCap, type InboxItem, type MergedFilter, type SearchOrder } 
 import { tryStorage } from './storage.ts';
 
 const mergedFilters = ['all', 'mine', 'reviewing'] as const;
-const sectionIds = ['attention', 'requested', 'team', 'ready', 'waiting', 'drafts', 'merged'] as const;
+const sectionIds = ['attention', 'requested', 'team', 'ready', 'waiting', 'drafts', 'reviewed', 'merged'] as const;
 const sortChoices = [
   'priority',
   'title-asc',

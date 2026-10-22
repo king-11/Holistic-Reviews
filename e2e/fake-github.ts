@@ -167,6 +167,7 @@ const inboxGroups: [RegExp, ReturnType<typeof inbox>[]][] = [
     ],
   ],
   [/-user-review-requested:/, [inbox(92, 'Document the cache layout')]],
+  [/is:open reviewed-by:/, [inbox(100, 'Trim worker logs', { draft: true })]],
 ];
 
 const reviewState = { APPROVE: 'APPROVED', REQUEST_CHANGES: 'CHANGES_REQUESTED', COMMENT: 'COMMENTED' } as Record<string, string>;

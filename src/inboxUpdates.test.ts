@@ -58,7 +58,7 @@ describe('placement', () => {
     {
       name: 'a direct request stays requested until the viewer reviews',
       pull: pr({ requested_reviewers: [me] }),
-      expected: { requested: true, team: false, authored: false, merged: false },
+      expected: { requested: true, team: false, authored: false, reviewed: false, merged: false },
     },
     {
       name: 'a request by name wins over a team request',
@@ -70,7 +70,7 @@ describe('placement', () => {
       name: 'approving clears a team request',
       pull: pr({ requested_teams: [{ slug: 'core', name: 'Core' }] }),
       reviews: [review(me, 'APPROVED')],
-      expected: { requested: false, team: false },
+      expected: { requested: false, team: false, reviewed: true },
     },
     {
       name: 'a team request without known viewer teams is left to search',
@@ -105,7 +105,25 @@ describe('placement', () => {
     {
       name: 'a merged PR leaves every open group',
       pull: pr({ user: me, state: 'closed', merged: true }),
-      expected: { requested: false, team: false, authored: false, drafts: false, merged: true },
+      expected: { requested: false, team: false, authored: false, drafts: false, reviewed: false, merged: true },
+    },
+    {
+      name: 'a re-requested review leaves reviewed by you',
+      pull: pr({ requested_reviewers: [me] }),
+      reviews: [review(me, 'APPROVED')],
+      expected: { requested: true, reviewed: false },
+    },
+    {
+      name: 'a draft you reviewed stays in reviewed by you',
+      pull: pr({ draft: true }),
+      reviews: [review(me, 'CHANGES_REQUESTED')],
+      expected: { requested: false, reviewed: true },
+    },
+    {
+      name: 'your own PR is never reviewed by you',
+      pull: pr({ user: me }),
+      comments: [{ id: 9, node_id: 'C9', user: me, body: 'x', created_at: '', path: 'a.ts', pull_request_review_id: 5 } as Comment],
+      expected: { reviewed: false },
     },
     {
       name: 'your draft sits in drafts, not authored',

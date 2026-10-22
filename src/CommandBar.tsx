@@ -1,6 +1,6 @@
 import { computed, defineComponent, nextTick, onMounted, onUnmounted, shallowRef, watch } from 'vue';
 import { ArrowLeft, ArrowRight, Check } from '@lucide/vue';
-import { parsePRUrl, type PRRef } from './github.ts';
+import { parsePRCommandInput, type PRRef } from './github.ts';
 import { themes, type ThemeId } from './themes';
 import { comboKeys, commandDefinitions, type CommandContext, type CommandEntry } from './shortcuts';
 import { Modal, SearchField } from './ui';
@@ -13,25 +13,6 @@ type CommandOption = {
   entry?: CommandEntry;
   theme?: ThemeId;
 };
-
-export function parsePRCommandInput(value: string, currentPR?: PRRef): PRRef | null {
-  const input = value.trim();
-  if (!input) return null;
-  let parsed: PRRef | null;
-  try {
-    parsed = parsePRUrl(input);
-  } catch {
-    parsed = null;
-  }
-  if (parsed) return parsed;
-  const shorthand = input.match(/^([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)#([1-9]\d*)$/);
-  if (shorthand && Number.isSafeInteger(Number(shorthand[3])))
-    return { owner: shorthand[1]!, repo: shorthand[2]!, number: Number(shorthand[3]) };
-  const localNumber = input.match(/^#([1-9]\d*)$/);
-  if (localNumber && currentPR && Number.isSafeInteger(Number(localNumber[1])))
-    return { owner: currentPR.owner, repo: currentPR.repo, number: Number(localNumber[1]) };
-  return null;
-}
 
 export const CommandBar = defineComponent(
   (props: {
