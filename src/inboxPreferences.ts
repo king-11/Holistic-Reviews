@@ -2,7 +2,7 @@ import { searchResultCap, type InboxItem, type MergedFilter, type SearchOrder } 
 import { tryStorage } from './storage.ts';
 
 const mergedFilters = ['all', 'mine', 'reviewing'] as const;
-const sectionIds = ['requested', 'returned', 'approved', 'waiting', 'drafts', 'reviewed', 'merged'] as const;
+const sectionIds = ['attention', 'requested', 'team', 'ready', 'waiting', 'drafts', 'merged'] as const;
 const sortChoices = [
   'priority',
   'title-asc',
@@ -54,7 +54,9 @@ export const sortOptions: SortOption[] = [
     ],
   },
 ];
-export const defaultSort = (section: InboxSectionId): SortChoice => (section === 'requested' ? 'priority' : 'updated-desc');
+// Review requests, by name or through a team, are the sections ranked by priority.
+export const prioritized = (section: InboxSectionId) => section === 'requested' || section === 'team';
+export const defaultSort = (section: InboxSectionId): SortChoice => (prioritized(section) ? 'priority' : 'updated-desc');
 // Updated and created also re-query, since only GitHub can order pages that aren't loaded yet.
 export const serverOrder = (choice: SortChoice): SearchOrder => ({
   sort: choice.startsWith('created') ? 'created' : 'updated',
@@ -89,6 +91,8 @@ type InboxPreferences = {
   sorts?: Partial<Record<InboxSectionId, SortChoice>>;
   merged?: MergedFilter;
   known?: string[];
+  // Sidebar collapsed to an icon rail.
+  rail?: boolean;
 };
 const preferencesKey = 'review.inbox';
 const stringList = (value: unknown) =>
@@ -100,7 +104,7 @@ const sectionSorts = (value: unknown) => {
       ([section, choice]) =>
         sectionIds.includes(section as InboxSectionId) &&
         sortChoices.includes(choice as SortChoice) &&
-        (section === 'requested' || choice !== 'priority'),
+        (prioritized(section as InboxSectionId) || choice !== 'priority'),
     ),
   ) as Partial<Record<InboxSectionId, SortChoice>>;
 };
@@ -111,6 +115,7 @@ export function readPreferences(): InboxPreferences {
     sorts: sectionSorts(saved?.sorts),
     merged: mergedFilters.find(filter => filter === saved?.merged),
     known: stringList(saved?.known),
+    rail: saved?.rail === true || undefined,
   };
 }
 export const savePreferences = (preferences: InboxPreferences) =>

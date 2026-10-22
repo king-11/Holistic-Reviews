@@ -174,6 +174,11 @@ export interface PullRequestDetails {
   priority: PriorityInput;
   participants: { login: string; avatarUrl: string }[];
   participantCount: number;
+  conflict?: boolean;
+  // Requested teams as org/slug, for grouping team review requests.
+  teams?: string[];
+  // Humans whose latest review requested changes.
+  changesBy?: string[];
 }
 
 export interface InboxItem {
@@ -210,7 +215,7 @@ const maxTextFileBytes = 1_048_576;
 const contentCacheSize = 32;
 // Review fields feed the authored classification; they are fetched for every page so one query serves all groups.
 const pullRequestDetailFields =
-  'createdAt additions deletions commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } recentCommits: commits(last: 20) { nodes { commit { oid committedDate } } } viewerLatestReview { submittedAt commit { oid } } readyEvents: timelineItems(itemTypes: [READY_FOR_REVIEW_EVENT], last: 1) { nodes { ... on ReadyForReviewEvent { createdAt } } } pendingReviews: reviews(states: PENDING, first: 1) { nodes { comments { totalCount } } } participants(first: 10) { totalCount nodes { login avatarUrl(size: 40) } } reviewDecision latestReviews(first: 50) { nodes { state author { __typename login } } } reviewRequests(first: 50) { nodes { asCodeOwner requestedReviewer { __typename ... on User { login } } } }';
+  'createdAt additions deletions commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state } } } } readyEvents: timelineItems(itemTypes: [READY_FOR_REVIEW_EVENT], last: 1) { nodes { ... on ReadyForReviewEvent { createdAt } } } requestEvents: timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 20) { nodes { ... on ReviewRequestedEvent { createdAt requestedReviewer { __typename ... on User { login } ... on Team { combinedSlug } } } } } pendingReviews: reviews(states: PENDING, first: 1) { nodes { comments { totalCount } } } participants(first: 10) { totalCount nodes { login avatarUrl(size: 40) } } mergeable reviewDecision latestReviews(first: 50) { nodes { state submittedAt author { __typename login } } } reviewRequests(first: 50) { nodes { asCodeOwner requestedReviewer { __typename ... on User { login } ... on Team { combinedSlug } } } }';
 // Pending and expected checks both mean the outcome is still open; absent rollups mean there are no checks.
 const rollupChecks: Record<string, 'success' | 'failure' | 'pending'> = {
   SUCCESS: 'success',
@@ -222,7 +227,7 @@ const rollupChecks: Record<string, 'success' | 'failure' | 'pending'> = {
 
 // Derived from GraphQL review data; GitHub search cannot tell comment-only reviews from none.
 export type ReviewState = 'approved' | 'returned' | 'waiting';
-export type InboxGroup = 'requested' | 'authored' | 'drafts' | 'reviewed' | 'merged';
+export type InboxGroup = 'requested' | 'team' | 'authored' | 'drafts' | 'merged';
 export interface InboxResult {
   items: InboxItem[];
   total_count: number;
@@ -373,7 +378,7 @@ export function branchRelations(pr: PullRequest, candidates: PullRequest[]) {
 
 export type ReviewSummary = {
   reviewDecision: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null;
-  latestReviews: { state: string; author: { __typename: string; login: string } | null }[];
+  latestReviews: { state: string; submittedAt?: string; author: { __typename: string; login: string } | null }[];
   requested: string[];
 };
 // One row per reviewer: their latest submitted review and whether a request is still open. The sidebar, Merge button
@@ -411,11 +416,11 @@ export function reviewDecision(reviewers: Reviewer[]): ReviewSummary['reviewDeci
 // GitHub's own decision wins when known; null means the repository requires no reviews, so any approval counts.
 export function reviewOutcome(reviewers: Reviewer[], author: string, decision = reviewDecision(reviewers)): ReviewState {
   const rows = humans(reviewers).filter(row => row.login !== author);
-  if (decision === 'CHANGES_REQUESTED') return 'returned';
+  const blockers = rows.filter(row => row.review === 'CHANGES_REQUESTED');
+  // Re-requesting everyone who asked for changes hands the PR back to them; comments alone never return it.
+  if (decision === 'CHANGES_REQUESTED') return blockers.length && blockers.every(row => row.requested) ? 'waiting' : 'returned';
   if (decision === 'APPROVED' || (decision === null && rows.some(row => row.review === 'APPROVED'))) return 'approved';
-  // Re-requesting a reviewer hands the PR back to them, so it is waiting again.
-  if (rows.some(row => !row.requested && (row.review === 'COMMENTED' || row.review === 'CHANGES_REQUESTED'))) return 'returned';
-  return 'waiting';
+  return blockers.some(row => !row.requested) ? 'returned' : 'waiting';
 }
 export const classifyReview = (summary: ReviewSummary, author: string) =>
   reviewOutcome(
@@ -428,6 +433,15 @@ export const classifyReview = (summary: ReviewSummary, author: string) =>
     author,
     summary.reviewDecision,
   );
+
+// Your open PRs land in exactly one section, by what has to happen next.
+export type AuthoredSection = 'attention' | 'ready' | 'waiting';
+export const authoredSection = (item: InboxItem): AuthoredSection =>
+  item.review === 'returned' || item.details?.checks === 'failure' || item.details?.conflict
+    ? 'attention'
+    : item.review === 'approved'
+      ? 'ready'
+      : 'waiting';
 
 export function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
@@ -447,10 +461,11 @@ export function inboxQuery(group: InboxGroup, login: string, repos: string[] = [
     reviewing: `is:merged (review-requested:${login} OR reviewed-by:${login}) -author:${login}`,
   };
   const queries: Record<InboxGroup, string> = {
-    requested: `is:open review-requested:${login} draft:false`,
+    requested: `is:open user-review-requested:${login} draft:false`,
+    // Team requests are whatever review-requested adds on top of requests made to the viewer by name.
+    team: `is:open review-requested:${login} -user-review-requested:${login} draft:false`,
     authored: `is:open author:${login} draft:false`,
     drafts: `is:open author:${login} draft:true`,
-    reviewed: `is:open reviewed-by:${login} -author:${login}`,
     merged: mergedQueries[merged],
   };
   return `${base} ${queries[group]}`.trim();
@@ -1012,14 +1027,16 @@ export class GitHub {
       additions: number;
       deletions: number;
       reviewDecision: ReviewSummary['reviewDecision'];
-      commits: { nodes: { commit: { statusCheckRollup: { state: string } | null } }[] };
-      recentCommits: { nodes: { commit: { oid: string; committedDate: string } }[] };
-      viewerLatestReview: { submittedAt: string; commit: { oid: string } | null } | null;
+      commits: { nodes: { commit: { committedDate?: string; statusCheckRollup: { state: string } | null } }[] };
       readyEvents: { nodes: { createdAt?: string }[] };
+      requestEvents?: { nodes: { createdAt?: string; requestedReviewer?: { login?: string; combinedSlug?: string } | null }[] };
       pendingReviews: { nodes: { comments: { totalCount: number } }[] };
       participants: { totalCount: number; nodes: { login: string; avatarUrl: string }[] };
       latestReviews: { nodes: ReviewSummary['latestReviews'] };
-      reviewRequests: { nodes: { asCodeOwner: boolean; requestedReviewer: { __typename: string; login?: string } | null }[] };
+      reviewRequests: {
+        nodes: { asCodeOwner: boolean; requestedReviewer: { __typename: string; login?: string; combinedSlug?: string } | null }[];
+      };
+      mergeable: 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN';
     };
     const chunkSize = 25; // GitHub's GraphQL resource limit rejects larger aliased batches.
     const chunks = Array.from({ length: Math.ceil(items.length / chunkSize) }, (_, index) =>
@@ -1049,7 +1066,7 @@ export class GitHub {
           }
         }),
       ),
-      group === 'requested'
+      group === 'requested' || group === 'team'
         ? Promise.all(chunks.map(chunk => this.requestedStackCounts(chunk, signal).catch(() => chunk.map(() => 0))))
         : Promise.resolve(chunks.map(chunk => chunk.map(() => 0))),
     ]);
@@ -1062,18 +1079,20 @@ export class GitHub {
       const requested = pr.reviewRequests.nodes.flatMap(node => (node.requestedReviewer?.login ? [node.requestedReviewer.login] : []));
       const participants = pr.participants.nodes.filter(user => user.login !== item.user.login);
       const waitReadyAt = pr.readyEvents.nodes[0]?.createdAt ?? pr.createdAt;
-      const reviewedOid = pr.viewerLatestReview?.commit?.oid;
-      const reviewedIndex = reviewedOid ? pr.recentCommits.nodes.findIndex(({ commit }) => commit.oid === reviewedOid) : -1;
-      const moreThanTwentyNewCommits = !!pr.viewerLatestReview && !!reviewedOid && reviewedIndex < 0;
-      const newCommits = moreThanTwentyNewCommits ? 20 : reviewedIndex >= 0 ? pr.recentCommits.nodes.length - reviewedIndex - 1 : 0;
-      const reviewedWithoutNewCommits = !!pr.viewerLatestReview && newCommits === 0 && !moreThanTwentyNewCommits;
-      const firstNewCommit = moreThanTwentyNewCommits
-        ? pr.recentCommits.nodes[0]?.commit.committedDate
-        : reviewedIndex >= 0
-          ? pr.recentCommits.nodes[reviewedIndex + 1]?.commit.committedDate
-          : undefined;
-      const waitStart = firstNewCommit ?? waitReadyAt;
+      const teams = pr.reviewRequests.nodes.flatMap(node =>
+        node.requestedReviewer?.combinedSlug ? [node.requestedReviewer.combinedSlug] : [],
+      );
+      // The wait starts when this review was asked for: of you by name, or of a team that is still requested.
+      const requestedAt = (pr.requestEvents?.nodes ?? [])
+        .filter(({ requestedReviewer: reviewer }) =>
+          group === 'team' ? !!reviewer?.combinedSlug && teams.includes(reviewer.combinedSlug) : reviewer?.login === login,
+        )
+        .at(-1)?.createdAt;
+      const waitStart = requestedAt && requestedAt > waitReadyAt ? requestedAt : waitReadyAt;
       const checks = rollupChecks[pr.commits.nodes[0]?.commit.statusCheckRollup?.state ?? ''] ?? null;
+      const changeRequests = pr.latestReviews.nodes.filter(
+        review => review.state === 'CHANGES_REQUESTED' && review.author?.__typename === 'User' && review.author.login !== item.user.login,
+      );
       const codeOwner = pr.reviewRequests.nodes.some(
         request =>
           request.asCodeOwner &&
@@ -1088,18 +1107,22 @@ export class GitHub {
         pendingComments: pr.pendingReviews.nodes.reduce((total, review) => total + review.comments.totalCount, 0),
         priority: {
           waitStart,
-          newCommits,
-          moreThanTwentyNewCommits,
-          reviewedWithoutNewCommits,
           stackedReady: stackCounts[index] ?? 0,
           codeOwner,
           checks,
         },
         participants,
         participantCount: pr.participants.totalCount - (participants.length < pr.participants.nodes.length ? 1 : 0),
+        conflict: pr.mergeable === 'CONFLICTING',
+        teams,
+        changesBy: changeRequests.map(review => review.author!.login),
       };
-      const review =
+      const classified =
         group === 'authored' ? classifyReview({ ...pr, latestReviews: pr.latestReviews.nodes, requested }, item.user.login) : undefined;
+      // GitHub keeps a change request until the reviewer looks again; a push after it means the author has answered.
+      const lastPush = pr.commits.nodes[0]?.commit.committedDate ?? '';
+      const answered = changeRequests.length > 0 && changeRequests.every(review => !!review.submittedAt && review.submittedAt < lastPush);
+      const review = classified === 'returned' && answered ? 'waiting' : classified;
       return { ...item, details, ...(review ? { review } : {}) };
     });
   }

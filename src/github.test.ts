@@ -14,7 +14,7 @@ import {
   type ReviewSummary,
   type StatusCheck,
 } from './github.ts';
-import { demoInbox, demoPR } from './fixtures.ts';
+import { demoPR } from './fixtures.ts';
 
 const ref = { owner: 'acme', repo: 'app', number: 42 };
 const sha = demoPR.head.sha;
@@ -283,12 +283,11 @@ describe('PR references and inbox queries', () => {
       assert.throws(() => parsePRUrl(url));
     }
   });
-  it('creates distinct review, authored, draft and reviewed queries', () => {
-    assert.match(inboxQuery('requested', 'me'), /is:open review-requested:me draft:false/);
+  it('creates distinct direct request, team request, authored and draft queries', () => {
+    assert.match(inboxQuery('requested', 'me'), /is:open user-review-requested:me draft:false/);
+    assert.match(inboxQuery('team', 'me'), /is:open review-requested:me -user-review-requested:me draft:false/);
     assert.match(inboxQuery('authored', 'me'), /author:me draft:false/);
     assert.match(inboxQuery('drafts', 'me'), /author:me draft:true/);
-    assert.match(inboxQuery('reviewed', 'me'), /reviewed-by:me -author:me/);
-    assert.doesNotMatch(inboxQuery('reviewed', 'me'), /\bdraft:/);
     assert.match(inboxQuery('requested', 'me', ['acme/app', 'acme/other']), /repo:acme\/app repo:acme\/other/);
   });
   for (const [name, repos, merged, expected] of [
@@ -356,9 +355,7 @@ describe('review state, auto-merge and merge settings', () => {
     additions: 3,
     deletions: 1,
     reviewDecision: decision,
-    commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
-    recentCommits: { nodes: [{ commit: { oid: 'head', committedDate: '2026-01-01T00:00:00Z' } }] },
-    viewerLatestReview: null,
+    commits: { nodes: [{ commit: { committedDate: '2026-01-01T00:00:00Z', statusCheckRollup: { state: 'SUCCESS' } } }] },
     readyEvents: { nodes: [] },
     pendingReviews: { nodes: [] },
     participants: { totalCount: 0, nodes: [] },
@@ -381,7 +378,17 @@ describe('review state, auto-merge and merge settings', () => {
   for (const [name, input, expected] of [
     ['an approving decision', summary('APPROVED', [review('APPROVED', 'bob')]), 'approved'],
     ['a changes-requested decision', summary('CHANGES_REQUESTED'), 'returned'],
-    ['a human comment that is not re-requested', summary('REVIEW_REQUIRED', [review('COMMENTED', 'bob')]), 'returned'],
+    ['a human comment that is not re-requested', summary('REVIEW_REQUIRED', [review('COMMENTED', 'bob')]), 'waiting'],
+    [
+      'changes requested by a reviewer who was re-requested',
+      summary('CHANGES_REQUESTED', [review('CHANGES_REQUESTED', 'bob')], ['bob']),
+      'waiting',
+    ],
+    [
+      'changes requested by a reviewer who was not re-requested',
+      summary('CHANGES_REQUESTED', [review('CHANGES_REQUESTED', 'bob')]),
+      'returned',
+    ],
     ['a human comment that was re-requested', summary('REVIEW_REQUIRED', [review('COMMENTED', 'bob')], ['bob']), 'waiting'],
     ['only bot comments', summary('REVIEW_REQUIRED', [review('COMMENTED', 'glean-pr-reviewer', 'Bot')]), 'waiting'],
     ["only the author's own comment", summary('REVIEW_REQUIRED', [review('COMMENTED', 'me')]), 'waiting'],
@@ -518,7 +525,7 @@ describe('review state, auto-merge and merge settings', () => {
     assert.match(String(calls[2].body?.query), /stack \{ entries\(first: 100\)/);
     assert.match(String(calls[2].body?.query), /pullRequest \{ number state isDraft \}/);
   });
-  it('uses recent commits, code-owner requests, and only ready non-draft stack entries for priority', async () => {
+  it('uses the ready time, code-owner requests, and only ready non-draft stack entries for priority', async () => {
     const calls = fake([
       { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
       {
@@ -528,14 +535,6 @@ describe('review state, auto-merge and merge settings', () => {
               pullRequest: {
                 ...reviewData(null),
                 readyEvents: { nodes: [{ createdAt: '2026-01-02T00:00:00Z' }] },
-                recentCommits: {
-                  nodes: [
-                    { commit: { oid: 'reviewed', committedDate: '2026-01-01T00:00:00Z' } },
-                    { commit: { oid: 'new-1', committedDate: '2026-01-03T00:00:00Z' } },
-                    { commit: { oid: 'new-2', committedDate: '2026-01-04T00:00:00Z' } },
-                  ],
-                },
-                viewerLatestReview: { submittedAt: '2026-01-01T00:00:00Z', commit: { oid: 'reviewed' } },
                 reviewRequests: {
                   nodes: [
                     { asCodeOwner: true, requestedReviewer: { __typename: 'User', login: 'me' } },
@@ -557,68 +556,50 @@ describe('review state, auto-merge and merge settings', () => {
     ]);
     const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
     assert.deepEqual(item.details?.priority, {
-      waitStart: '2026-01-03T00:00:00Z',
-      newCommits: 2,
-      moreThanTwentyNewCommits: false,
-      reviewedWithoutNewCommits: false,
+      waitStart: '2026-01-02T00:00:00Z',
       stackedReady: 1,
       codeOwner: true,
       checks: 'success',
     });
     assert.doesNotMatch(String(calls[1].body?.query), /\bstack\s*\{/);
-    assert.match(String(calls[1].body?.query), /recentCommits: commits\(last: 20\)/);
-    assert.match(String(calls[1].body?.query), /viewerLatestReview \{ submittedAt commit \{ oid \} \}/);
+    assert.match(String(calls[1].body?.query), /requestEvents: timelineItems\(itemTypes: \[REVIEW_REQUESTED_EVENT\]/);
     assert.match(String(calls[1].body?.query), /asCodeOwner/);
   });
-  it('does not award waiting after a review with no new commits', async () => {
-    fake([
-      { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
-      {
-        data: {
+  for (const [group, expected] of [
+    ['requested', '2026-01-03T00:00:00Z'],
+    ['team', '2026-01-04T00:00:00Z'],
+  ] as const)
+    it(`starts the ${group} wait at the latest request that still applies`, async () => {
+      fake([
+        { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
+        {
           data: {
-            pr0: {
-              pullRequest: {
-                ...reviewData(null),
-                viewerLatestReview: { submittedAt: '2026-01-02T00:00:00Z', commit: { oid: 'head' } },
-              },
-            },
-          },
-        },
-      },
-      stackResponse(),
-    ]);
-    const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
-    assert.equal(item.details?.priority.reviewedWithoutNewCommits, true);
-    assert.equal(item.details?.priority.newCommits, 0);
-  });
-  it('uses 20+ commits and the oldest listed commit when the reviewed OID is missing', async () => {
-    fake([
-      { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
-      {
-        data: {
-          data: {
-            pr0: {
-              pullRequest: {
-                ...reviewData(null),
-                recentCommits: {
-                  nodes: [
-                    { commit: { oid: 'oldest', committedDate: '2026-01-01T00:00:00Z' } },
-                    { commit: { oid: 'newest', committedDate: '2026-01-02T00:00:00Z' } },
-                  ],
+            data: {
+              pr0: {
+                pullRequest: {
+                  ...reviewData(null),
+                  readyEvents: { nodes: [{ createdAt: '2026-01-02T00:00:00Z' }] },
+                  reviewRequests: {
+                    nodes: [{ asCodeOwner: false, requestedReviewer: { __typename: 'Team', combinedSlug: 'acme/backend' } }],
+                  },
+                  requestEvents: {
+                    nodes: [
+                      { createdAt: '2026-01-01T00:00:00Z', requestedReviewer: { login: 'me' } },
+                      { createdAt: '2026-01-03T00:00:00Z', requestedReviewer: { login: 'me' } },
+                      { createdAt: '2026-01-04T00:00:00Z', requestedReviewer: { combinedSlug: 'acme/backend' } },
+                      { createdAt: '2026-01-05T00:00:00Z', requestedReviewer: { combinedSlug: 'acme/removed' } },
+                    ],
+                  },
                 },
-                viewerLatestReview: { submittedAt: '2025-12-01T00:00:00Z', commit: { oid: 'outside-recent-20' } },
               },
             },
           },
         },
-      },
-      stackResponse(),
-    ]);
-    const [item] = (await new GitHub('test-only-token').inbox('requested', { login: 'me' })).items;
-    assert.equal(item.details?.priority.moreThanTwentyNewCommits, true);
-    assert.equal(item.details?.priority.newCommits, 20);
-    assert.equal(item.details?.priority.waitStart, '2026-01-01T00:00:00Z');
-  });
+        stackResponse(),
+      ]);
+      const [item] = (await new GitHub('test-only-token').inbox(group, { login: 'me' })).items;
+      assert.equal(item.details?.priority.waitStart, expected);
+    });
   it('falls back to createdAt without a ready event and treats stack query failures as zero points', async () => {
     const calls = fake([
       { data: { items: [authoredItem(1)], total_count: 1, incomplete_results: false } },
@@ -631,8 +612,8 @@ describe('review state, auto-merge and merge settings', () => {
     assert.equal(calls.length, 3);
   });
   for (const [group, reviews] of [
-    ['reviewed', [undefined, undefined]],
-    ['authored', ['approved', 'returned']],
+    ['team', [undefined, undefined]],
+    ['authored', ['approved', 'waiting']],
   ] as const)
     it(`attaches details to ${group} items from one batched GraphQL query${reviews[0] ? ' and classifies their review' : ' without review state'}`, async () => {
       const calls = fake([
@@ -664,7 +645,8 @@ describe('review state, auto-merge and merge settings', () => {
         items.map(item => item.review),
         reviews,
       );
-      assert.equal(calls.length, 2);
+      // Team requests also fetch stack counts for priority.
+      assert.equal(calls.length, group === 'team' ? 3 : 2);
       assert.deepEqual(calls[1].body?.variables, { owner0: 'acme', name0: 'app', number0: 1, owner1: 'acme', name1: 'other', number1: 2 });
       const [item] = items;
       assert.deepEqual(item.details?.participants, [{ login: 'bob', avatarUrl: 'https://example.test/bob' }]);
@@ -811,16 +793,6 @@ describe('GitHub data loading', () => {
     const calls = fake([{ data: [1], headers: { link: '<next>; rel="next"' } }]);
     assert.deepEqual(await new GitHub('test-only-token').pages('/items?state=open', undefined, 1), { items: [1], truncated: true });
     assert.match(calls[0].url, /\?state=open&per_page/);
-  });
-  it('keeps draft PRs eligible for Reviewed by you', async () => {
-    const draft = { ...demoInbox.requested[0], draft: true };
-    const calls = fake([{ data: { items: [draft], total_count: 1, incomplete_results: false } }]);
-    const result = await new GitHub('test-only-token').inbox('reviewed', { login: 'me' });
-    assert.deepEqual(result.items, [draft]);
-    assert.equal(result.total_count, 1);
-    const query = new URL(calls[0].url).searchParams.get('q')!;
-    assert.match(query, /reviewed-by:me/);
-    assert.doesNotMatch(query, /\bdraft:/);
   });
   it('returns native stack entries in position order, noting truncation', async () => {
     fake([

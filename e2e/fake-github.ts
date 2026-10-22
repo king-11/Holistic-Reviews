@@ -148,7 +148,7 @@ const inbox = (
 });
 const inboxGroups: [RegExp, ReturnType<typeof inbox>[]][] = [
   [
-    /review-requested:/,
+    /is:open user-review-requested:/,
     [
       inbox(42, pr.title, { updatedAt: new Date(NOW.getTime() - 52 * 60_000).toISOString() }),
       inbox(77, 'Tune cache eviction', { updatedAt: new Date(NOW.getTime() - 5 * 60 * 60_000).toISOString() }),
@@ -162,9 +162,11 @@ const inboxGroups: [RegExp, ReturnType<typeof inbox>[]][] = [
       inbox(91, 'Speed up CI cache', { author: viewer }),
       inbox(94, 'Retry the sync backoff', { author: viewer }),
       inbox(95, 'Tighten cache keys', { author: viewer }),
+      inbox(98, 'Fix flaky upload test', { author: viewer }),
+      inbox(99, 'Bump the parser', { author: viewer }),
     ],
   ],
-  [/reviewed-by:/, [inbox(92, 'Draft reviewed earlier', { draft: true })]],
+  [/-user-review-requested:/, [inbox(92, 'Document the cache layout')]],
 ];
 
 const reviewState = { APPROVE: 'APPROVED', REQUEST_CHANGES: 'CHANGES_REQUESTED', COMMENT: 'COMMENTED' } as Record<string, string>;
@@ -183,16 +185,14 @@ const basePullRequest: Payload = {
   additions: 4,
   deletions: 1,
   reviewDecision: null,
-  commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
-  recentCommits: { nodes: [{ commit: { oid: HEAD, committedDate: at } }] },
-  viewerLatestReview: null,
+  commits: { nodes: [{ commit: { committedDate: at, statusCheckRollup: { state: 'SUCCESS' } } }] },
   readyEvents: { nodes: [{ createdAt: at }] },
   pendingReviews: { nodes: [] },
   participants: { totalCount: 0, nodes: [] },
   latestReviews: { nodes: [] },
   reviewRequests: { nodes: [] },
 };
-// #94 was commented on without a re-request, so it lands in Returned to you; #95 lands in Approved.
+// #94 has changes requested, #98 failing checks and #99 a conflict, so they need attention; #95 is ready to merge.
 const reviewSummaries: Record<number, Payload> = {
   42: {
     pendingReviews: { nodes: [{ comments: { totalCount: 1 } }] },
@@ -208,6 +208,7 @@ const reviewSummaries: Record<number, Payload> = {
   },
   92: {
     pendingReviews: { nodes: [{ comments: { totalCount: 1 } }] },
+    reviewRequests: { nodes: [{ asCodeOwner: false, requestedReviewer: { __typename: 'Team', combinedSlug: 'acme/backend' } }] },
   },
   93: {
     pendingReviews: { nodes: [{ comments: { totalCount: 1 } }] },
@@ -216,23 +217,19 @@ const reviewSummaries: Record<number, Payload> = {
     additions: 200,
     deletions: 20,
     commits: { nodes: [{ commit: { statusCheckRollup: { state: 'PENDING' } } }] },
-    recentCommits: { nodes: [{ commit: { oid: 'oid-77', committedDate: at } }] },
-    viewerLatestReview: { submittedAt: at, commit: { oid: 'oid-77' } },
     reviewRequests: { nodes: [{ asCodeOwner: true, requestedReviewer: { __typename: 'Team', slug: 'backend' } }] },
   },
   88: {
     additions: 10,
     deletions: 1,
     commits: { nodes: [{ commit: { statusCheckRollup: { state: 'PENDING' } } }] },
-    recentCommits: { nodes: [{ commit: { oid: 'oid-88', committedDate: at } }] },
-    viewerLatestReview: { submittedAt: at, commit: { oid: 'oid-88' } },
     reviewRequests: { nodes: [{ asCodeOwner: true, requestedReviewer: { __typename: 'Team', slug: 'backend' } }] },
   },
   94: {
     additions: 12,
     deletions: 3,
     pendingReviews: { nodes: [{ comments: { totalCount: 1 } }] },
-    reviewDecision: 'REVIEW_REQUIRED',
+    reviewDecision: 'CHANGES_REQUESTED',
     participants: {
       totalCount: 2,
       nodes: [
@@ -240,7 +237,13 @@ const reviewSummaries: Record<number, Payload> = {
         { login: 'carol', avatarUrl: '' },
       ],
     },
-    latestReviews: { nodes: [{ state: 'COMMENTED', author: reviewer('bob') }] },
+    latestReviews: { nodes: [{ state: 'CHANGES_REQUESTED', submittedAt: NOW.toISOString(), author: reviewer('bob') }] },
+  },
+  98: { commits: { nodes: [{ commit: { statusCheckRollup: { state: 'FAILURE' } } }] } },
+  99: {
+    mergeable: 'CONFLICTING',
+    reviewDecision: 'APPROVED',
+    latestReviews: { nodes: [{ state: 'APPROVED', author: reviewer('bob') }] },
   },
   95: {
     pendingReviews: { nodes: [{ comments: { totalCount: 1 } }] },
@@ -546,7 +549,7 @@ export async function mockGitHub(
       const repos = [...q.matchAll(/repo:(\S+)/g)].map(match => match[1]);
       const found = q.includes('is:merged')
         ? mergedResults(q)
-        : q.includes('review-requested:')
+        : q.includes('is:open user-review-requested:')
           ? requestedItems
           : inboxGroups.find(([pattern]) => pattern.test(q))?.[1] || [];
       const items = found.filter(item => !repos.length || repos.some(repo => item.repository_url.endsWith(`/${repo}`)));

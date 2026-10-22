@@ -58,47 +58,54 @@ describe('placement', () => {
     {
       name: 'a direct request stays requested until the viewer reviews',
       pull: pr({ requested_reviewers: [me] }),
-      expected: { requested: true, reviewed: false, authored: false, merged: false },
+      expected: { requested: true, team: false, authored: false, merged: false },
     },
     {
-      name: 'approving clears a team request and counts as reviewed',
+      name: 'a request by name wins over a team request',
+      pull: pr({ requested_reviewers: [me], requested_teams: [{ slug: 'core', name: 'Core' }] }),
+      teams: ['acme/core'],
+      expected: { requested: true, team: false },
+    },
+    {
+      name: 'approving clears a team request',
       pull: pr({ requested_teams: [{ slug: 'core', name: 'Core' }] }),
       reviews: [review(me, 'APPROVED')],
-      expected: { requested: false, reviewed: true },
+      expected: { requested: false, team: false },
     },
     {
       name: 'a team request without known viewer teams is left to search',
       pull: pr({ requested_teams: [{ slug: 'core', name: 'Core' }] }),
-      expected: { requested: undefined, reviewed: false },
+      expected: { requested: false, team: undefined },
     },
     {
-      name: 'a team request for one of the viewer’s teams counts as requested',
+      name: 'a team request for one of the viewer’s teams counts as a team request',
       pull: pr({ requested_teams: [{ slug: 'core', name: 'Core' }] }),
       teams: ['acme/core'],
-      expected: { requested: true, reviewed: false },
+      expected: { requested: false, team: true },
     },
     {
       name: 'a PR whose only remaining requested teams do not include the viewer is not requested',
       pull: pr({ requested_teams: [{ slug: 'qa', name: 'QA' }] }),
       teams: ['acme/core'],
-      expected: { requested: false, reviewed: false },
+      expected: { requested: false, team: false },
     },
     {
-      name: 'a single line comment counts as reviewed',
-      pull: pr(),
+      name: 'a single line comment counts as a review and clears a team request',
+      pull: pr({ requested_teams: [{ slug: 'core', name: 'Core' }] }),
+      teams: ['acme/core'],
       comments: [{ id: 9, node_id: 'C9', user: me, body: 'x', created_at: '', path: 'a.ts', pull_request_review_id: 5 } as Comment],
-      expected: { reviewed: true },
+      expected: { team: false },
     },
     {
       name: 'a pending review does not count as reviewed',
       pull: pr({ requested_reviewers: [me] }),
       reviews: [review(me, 'PENDING')],
-      expected: { requested: true, reviewed: false },
+      expected: { requested: true, team: false },
     },
     {
       name: 'a merged PR leaves every open group',
       pull: pr({ user: me, state: 'closed', merged: true }),
-      expected: { requested: false, authored: false, drafts: false, reviewed: false, merged: true },
+      expected: { requested: false, team: false, authored: false, drafts: false, merged: true },
     },
     {
       name: 'your draft sits in drafts, not authored',
@@ -115,7 +122,7 @@ describe('placement', () => {
 describe('withSnapshots', () => {
   beforeEach(clearInboxSnapshots);
 
-  it('moves an approved PR from review requests to reviewed by you, keeping its loaded details', () => {
+  it('moves a PR from review requests to your PRs, keeping its loaded details', () => {
     const details = {
       additions: 1,
       deletions: 2,
@@ -124,9 +131,6 @@ describe('withSnapshots', () => {
       pendingComments: 0,
       priority: {
         waitStart: '',
-        newCommits: 0,
-        moreThanTwentyNewCommits: false,
-        reviewedWithoutNewCommits: false,
         stackedReady: 0,
         codeOwner: false,
         checks: 'success' as const,
@@ -135,16 +139,16 @@ describe('withSnapshots', () => {
       participantCount: 0,
     };
     const requested = [row(42, { details }), row(7)];
-    recordPR(pr({ title: 'Renamed' }), [review(me, 'APPROVED')], [], 'me');
+    recordPR(pr({ title: 'Renamed', user: me }), [], [], 'me');
     const known = new Map(requested.map(item => [item.html_url, item]));
     assert.deepEqual(
       withSnapshots('requested', requested, inboxSnapshots(), view()).items.map(item => item.number),
       [7],
     );
-    const reviewed = withSnapshots('reviewed', [], inboxSnapshots(), view(), known);
-    assert.equal(reviewed.delta, 1);
-    assert.equal(reviewed.items[0]!.title, 'Renamed');
-    assert.deepEqual(reviewed.items[0]!.details, details);
+    const authored = withSnapshots('authored', [], inboxSnapshots(), view(), known);
+    assert.equal(authored.delta, 1);
+    assert.equal(authored.items[0]!.title, 'Renamed');
+    assert.deepEqual(authored.items[0]!.details, details);
   });
 
   it('keeps a row search already has and refreshes its fields instead of duplicating it', () => {
@@ -211,7 +215,7 @@ describe('review state shared by the sidebar, Merge button and inbox', () => {
       name: 'changes requested, then re-requested',
       pull: pr({ requested_reviewers: [bob] }),
       reviews: [review(bob, 'CHANGES_REQUESTED')],
-      outcome: 'returned',
+      outcome: 'waiting',
       approved: false,
     },
     {

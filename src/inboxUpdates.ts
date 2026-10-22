@@ -45,13 +45,13 @@ export function placement(pr: PullRequest, reviews: Review[], comments: Comment[
   const open = pr.state === 'open';
   const mine = pr.user.login === viewer;
   const { reviewed, direct, team } = involvement(pr, reviews, comments, viewer, teams);
-  // Submitting any review clears a team request; otherwise direct or team membership decides.
-  const requested = direct ? true : reviewed ? false : team;
+  // Submitting any review clears a team request; a request by name always wins over one through a team.
+  const ready = open && !pr.draft;
   return {
-    requested: open && !pr.draft ? requested : false,
+    requested: ready && direct,
+    team: ready && !direct && (reviewed ? false : team),
     authored: open && mine && !pr.draft,
     drafts: open && mine && pr.draft,
-    reviewed: open && !mine && reviewed,
     merged: pr.merged,
   };
 }

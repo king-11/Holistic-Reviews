@@ -35,55 +35,73 @@ async function seedInbox(page: Page, preferences: { repos?: string[]; sorts?: Re
 }
 
 test.describe('inbox', () => {
-  test('shows every section, keeps drafts out of review requests, and includes reviewed drafts', async ({ page }) => {
+  test('splits your PRs by what they need and review requests by you or your team', async ({ page }) => {
     await mockGitHub(page);
     await seedInbox(page, { repos: [] });
     await page.goto('/');
     const group = (name: RegExp) => groupButton(page, name);
     for (const name of [
-      /Needs your review\s*3/,
-      /Returned to you\s*1/,
-      /Approved\s*1/,
-      /Waiting for review\s*1/,
+      /Needs your attention\s*3/,
+      /Requested from you\s*3/,
+      /Requested from your team\s*1/,
+      /Ready to merge\s*1/,
+      /Awaiting review\s*1/,
       /Drafts\s*1/,
-      /Reviewed by you\s*1/,
       /Recently merged\s*1/,
     ])
       await expect(group(name)).toBeVisible();
-    await expect(page.getByRole('link', { name: /Retry the sync backoff/ })).toBeVisible();
-    await expect(page.getByRole('link', { name: /Tighten cache keys/ })).toBeVisible();
-    await expect(page.getByRole('link', { name: /Speed up CI cache/ })).toBeVisible();
-    await expect(page.getByRole('link', { name: /Sketch retry dashboard/ })).toBeVisible();
+    const attention = page.locator('[data-section="attention"]');
+    for (const title of [/Retry the sync backoff/, /Fix flaky upload test/, /Bump the parser/])
+      await expect(attention.getByRole('link', { name: title })).toBeVisible();
+    await expect(attention.getByRole('img', { name: 'Changes requested' })).toBeVisible();
+    await expect(attention.getByRole('img', { name: 'Merge conflict' })).toBeVisible();
+    await expect(page.locator('[data-section="team"] [data-priority-lane="soon"]')).toContainText('Document the cache layout');
+    await expect(page.getByText('YOUR TURN')).toHaveCount(0);
     const pendingRows = [
+      ['attention', /Retry the sync backoff/],
       ['requested', /Improve worker retries/],
-      ['returned', /Retry the sync backoff/],
-      ['approved', /Tighten cache keys/],
+      ['team', /Document the cache layout/],
+      ['ready', /Tighten cache keys/],
       ['waiting', /Speed up CI cache/],
       ['drafts', /Sketch retry dashboard/],
-      ['reviewed', /Draft reviewed earlier/],
       ['merged', /Ship metrics exporter/],
     ] as const;
     for (const [section, title] of pendingRows) {
-      if (section === 'reviewed' || section === 'merged')
-        await group(new RegExp(section === 'merged' ? 'Recently merged' : 'Reviewed by you')).click();
-      await expect(page.getByRole('main').getByRole('link', { name: title })).toContainText('1 pending');
+      if (section === 'merged') await group(/Recently merged/).click();
+      await expect(page.locator(`[data-section="${section}"]`).getByRole('link', { name: title })).not.toContainText('pending');
     }
+  });
+
+  test('collapses the sidebar to an icon rail and remembers it', async ({ page }) => {
+    await mockGitHub(page);
+    await seedInbox(page, { repos: [] });
+    await page.goto('/');
+    const sidebar = page.locator('aside.app-sidebar');
+    await sidebar.getByRole('button', { name: 'Collapse' }).click();
+    await expect(sidebar.getByRole('button', { name: 'Needs your attention' })).toBeVisible();
+    await expect(sidebar.getByText('YOUR PRS')).toBeHidden();
+    expect((await sidebar.boundingBox())!.width).toBeLessThan(80);
+    await page.reload();
+    expect((await sidebar.boundingBox())!.width).toBeLessThan(80);
+    await sidebar.getByRole('button', { name: 'Collapse' }).click();
+    await expect(sidebar.getByText('YOUR PRS')).toBeVisible();
   });
 
   test('defaults to priority lanes with reasons for requested reviews', async ({ page }) => {
     await mockGitHub(page);
     await seedInbox(page, { repos: [] });
     await page.goto('/');
-    const now = page.locator('[data-priority-lane="now"]');
+    const requested = page.locator('[data-section="requested"]');
+    const now = requested.locator('[data-priority-lane="now"]');
     await expect(now.locator('strong')).toHaveText('Now');
     await expect(now.getByRole('link', { name: /Improve worker retries/ })).toBeVisible();
-    await expect(now).toContainText('1 ready stacked on this');
-    await expect(now).toContainText('code owner');
-    await expect(now).toContainText('checks green');
-    const soon = page.locator('[data-priority-lane="soon"]');
+    await expect(now.getByRole('img', { name: '1 ready stacked on this' })).toBeVisible();
+    await expect(now.getByRole('img', { name: 'Code owner' })).toBeVisible();
+    await expect(now.getByText('checks green')).toHaveCount(0);
+    const soon = requested.locator('[data-priority-lane="soon"]');
     await expect(soon).toBeVisible();
     await expect(soon.locator('a.pr-row').first()).toHaveAttribute('title', /Rotate infra credentials/);
-    await expect(page.locator('[data-priority-lane="later"]')).toBeVisible();
+    await expect(requested.locator('[data-priority-lane="later"]')).toHaveCount(0);
   });
 
   test('filters pull requests by search text and repository', async ({ page }) => {
@@ -166,12 +184,12 @@ test.describe('inbox', () => {
     await seedInbox(page, { repos: ['acme/app', 'acme/infra'] });
     await page.goto('/');
     const requested = page.locator('[data-section="requested"]');
-    const returned = page.locator('[data-section="returned"]');
+    const returned = page.locator('[data-section="attention"]');
     await expect.poll(() => fake.searches.length).toBe(5);
     await expect(requested.locator('.pr-row')).toHaveCount(3);
     const returnedTitles = await returned.locator('.pr-row-title').allTextContents();
     const searches = fake.searches.length;
-    await page.getByRole('button', { name: 'Sort Needs your review' }).click();
+    await page.getByRole('button', { name: 'Sort Requested from you', exact: true }).click();
     await expect(page.getByRole('menuitemradio', { name: 'Priority', exact: true })).toBeVisible();
     const priorityFontSize = await page
       .getByRole('menuitemradio', { name: 'Priority' })
@@ -184,10 +202,10 @@ test.describe('inbox', () => {
     await expect(requested.locator('.pr-row-title').first()).toContainText('Tune cache eviction');
     expect(fake.searches.length).toBe(searches);
     expect(await returned.locator('.pr-row-title').allTextContents()).toEqual(returnedTitles);
-    await page.getByRole('button', { name: 'Sort Returned to you' }).click();
+    await page.getByRole('button', { name: 'Sort Needs your attention' }).click();
     await expect(page.getByRole('menuitemradio', { name: 'Priority' })).toHaveCount(0);
     await page.reload();
-    await page.getByRole('button', { name: 'Sort Needs your review' }).click();
+    await page.getByRole('button', { name: 'Sort Requested from you', exact: true }).click();
     await expect(page.getByRole('menuitemradio', { name: 'Title: Z–A' })).toHaveAttribute('aria-checked', 'true');
   });
 
@@ -197,9 +215,9 @@ test.describe('inbox', () => {
       await mockGitHub(page);
       await seedInbox(page, { repos: ['acme/app'] });
       await page.goto('/');
-      await expect(page.getByRole('button', { name: 'Sort Needs your review' })).toBeVisible();
-      await page.getByRole('button', { name: 'Sort Needs your review' }).click();
-      const menu = page.getByRole('menu', { name: 'Sort Needs your review by' });
+      await expect(page.getByRole('button', { name: 'Sort Requested from you', exact: true })).toBeVisible();
+      await page.getByRole('button', { name: 'Sort Requested from you', exact: true }).click();
+      const menu = page.getByRole('menu', { name: 'Sort Requested from you by', exact: true });
       const menuBounds = await menu.boundingBox();
       expect(menuBounds).not.toBeNull();
       expect(menuBounds!.x).toBeGreaterThanOrEqual(0);
@@ -232,7 +250,7 @@ test.describe('inbox', () => {
     await page.goto('/');
     await expect.poll(() => fake.searches.length).toBe(5);
     const searches = fake.searches.length;
-    await page.getByRole('button', { name: 'Sort Needs your review' }).click();
+    await page.getByRole('button', { name: 'Sort Requested from you', exact: true }).click();
     await page.getByRole('menuitemradio', { name: 'Created: Oldest first' }).click();
     await expect.poll(() => fake.searches.length).toBe(searches + 1);
     expect(fake.searches.slice(searches)).toHaveLength(1);
@@ -266,14 +284,14 @@ test.describe('inbox', () => {
     await expect(page.getByRole('link', { name: /Tune cache eviction/ }).getByRole('img', { name: 'Checks running' })).toBeVisible();
     const checkGeometry = await page.locator('section.requested .pr-row').evaluateAll(rows =>
       rows.flatMap(row => {
-        const time = row.querySelector('.row-time')?.textContent?.trim();
+        const title = row.getAttribute('title');
         const icon = row.querySelector('[aria-label^="Checks"] svg');
-        if (!time || !icon) return [];
+        if (!title || !icon) return [];
         const rect = icon.getBoundingClientRect();
-        return [{ time, centerX: Math.round((rect.left + rect.width / 2) * 1000) / 1000, width: rect.width }];
+        return [{ title, centerX: Math.round((rect.left + rect.width / 2) * 1000) / 1000, width: rect.width }];
       }),
     );
-    expect(new Set(checkGeometry.map(row => row.time)).size).toBeGreaterThan(1);
+    expect(new Set(checkGeometry.map(row => row.title)).size).toBeGreaterThan(1);
     expect(new Set(checkGeometry.map(row => row.centerX)).size).toBe(1);
     expect(checkGeometry.every(row => row.width === 16)).toBe(true);
   });
@@ -395,13 +413,7 @@ test.describe('inbox after acting on a pull request', () => {
     await expect(panel.getByRole('button', { name: 'Remove review request from reviewer', exact: true })).toHaveCount(0);
     await backToInbox(page);
     await expect(row(page, 'requested')).toHaveCount(0);
-    await expect(page.getByRole('main').getByRole('button', { name: /Needs your review\s*1/ })).toBeVisible();
-    await page
-      .getByRole('main')
-      .locator('button[aria-expanded]')
-      .filter({ hasText: /Reviewed by you/ })
-      .click();
-    await expect(row(page, 'reviewed')).toBeVisible();
+    await expect(page.getByRole('main').getByRole('button', { name: /Requested from you\s*1/ })).toBeVisible();
     await expect.poll(() => fake.searches.length).toBeGreaterThan(searches);
     await expect(page.getByRole('link', { name: /Tune cache eviction/ })).toBeVisible();
     await expect(row(page, 'requested')).toHaveCount(0);
@@ -456,9 +468,9 @@ test.describe('routing', () => {
     await page
       .getByRole('main')
       .locator('button[aria-expanded]')
-      .filter({ hasText: /Reviewed by you/ })
+      .filter({ hasText: /Recently merged/ })
       .click();
-    await expect(page.getByRole('link', { name: /Draft reviewed earlier/ })).toBeVisible();
+    await expect(page.getByRole('link', { name: /Ship metrics exporter/ })).toBeVisible();
     await page.waitForLoadState('networkidle');
     const searches = fake.searches.length;
     const row = page.getByRole('link', { name: /Improve worker retries/ });
@@ -470,7 +482,7 @@ test.describe('routing', () => {
     await page.goBack();
     await expect(page).toHaveURL(/\/$/);
     // toBeVisible ignores opacity, and rows used to stay faded out after returning to the kept-alive inbox.
-    await expect(page.getByRole('link', { name: /Draft reviewed earlier/ })).toHaveCSS('opacity', '1');
+    await expect(page.getByRole('link', { name: /Ship metrics exporter/ })).toHaveCSS('opacity', '1');
     await expect(row).toHaveCSS('opacity', '1');
     await expect(page).toHaveTitle('Holistic Reviews - A little more focus');
     expect(fake.searches.length).toBe(searches);
@@ -606,7 +618,7 @@ test.describe('motion', () => {
     test(`${name} opens and closes from the keyboard without animating`, async ({ page }) => {
       await mockGitHub(page);
       await page.goto('/');
-      await expect(groupButton(page, /Needs your review/)).toBeVisible();
+      await expect(groupButton(page, /Needs your attention/)).toBeVisible();
       const dialog = frames(page, '[role="dialog"]');
       const backdrop = frames(page, '.modal-backdrop');
       await page.keyboard.press(key);
