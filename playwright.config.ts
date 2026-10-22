@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: 'e2e',
+  globalSetup: './e2e/warmup.ts',
   snapshotPathTemplate: '{testDir}/__screenshots__/{testFilePath}/{arg}{ext}',
   fullyParallel: true,
   reporter: 'list',
