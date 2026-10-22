@@ -521,15 +521,7 @@ export default defineComponent(
           ))}
           <div class={`${styles['sidebar-bottom']}`}>
             <Layers size={20} />
-            <h4>
-              Less switching.
-              <br />
-              More shipping.
-            </h4>
             <p>Your branches, context, and reviews. One focused workspace.</p>
-            <a href="https://docs.github.com/en/pull-requests" target="_blank" rel="noopener noreferrer">
-              GitHub review guide <ArrowUpRight size={13} />
-            </a>
           </div>
           <button
             class={`nav-item ${styles['rail-toggle']}`}

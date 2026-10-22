@@ -61,22 +61,14 @@
 }
 .sidebar-bottom {
   margin-top: auto;
-  padding: 88px 8px 24px;
+  padding: 0 8px;
   color: var(--color-muted);
 }
 .sidebar-bottom > svg {
   color: var(--color-slate);
-  margin-bottom: 12px;
-}
-.sidebar-bottom h4 {
-  color: var(--color-secondary);
-  font-family: var(--font-display);
-  font-weight: 600;
-  line-height: 1.625;
-  font-size: var(--text-sm);
 }
 .sidebar-bottom p {
-  margin: 8px 0 16px;
+  margin: 8px 0 0;
   font-size: var(--text-xs);
   line-height: 2;
   max-width: 152px;

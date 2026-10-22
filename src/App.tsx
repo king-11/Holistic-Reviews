@@ -3,7 +3,7 @@ import { AnimatePresence } from 'motion-v';
 import { ArrowRight, Check, ChevronDown, Command, Keyboard, KeyRound, LogOut, Palette, Search, ShieldCheck, X } from '@lucide/vue';
 import { navigateTo, useRouter } from 'nuxt/app';
 import AuthDialog from './AuthDialog';
-import CommandBar from './CommandBar';
+import { CommandBar } from './CommandBar';
 import { commandDefinitions, comboKeys, createShortcuts, eventCombo, modalOpen, shortcutGroups, type CommandContext } from './shortcuts';
 import { Avatar, Github, IconButton, Modal, Spinner, useTheme, Dismiss } from './ui';
 import { themes, type ThemeId } from './themes';
