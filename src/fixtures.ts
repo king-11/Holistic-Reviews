@@ -352,6 +352,7 @@ export const demoInbox: Record<InboxGroup, InboxItem[]> = {
     inboxItem(298599, 'Explore incremental sync for connected sources', 'you', { draft: true }),
   ],
   team: [inboxItem(298401, parent.title, 'alexchen')],
+  reviewed: [inboxItem(298388, 'Batch connector permission checks', 'davidpark')],
   merged: [
     inboxItem(298350, 'Update connection status indicators', 'you'),
     inboxItem(298344, 'Tighten the connector retry budget', 'alexchen'),

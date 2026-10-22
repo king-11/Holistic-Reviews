@@ -3,7 +3,6 @@ import {
   ArrowDown,
   ArrowDownWideNarrow,
   ArrowUp,
-  ArrowUpRight,
   BookOpen,
   Check,
   ChevronDown,
@@ -22,6 +21,7 @@ import {
   Rocket,
   SlidersHorizontal,
   User,
+  UserCheck,
   Users,
 } from '@lucide/vue';
 import {
@@ -108,6 +108,13 @@ const sections: Section[] = [
     icon: Hourglass,
   },
   { id: 'drafts', group: 'drafts', label: 'Drafts', description: 'Work in progress, authored by you', icon: FilePenLine },
+  {
+    id: 'reviewed',
+    group: 'reviewed',
+    label: 'Reviewed by you',
+    description: 'Open pull requests you reviewed that are not requesting your review again, including drafts',
+    icon: UserCheck,
+  },
   {
     id: 'merged',
     group: 'merged',
@@ -220,7 +227,7 @@ export default defineComponent(
 
     // Each merged load (full reload or filter change) bumps this so only the newest one may write its result.
     let mergedVersion = 0;
-    const groupVersions: Record<InboxGroup, number> = { requested: 0, team: 0, authored: 0, drafts: 0, merged: 0 };
+    const groupVersions: Record<InboxGroup, number> = { requested: 0, team: 0, authored: 0, drafts: 0, reviewed: 0, merged: 0 };
     const groupOrders: Partial<Record<InboxGroup, SearchOrder>> = {};
     const initialGroupOrder = (group: InboxGroup) => {
       const choices = sections.filter(section => section.group === group).map(section => sortChoice(section.id));
@@ -503,7 +510,7 @@ export default defineComponent(
           <div class={`${styles['nav-caption']} ${styles['nav-group']}`}>YOUR PRS</div>
           {sectionNav(['attention', 'ready', 'waiting', 'drafts'])}
           <div class={`${styles['nav-caption']} ${styles['nav-group']}`}>REVIEWS</div>
-          {sectionNav(['requested', 'team'])}
+          {sectionNav(['requested', 'team', 'reviewed'])}
           <div class={`${styles['nav-caption']} ${styles['repo-caption']}`}>
             REPOSITORIES<span>{repoOptions.value.length}</span>
           </div>

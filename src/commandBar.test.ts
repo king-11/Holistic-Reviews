@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { parsePRCommandInput } from './CommandBar.tsx';
-import type { PRRef } from './github.ts';
+import { parsePRCommandInput, type PRRef } from './github.ts';
 import { commandDefinitions, shortcutGroups, type CommandContext } from './shortcuts.ts';
 
 const currentPR: PRRef = { owner: 'acme', repo: 'app', number: 42 };
