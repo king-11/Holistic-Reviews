@@ -21,7 +21,7 @@ import { ReviewIcon } from './DetailsPanel';
 import { Avatar, CodeSnippet, IconButton, Loader, Spinner, Timestamp } from './ui';
 import Markdown from './MarkdownView';
 import MentionField from './MentionField';
-import { commentSnippet } from './comments';
+import { commentAnchor, commentSnippet } from './comments';
 import { CommentActions, CommentBody } from './CommentEditor';
 import ReactionBar from './Reactions';
 import { FileCodeIcon } from './FileIcon';
@@ -267,12 +267,12 @@ export default defineComponent(
     const reviewCard = (review: Review) => {
       const code = allComments.value.filter(comment => comment.pull_request_review_id === review.id && shown(comment));
       return (
-        <div class={`conversation-comment ${entrance(`review-${review.id}`)}`} data-review-state={review.state}>
+        <div id={commentAnchor(review)} class={`conversation-comment ${entrance(`review-${review.id}`)}`} data-review-state={review.state}>
           <div class="comment-author">
             <Avatar login={review.user.login} src={review.user.avatar_url} small />
             <strong>{review.user.id === viewer().id ? 'You' : review.user.login}</strong>
             {review.state === 'PENDING' ? <span class="pending-badge">Pending</span> : <ReviewIcon review={review.state} />}
-            {!!review.submitted_at && <Timestamp date={review.submitted_at} />}
+            {!!review.submitted_at && <Timestamp date={review.submitted_at} href={edits.link(review)} />}
             <CommentActions item={review} actions={edits} />
           </div>
           {(review.body || '').trim() ? (
@@ -349,15 +349,12 @@ export default defineComponent(
                   : card(
                       `comment-${entry.comment.id}`,
                       entry.comment.user,
-                      <div
-                        id={`conversation-comment-${entry.comment.id}`}
-                        class={`conversation-comment ${entrance(`comment-${entry.comment.id}`)}`}
-                      >
+                      <div id={commentAnchor(entry.comment)} class={`conversation-comment ${entrance(`comment-${entry.comment.id}`)}`}>
                         <div class="comment-author">
                           <Avatar login={entry.comment.user.login} src={entry.comment.user.avatar_url} small />
                           <strong>{entry.comment.user.login}</strong>
                           <ReviewIcon review="COMMENTED" />
-                          <Timestamp date={entry.comment.created_at} />
+                          <Timestamp date={entry.comment.created_at} href={edits.link(entry.comment)} />
                           <CommentActions item={entry.comment} actions={edits} />
                         </div>
                         <CommentBody item={entry.comment} actions={edits} baseUrl={markdownBase()} />

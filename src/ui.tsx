@@ -253,11 +253,18 @@ export function PersonLabel(props: { login: string; name?: string | null; avatar
 
 export const fullDate = (date: string) => new Date(date).toLocaleString(undefined, { dateStyle: 'long', timeStyle: 'long' });
 
-export function Timestamp(props: { date: string; prefix?: string }) {
-  return (
+export function Timestamp(props: { date: string; prefix?: string; href?: string }) {
+  const time = (
     <time datetime={props.date} title={fullDate(props.date)}>
       {[props.prefix, timeAgo(props.date)].filter(Boolean).join(' ')}
     </time>
+  );
+  return props.href ? (
+    <a class="timestamp-link" href={props.href}>
+      {time}
+    </a>
+  ) : (
+    time
   );
 }
 

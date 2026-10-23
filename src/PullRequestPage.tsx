@@ -41,6 +41,7 @@ export default defineComponent(() => {
         onSettings={changeSettings}
         onOpen={openPR}
         onBack={home}
+        hash={route.hash}
       />
     ) : (
       <main class="empty-state">

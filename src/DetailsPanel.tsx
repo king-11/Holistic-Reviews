@@ -2,6 +2,8 @@ import { computed, defineComponent, shallowRef } from 'vue';
 import { AnimatePresence, motion } from 'motion-v';
 import {
   ArrowUpRight,
+  Code,
+  Link,
   Check,
   ChevronDown,
   CircleAlert,
@@ -258,16 +260,16 @@ export const MergeControls = defineComponent(
 );
 
 export const MoreMenu = defineComponent(
-  (props: { details: Details }) => {
+  (props: { details: Details; onCommand: (id: (typeof copyActions)[number][0]) => void }) => {
     const open = shallowRef(false);
     return () => {
       const { details } = props;
       const pr = details.pr();
       const { onMutate, prRef } = details.source();
       const change = (toast: string, work: Parameters<Mutate>[0]) => () => void onMutate(work, { toast, refresh: 'all' });
-      if (pr.merged) return null;
-      const actions: [string, typeof GitPullRequest, () => void][] =
-        pr.state === 'open'
+      const actions: [string, typeof GitPullRequest, () => void][] = pr.merged
+        ? []
+        : pr.state === 'open'
           ? [
               [
                 pr.draft ? 'Ready for review' : 'Convert to draft',
@@ -286,6 +288,22 @@ export const MoreMenu = defineComponent(
           <AnimatePresence>
             {open.value && (
               <motion.div key="more" {...pop()} class={`popover ${styles.menu}`} role="menu" aria-label="Pull request actions">
+                {copyActions.map(([id, text, Icon, keys]) => (
+                  <button
+                    key={id}
+                    role="menuitem"
+                    class={styles.option}
+                    onClick={() => {
+                      open.value = false;
+                      props.onCommand(id);
+                    }}
+                  >
+                    <Icon size={14} />
+                    {text}
+                    <kbd class={styles.keys}>{keys}</kbd>
+                  </button>
+                ))}
+                {!!actions.length && <hr class={styles.separator} />}
                 {actions.map(([text, Icon, action]) => (
                   <button
                     key={text}
@@ -308,8 +326,13 @@ export const MoreMenu = defineComponent(
       );
     };
   },
-  { props: ['details'] },
+  { props: ['details', 'onCommand'] },
 );
+const copyActions = [
+  ['copy-link', 'Copy link', Link, 'c l'],
+  ['copy-github-link', 'Copy GitHub link', ArrowUpRight, 'c g'],
+  ['copy-markdown', 'Copy as Markdown', Code, 'c p'],
+] as const;
 
 type Option = { key: string; text: string; detail?: string | null; avatar?: string; color?: string };
 // `load` fills a fixed list that is filtered locally; `search` adds debounced results for the typed query, listed first.

@@ -38,6 +38,7 @@ import {
   branchRelations,
   errorMessage,
   mergeabilityPending,
+  prPath,
   type ChangedFile,
   type Comment,
   type Commit,
@@ -67,7 +68,9 @@ import {
   commentLocationLabel,
   commentRange,
   diffLinePreview,
+  commentAnchor,
   isBot,
+  parseCommentAnchor,
   preservePendingCommentEdits,
   withThreadLocations,
   type CommentEntry,
@@ -133,6 +136,8 @@ type Props = {
   onSettings: (settings: DiffSettings) => void;
   onOpen: (url: string) => void;
   onBack: () => void;
+  // The URL hash, which can point at a comment to open.
+  hash: string;
 };
 
 export default defineComponent(
@@ -201,6 +206,7 @@ export default defineComponent(
     const entrance = (key: string) => (entered.has(key) ? entered.get(key)! : (entered.set(key, 'reveal'), 'reveal'));
     watch(tab, () => entered.forEach((_, key) => entered.set(key, '')));
     onUnmounted(() => clearTimeout(toastTimer));
+    const appLink = () => window.location.origin + prPath(ref());
     const copy = (label: string, text: string) =>
       navigator.clipboard.writeText(text).then(
         () => showToast(`Copied ${label}`),
@@ -336,6 +342,9 @@ export default defineComponent(
           }
           done(removedByGitHub ? 'Comment deleted. GitHub removed the now-empty pending review.' : 'Comment deleted from GitHub.');
         }),
+      link: item =>
+        (isReview(item) ? item.state === 'PENDING' : inPendingReview(item)) ? undefined : `${appLink()}#${commentAnchor(item)}`,
+      copyLink: item => void copy(isReview(item) ? 'link to review' : 'link to comment', edits.link(item)!),
     };
     const reactions = createReactionActions(
       () => props.api,
@@ -795,6 +804,13 @@ export default defineComponent(
     const selectedThreadId = shallowRef<number | null>(null);
     const threadAnchors = new Map<number, HTMLElement>();
     let wantedThreadId: number | null = null;
+    let wantedAnchor: string | undefined;
+    // Rings the comment a link pointed at, so it's clear why the page jumped.
+    const highlight = (element: Element | null | undefined) => {
+      element?.classList.remove('comment-linked');
+      void (element as HTMLElement | undefined)?.offsetWidth;
+      element?.classList.add('comment-linked');
+    };
     function onThreadAnchor(id: number, element: HTMLElement | null) {
       if (!element) {
         threadAnchors.delete(id);
@@ -811,19 +827,24 @@ export default defineComponent(
       if (toggle?.getAttribute('aria-expanded') === 'false') toggle.click();
       element.scrollIntoView({ behavior: 'smooth', block: 'start' });
       element.focus({ preventScroll: true });
+      if (wantedAnchor) highlight(document.getElementById(wantedAnchor));
+      wantedAnchor = undefined;
     }
-    function navigateComment(entry: CommentEntry) {
+    function showInConversation(anchor: string, linked: boolean) {
+      tab.value = 'conversation';
+      requestAnimationFrame(() => {
+        const element = document.getElementById(anchor);
+        element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (linked) highlight(element);
+      });
+    }
+    function navigateComment(entry: CommentEntry, linked?: string) {
       if (window.matchMedia('(max-width: 1100px)').matches) commentsOpen.value = false;
-      if (entry.kind === 'conversation') {
-        tab.value = 'conversation';
-        requestAnimationFrame(() =>
-          document.getElementById(`conversation-comment-${entry.comment.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }),
-        );
-        return;
-      }
+      if (entry.kind === 'conversation') return showInConversation(commentAnchor(entry.comment), !!linked);
       if (!entry.file) return;
       const id = entry.root.in_reply_to_id || entry.root.id;
       wantedThreadId = id;
+      wantedAnchor = linked;
       selectedThreadId.value = id;
       selectFile(entry.file.filename, false);
       requestAnimationFrame(() => scrollToThread(id));
@@ -833,6 +854,31 @@ export default defineComponent(
       const entry = panelEntries.value.find(item => item.kind === 'thread' && item.comments.some(candidate => candidate.id === comment.id));
       if (entry) navigateComment(entry);
     }
+    function openLink(hash: string) {
+      const target = parseCommentAnchor(hash);
+      if (!target) return;
+      const anchor = hash.slice(1);
+      const entry = panelEntries.value.find(item =>
+        target.kind === 'discussion_r'
+          ? item.kind === 'thread' && !!item.file && item.comments.some(comment => comment.id === target.id)
+          : target.kind === 'issuecomment-' && item.kind === 'conversation' && item.comment.id === target.id,
+      );
+      if (entry) navigateComment(entry, anchor);
+      else if (target.kind === 'pullrequestreview-' && visibleReviews.value.some(review => review.id === target.id))
+        showInConversation(anchor, true);
+      else showToast('That comment is no longer on this pull request.', 'error');
+    }
+    // Waits for the comments to load, then opens each new hash once, so a reload or Back lands on the comment again.
+    let openedHash = '';
+    watch(
+      () => [props.hash, pendingSection('files', 'comments', 'inlineComments', 'reviews')] as const,
+      ([hash, loading]) => {
+        if (loading || hash === openedHash) return;
+        openedHash = hash;
+        if (hash) requestAnimationFrame(() => openLink(hash));
+      },
+      { immediate: true },
+    );
     let commentCursor = -1;
     const moveComment = (delta: 1 | -1) => {
       const entries = panelEntries.value;
@@ -854,7 +900,19 @@ export default defineComponent(
       'request-changes': () => review('REQUEST_CHANGES'),
       'squash-merge': () => void mergePR('squash'),
       'merge-when-ready': () => void setAutoMerge(true),
+      'copy-link': () => copy('link to PR', appLink()),
+      'copy-title': () => copy('title', pr().title),
       'copy-branch-name': () => copy('branch name', pr().head.ref),
+      'copy-checkout': () => copy('checkout command', `gh pr checkout ${pr().number} --repo ${ref().owner}/${ref().repo}`),
+      'copy-github-link': () => copy('GitHub link', pr().html_url),
+      'copy-stack': () =>
+        copy(
+          'stack',
+          stack()
+            .map(entry => `${entry.number === pr().number ? '→ ' : ''}#${entry.number} ${entry.title} ${entry.url}`)
+            .join('\n'),
+        ),
+      'copy-markdown': () => copy('PR', `[${pr().title} #${pr().number}](${pr().html_url})`),
       upstack: () => openStacked(1),
       inbox: props.onBack,
     };
@@ -959,18 +1017,6 @@ export default defineComponent(
         tab.value = 'conversation';
         focusSoon('#pr-comment');
       },
-      'c l': () => copy('link to PR', window.location.href),
-      'c t': () => copy('title', pr().title),
-      'c c': () => copy('checkout command', `gh pr checkout ${pr().number} --repo ${ref().owner}/${ref().repo}`),
-      'c g': () => copy('GitHub link', pr().html_url),
-      'c s': () =>
-        copy(
-          'stack',
-          stack()
-            .map(entry => `${entry.number === pr().number ? '→ ' : ''}#${entry.number} ${entry.title} ${entry.url}`)
-            .join('\n'),
-        ),
-      'c p': () => copy('PR', `[${pr().title} #${pr().number}](${pr().html_url})`),
     };
     const shortcutHandler = createShortcuts(
       () => shortcuts,
@@ -1111,7 +1157,7 @@ export default defineComponent(
                 onMerge={mergePR}
                 onAutoMerge={setAutoMerge}
               />
-              <MoreMenu details={details} />
+              <MoreMenu details={details} onCommand={id => commandActions[id]?.('bar')} />
               <span class="header-divider" />
               {!commentsOpen.value && (
                 <button
@@ -1652,5 +1698,5 @@ export default defineComponent(
       </div>
     );
   },
-  { props: ['store', 'api', 'info', 'settings', 'onSettings', 'onOpen', 'onBack'] },
+  { props: ['store', 'api', 'info', 'settings', 'onSettings', 'onOpen', 'onBack', 'hash'] },
 );

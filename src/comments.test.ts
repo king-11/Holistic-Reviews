@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  commentAnchor,
   commentEntries,
   commentLocationLabel,
   commentRange,
@@ -8,11 +9,12 @@ import {
   diffLinePreview,
   filterCommentEntries,
   isBot,
+  parseCommentAnchor,
   preservePendingCommentEdits,
   visibleThreads,
   withThreadLocations,
 } from './comments.ts';
-import type { ChangedFile, Comment, ReviewThread, User } from './github.ts';
+import type { ChangedFile, Comment, Review, ReviewThread, User } from './github.ts';
 
 const file: ChangedFile = {
   filename: 'src/work.ts',
@@ -182,4 +184,19 @@ describe('commentRange', () => {
   ] as const) {
     it(name, () => assert.deepEqual(commentRange(patched, start, end), expected));
   }
+});
+
+describe('comment anchors', () => {
+  it('uses GitHub anchors for inline comments, conversation comments and reviews', () => {
+    assert.equal(commentAnchor({ id: 101, path: 'src/a.ts', pull_request_review_id: 5 } as Comment), 'discussion_r101');
+    assert.equal(commentAnchor({ id: 401 } as Comment), 'issuecomment-401');
+    assert.equal(commentAnchor({ id: 501, state: 'APPROVED' } as Review), 'pullrequestreview-501');
+  });
+  it('parses anchors and ignores other hashes', () => {
+    assert.deepEqual(parseCommentAnchor('#discussion_r101'), { kind: 'discussion_r', id: 101 });
+    assert.deepEqual(parseCommentAnchor('#issuecomment-401'), { kind: 'issuecomment-', id: 401 });
+    assert.deepEqual(parseCommentAnchor('#pullrequestreview-501'), { kind: 'pullrequestreview-', id: 501 });
+    for (const hash of ['', '#', '#discussion_r', '#discussion_rx', '#issuecomment--1', '#files'])
+      assert.equal(parseCommentAnchor(hash), null);
+  });
 });

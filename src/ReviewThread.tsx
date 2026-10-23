@@ -1,7 +1,8 @@
 import { defineComponent, onMounted, onUnmounted, shallowRef, watch } from 'vue';
 import { Check, ChevronRight, MessageSquare, RotateCcw } from '@lucide/vue';
 import { errorMessage, type Comment, type ReviewThread as Thread } from './github';
-import { Avatar, timeAgo } from './ui';
+import { Avatar, Timestamp } from './ui';
+import { commentAnchor } from './comments';
 import MentionField from './MentionField';
 import { CommentActions, CommentBody, type EditActions } from './CommentEditor';
 import ReactionBar, { type ReactionActions } from './Reactions';
@@ -148,13 +149,11 @@ export default defineComponent(
           <div class="thread-fold" data-open={open.value} inert={!open.value}>
             <div>
               {props.comments.map(comment => (
-                <div key={comment.id} class="thread-comment">
+                <div key={comment.id} id={props.onAnchor ? commentAnchor(comment) : undefined} class="thread-comment">
                   <div class="thread-author">
                     <Avatar login={comment.user.login} src={comment.user.avatar_url} small />
                     <strong>{comment.user.login}</strong>
-                    <time datetime={comment.created_at} title={new Date(comment.created_at).toLocaleString()}>
-                      {timeAgo(comment.created_at)}
-                    </time>
+                    <Timestamp date={comment.created_at} href={props.onAnchor && props.replies.edits.link(comment)} />
                     {pending(comment) && <span class="pending-badge">Pending</span>}
                     <CommentActions item={comment} actions={props.replies.edits} />
                   </div>

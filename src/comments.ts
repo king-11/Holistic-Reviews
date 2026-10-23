@@ -1,4 +1,4 @@
-import type { ChangedFile, Comment, ReviewThread, User } from './github';
+import type { ChangedFile, Comment, Review, ReviewThread, User } from './github';
 import { commentGroups, diffSides, patchLines, threadsForComments, type DiffSide } from './diff.ts';
 
 export type CommentFilter = 'open' | 'resolved' | 'all';
@@ -13,6 +13,20 @@ export type CommentEntry =
       location: 'diff' | 'below' | 'missing';
     }
   | { kind: 'conversation'; comment: Comment };
+
+export const isReview = (item: Comment | Review): item is Review => 'state' in item;
+
+// Anchors match GitHub's, so a link converts between the app and GitHub by swapping the host.
+const anchorKinds = ['discussion_r', 'issuecomment-', 'pullrequestreview-'] as const;
+export type CommentAnchor = { kind: (typeof anchorKinds)[number]; id: number };
+export const commentAnchor = (item: Comment | Review) =>
+  `${isReview(item) ? 'pullrequestreview-' : item.path || item.pull_request_review_id ? 'discussion_r' : 'issuecomment-'}${item.id}`;
+export function parseCommentAnchor(hash: string): CommentAnchor | null {
+  const name = hash.replace(/^#/, '');
+  const kind = anchorKinds.find(prefix => name.startsWith(prefix));
+  const id = kind && Number(name.slice(kind.length));
+  return kind && id && Number.isSafeInteger(id) && id > 0 ? { kind, id } : null;
+}
 
 export function isBot(user: User) {
   return user.type === 'Bot' || /\[bot\]$/i.test(user.login);

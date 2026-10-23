@@ -1079,6 +1079,107 @@ test.describe('keyboard shortcuts', () => {
   });
 });
 
+test.describe('sharing links', () => {
+  const clipboard = (page: Page) => page.evaluate(() => navigator.clipboard.readText());
+  const prLink = 'http://127.0.0.1:5174/acme/app/pull/42';
+  test.beforeEach(async ({ page }) => {
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  });
+
+  test('the ⋯ menu copies the app link, GitHub link and Markdown, even on a merged PR', async ({ page }) => {
+    await mockGitHub(page, { prState: 'merged' });
+    await openPR(page);
+    const more = page.getByRole('button', { name: 'More pull request actions' });
+    await more.click();
+    const menu = page.getByRole('menu', { name: 'Pull request actions' });
+    await expect(menu.getByRole('menuitem')).toHaveText(['Copy linkc l', 'Copy GitHub linkc g', 'Copy as Markdownc p']);
+    await menu.getByRole('menuitem', { name: /^Copy link/ }).click();
+    await expect.poll(() => clipboard(page)).toBe(prLink);
+    await expect(page.getByRole('status').filter({ hasText: 'Copied link to PR' })).toBeVisible();
+    await expect(menu).toHaveCount(0);
+    await more.click();
+    await menu.getByRole('menuitem', { name: /^Copy GitHub link/ }).click();
+    await expect.poll(() => clipboard(page)).toBe('https://github.com/acme/app/pull/42');
+  });
+
+  test('the ⋯ menu keeps state actions after the copy group on an open PR', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    await page.getByRole('button', { name: 'More pull request actions' }).click();
+    await expect(page.getByRole('menu', { name: 'Pull request actions' }).getByRole('menuitem')).toHaveText([
+      'Copy linkc l',
+      'Copy GitHub linkc g',
+      'Copy as Markdownc p',
+      'Convert to draft',
+      'Close pull request',
+    ]);
+  });
+
+  test('the command bar lists copy actions with their shortcuts', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    await page.goto('/acme/app/pull/42#issuecomment-401');
+    await page.locator('.review-layout[aria-busy="false"]').waitFor();
+    await page.keyboard.press('ControlOrMeta+K');
+    const dialog = page.getByRole('dialog', { name: 'Command bar' });
+    await page.keyboard.type('copy link');
+    await expect(dialog.getByRole('option', { name: /^Copy link to PR/ })).toHaveText(/CL$/);
+    await expect(dialog.getByRole('option', { name: /^Copy link to GitHub/ })).toHaveText(/CG$/);
+    await dialog.getByRole('option', { name: /^Copy link to PR/ }).click();
+    // The PR link drops whichever comment the page was opened on.
+    await expect.poll(() => clipboard(page)).toBe(prLink);
+  });
+
+  test('inline comments, conversation comments and reviews copy GitHub-style anchors', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    const inline = page.locator('#discussion_r101');
+    await inline.getByRole('button', { name: 'Copy link to comment' }).click();
+    await expect.poll(() => clipboard(page)).toBe(`${prLink}#discussion_r101`);
+    await expect(page.getByRole('status').filter({ hasText: 'Copied link to comment' })).toBeVisible();
+    await expect(inline.locator('a.timestamp-link')).toHaveAttribute('href', `${prLink}#discussion_r101`);
+
+    await page.getByRole('button', { name: /^Conversation/ }).click();
+    const comment = page.locator('#issuecomment-401');
+    await comment.getByRole('button', { name: 'Copy link to comment' }).click();
+    await expect.poll(() => clipboard(page)).toBe(`${prLink}#issuecomment-401`);
+    const review = page.locator('#pullrequestreview-502');
+    await review.locator('.comment-author').getByRole('button', { name: 'Copy link to comment' }).click();
+    await expect.poll(() => clipboard(page)).toBe(`${prLink}#pullrequestreview-502`);
+    await expect(page.getByRole('status').filter({ hasText: 'Copied link to review' })).toBeVisible();
+    await expect(review.locator('.comment-author a.timestamp-link')).toHaveAttribute('href', `${prLink}#pullrequestreview-502`);
+  });
+
+  for (const [hash, text] of [
+    ['discussion_r101', 'Please rename this'],
+    ['discussion_r201', 'Looks resolved now'],
+    ['issuecomment-401', 'Ready for review'],
+    ['pullrequestreview-502', 'Please add retry tests.'],
+  ] as const) {
+    test(`opening a #${hash} link lands on and highlights that comment`, async ({ page }) => {
+      await mockGitHub(page);
+      await page.goto(`/acme/app/pull/42#${hash}`);
+      const target = page.locator(`#${hash}`);
+      await expect(target).toHaveClass(/comment-linked/);
+      await expect(target).toContainText(text);
+      await expect(target).toBeInViewport();
+    });
+  }
+
+  test('a link to a comment that is gone says so', async ({ page }) => {
+    await mockGitHub(page);
+    await page.goto('/acme/app/pull/42#discussion_r999');
+    await expect(page.getByRole('status').filter({ hasText: 'That comment is no longer on this pull request.' })).toBeVisible();
+  });
+
+  test('a legacy ?pr= link keeps its comment anchor', async ({ page }) => {
+    await mockGitHub(page);
+    await page.goto('/?pr=https://github.com/acme/app/pull/42#issuecomment-401');
+    await expect(page).toHaveURL(/\/acme\/app\/pull\/42#issuecomment-401$/);
+    await expect(page.locator('#issuecomment-401')).toHaveClass(/comment-linked/);
+  });
+});
+
 test.describe('sequence shortcuts', () => {
   test.beforeEach(async ({ page }) => {
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
