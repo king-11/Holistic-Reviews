@@ -128,8 +128,8 @@ export default defineComponent(
         <div class={`${styles['security-note']}`}>
           <LockKeyhole size={14} />
           <p>
-            Your token goes straight from this browser to api.github.com and stays in this tab’s session storage until you disconnect or
-            close the tab. It is never sent to any other server.
+            Your token goes straight from this browser to api.github.com and stays in session storage, shared only with tabs of this app you
+            open from here, until you disconnect or close them. It is never sent to any other server.
           </p>
         </div>
         <div class={`${styles['permissions-note']}`}>

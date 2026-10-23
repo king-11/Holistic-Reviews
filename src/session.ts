@@ -74,6 +74,16 @@ export function openPRRef(ref: PRRef) {
   void navigateTo(prPath(ref));
 }
 
+// Session storage is per tab, so a tab opened with a modifier click asks tabs that are already connected for the token.
+type SessionMessage = { type: 'request' } | { type: 'token'; token: string } | { type: 'disconnect' };
+const channel = typeof BroadcastChannel === 'undefined' ? undefined : new BroadcastChannel('review.session');
+let handoff: ReturnType<typeof setTimeout> | undefined;
+channel?.addEventListener('message', ({ data }: MessageEvent<SessionMessage>) => {
+  if (data.type === 'request' && token.value) channel.postMessage({ type: 'token', token: token.value } satisfies SessionMessage);
+  else if (data.type === 'token' && handoff) restoreToken(data.token);
+  else if (data.type === 'disconnect' && token.value) disconnect();
+});
+
 let restore: AbortController | undefined;
 export function connect(value: string, details: TokenInfo) {
   restore?.abort();
@@ -100,6 +110,7 @@ export function connect(value: string, details: TokenInfo) {
 }
 export function disconnect() {
   if (mutationBusy.value) return;
+  channel?.postMessage({ type: 'disconnect' } satisfies SessionMessage);
   restore?.abort();
   tryStorage(() => {
     sessionStorage.removeItem(tokenKey);
@@ -113,7 +124,19 @@ export function disconnect() {
 }
 export function restoreSession() {
   const saved = tryStorage(() => sessionStorage.getItem(tokenKey));
-  if (!saved) return;
+  if (saved) return restoreToken(saved);
+  if (!channel) return;
+  // No reply means no other tab is connected, so the connect screen only waits briefly.
+  restoring.value = true;
+  handoff = setTimeout(() => {
+    handoff = undefined;
+    restoring.value = false;
+  }, 300);
+  channel.postMessage({ type: 'request' } satisfies SessionMessage);
+}
+function restoreToken(saved: string) {
+  clearTimeout(handoff);
+  handoff = undefined;
   restoring.value = true;
   const controller = (restore = new AbortController());
   new GitHub(saved)
