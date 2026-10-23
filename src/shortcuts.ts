@@ -10,7 +10,13 @@ export type CommandAction =
   | 'request-changes'
   | 'squash-merge'
   | 'merge-when-ready'
+  | 'copy-link'
+  | 'copy-title'
   | 'copy-branch-name'
+  | 'copy-checkout'
+  | 'copy-github-link'
+  | 'copy-stack'
+  | 'copy-markdown'
   | 'theme'
   | 'upstack'
   | 'inbox';
@@ -173,17 +179,27 @@ export const commandDefinitions: CommandEntry[] = [
     enabled: mergeWhenReadyReason,
     run: (context, source) => context.actions['merge-when-ready']?.(source),
   },
-  {
-    id: 'copy-branch-name',
-    label: 'Copy branch name',
-    group: 'Pull request',
+  ...(
+    [
+      ['copy-link', 'Copy link to PR', 'c l'],
+      ['copy-title', 'Copy title', 'c t'],
+      ['copy-branch-name', 'Copy branch name', 'c b'],
+      ['copy-checkout', 'Copy CLI checkout command', 'c c'],
+      ['copy-github-link', 'Copy link to GitHub', 'c g'],
+      ['copy-stack', 'Copy stack', 'c s'],
+      ['copy-markdown', 'Copy PR as Markdown', 'c p'],
+    ] as const
+  ).map(([id, label, key]): CommandEntry => ({
+    id,
+    label,
+    group: 'Copy',
     shortcutGroup: 'Copy',
-    keys: ['c b'],
+    keys: [key],
     inBar: true,
     prOnly: true,
     enabled: context => (!context.pr ? 'Only available on a pull request.' : undefined),
-    run: (context, source) => context.actions['copy-branch-name']?.(source),
-  },
+    run: (context, source) => context.actions[id]?.(source),
+  })),
   {
     id: 'theme',
     label: 'Theme',
@@ -266,15 +282,7 @@ export const shortcutGroups: { title: string; shortcuts: Shortcut[] }[] = [
   },
   {
     title: 'Copy',
-    shortcuts: [
-      { combos: ['c l'], label: 'Copy link to PR' },
-      { combos: ['c t'], label: 'Copy title' },
-      ...commandShortcuts('Copy'),
-      { combos: ['c c'], label: 'Copy CLI checkout command' },
-      { combos: ['c g'], label: 'Copy link to GitHub' },
-      { combos: ['c s'], label: 'Copy stack' },
-      { combos: ['c p'], label: 'Copy PR' },
-    ],
+    shortcuts: commandShortcuts('Copy'),
   },
 ];
 

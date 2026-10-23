@@ -264,6 +264,14 @@ button.chip:hover {
 .option:disabled {
   color: var(--color-muted);
 }
+.keys {
+  margin-left: auto;
+}
+.separator {
+  margin: 4px 0;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+}
 .option > .end {
   color: var(--color-accent);
 }

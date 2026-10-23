@@ -1,6 +1,7 @@
 import { defineComponent, shallowRef } from 'vue';
-import { Pencil, Trash2 } from '@lucide/vue';
+import { Link, Pencil, Trash2 } from '@lucide/vue';
 import type { Comment, Review } from './github';
+import { isReview } from './comments';
 import Markdown from './MarkdownView';
 import { IconButton } from './ui';
 import MentionField from './MentionField';
@@ -11,9 +12,12 @@ export interface EditActions {
   disabled: () => boolean;
   save: (item: Editable, body: string) => Promise<boolean>;
   remove: (item: Comment) => Promise<boolean>;
+  // Undefined for items only the viewer can see, such as pending review comments.
+  link: (item: Editable) => string | undefined;
+  copyLink: (item: Editable) => void;
 }
 
-export const isReview = (item: Editable): item is Review => 'state' in item;
+export { isReview };
 // Review and comment ids come from separate GitHub sequences, so they can collide.
 const key = (item: Editable) => `${isReview(item) ? 'review' : 'comment'}-${item.id}`;
 const editing = shallowRef<{ key: string; body: string } | null>(null);
@@ -22,18 +26,25 @@ export const CommentActions = defineComponent(
   (props: { item: Editable; actions: EditActions }) => {
     const confirming = shallowRef(false);
     return () =>
-      props.actions.can(props.item) &&
       editing.value?.key !== key(props.item) && (
         <span class="comment-actions">
-          <IconButton
-            label="Edit comment"
-            disabled={props.actions.disabled()}
-            onClick={() => (editing.value = { key: key(props.item), body: props.item.body || '' })}
-          >
-            <Pencil size={14} />
-          </IconButton>
+          {!!props.actions.link(props.item) && (
+            <IconButton label="Copy link to comment" onClick={() => props.actions.copyLink(props.item)}>
+              <Link size={14} />
+            </IconButton>
+          )}
+          {props.actions.can(props.item) && (
+            <IconButton
+              label="Edit comment"
+              disabled={props.actions.disabled()}
+              onClick={() => (editing.value = { key: key(props.item), body: props.item.body || '' })}
+            >
+              <Pencil size={14} />
+            </IconButton>
+          )}
           {/* Submitted reviews can't be deleted on GitHub, only their comments. */}
-          {!isReview(props.item) &&
+          {props.actions.can(props.item) &&
+            !isReview(props.item) &&
             (confirming.value ? (
               <button
                 class="button small danger"
