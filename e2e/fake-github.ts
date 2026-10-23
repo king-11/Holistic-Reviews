@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import type { BrowserContext, Page } from '@playwright/test';
 import type { ChangedFile, Comment, PullRequest, Review, ReviewThread } from '../src/github.ts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Fixture payloads are untyped GitHub JSON.
@@ -254,8 +254,9 @@ const reviewSummaries: Record<number, Payload> = {
 };
 const reactionContents = ['THUMBS_UP', 'THUMBS_DOWN', 'LAUGH', 'HOORAY', 'CONFUSED', 'HEART', 'ROCKET', 'EYES'];
 
+// Pass the browser context instead of a page to also serve tabs the app opens.
 export async function mockGitHub(
-  page: Page,
+  page: Page | BrowserContext,
   options: {
     hold?: RegExp;
     write?: boolean;

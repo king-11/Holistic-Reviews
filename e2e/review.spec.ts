@@ -521,6 +521,27 @@ test.describe('routing', () => {
     await expect(page).toHaveURL(prRoute);
   });
 
+  test('a PR opened in a new tab with a modifier click reuses the connection, and disconnecting signs out both tabs', async ({
+    page,
+    context,
+  }) => {
+    await mockGitHub(context, { signedOut: true });
+    await page.addInitScript(() => sessionStorage.setItem('review.github-token', 'github_pat_test'));
+    await seedInbox(page, { repos: [] });
+    await page.goto('/');
+    const [tab] = await Promise.all([
+      context.waitForEvent('page'),
+      page.getByRole('link', { name: /Improve worker retries/ }).click({ modifiers: ['ControlOrMeta'] }),
+    ]);
+    await expect(tab).toHaveURL(prRoute);
+    await expect(prHeading(tab)).toBeVisible();
+    expect(await tab.evaluate(() => sessionStorage.getItem('review.github-token'))).toBe('github_pat_test');
+    await tab.getByTitle('View your GitHub connection and token options').click();
+    await tab.getByRole('button', { name: 'Disconnect and clear token' }).click();
+    await expect(page.getByRole('heading', { name: 'Connect GitHub to start reviewing' })).toBeVisible();
+    expect(await page.evaluate(() => sessionStorage.getItem('review.github-token'))).toBeNull();
+  });
+
   test('an invalid PR number shows the load error', async ({ page }) => {
     await mockGitHub(page);
     await page.goto('/acme/app/pull/abc');
