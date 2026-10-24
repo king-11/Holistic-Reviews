@@ -409,6 +409,8 @@ test.describe('inbox after acting on a pull request', () => {
     const searches = fake.searches.length;
     const panel = page.getByRole('complementary', { name: 'Pull request details' });
     await expect(panel.getByRole('button', { name: 'Remove review request from reviewer', exact: true })).toBeVisible();
+    // r y is a no-op until reviews load, which can land after network idle.
+    await expect(page.getByRole('button', { name: 'Review changes' })).toBeEnabled();
     await page.keyboard.press('r');
     await page.keyboard.press('y');
     await expect(page.getByRole('status').getByText('Approval submitted to GitHub.')).toBeVisible();
@@ -1291,6 +1293,7 @@ test.describe('details panel', () => {
     await openPR(page);
     await expect(page.getByRole('button', { name: /Not ready to merge/ })).toBeVisible();
     await page.waitForLoadState('networkidle');
+    await expect(page.getByRole('button', { name: 'Review changes' })).toBeEnabled();
     const reads = fake.prReads;
     await page.keyboard.press('r');
     await page.keyboard.press('y');
