@@ -555,6 +555,37 @@ mark {
   color: var(--color-muted);
   font-size: var(--text-xs);
 }
+.timestamp-link {
+  color: var(--color-muted);
+}
+.timestamp-link:hover {
+  color: var(--color-text);
+  text-decoration: underline;
+}
+/* Rings the comment a link opened, then fades so it doesn't linger as a selection. A pseudo-element keeps it
+   clear of the comment's own entrance animation and draws over its header. */
+.comment-linked {
+  position: relative;
+  scroll-margin-top: 80px;
+}
+.comment-linked::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--color-accent);
+  border-radius: inherit;
+  pointer-events: none;
+  animation: comment-linked 2.4s ease-out forwards;
+}
+@keyframes comment-linked {
+  0%,
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
 .thread-comment > .markdown-body {
   padding-left: 28px;
   padding-bottom: 8px;
@@ -1759,6 +1790,8 @@ button.section-heading:hover {
   align-items: center;
   gap: 4px;
   margin-left: auto;
+  /* Every comment has a link button, so it mustn't make author rows taller than the avatar. */
+  margin-block: -6px;
 }
 .pr-title-button {
   padding: 0;

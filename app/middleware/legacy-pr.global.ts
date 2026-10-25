@@ -5,7 +5,7 @@ import { parsePRUrl, prPath } from '../../src/github';
 export default defineNuxtRouteMiddleware(to => {
   if (to.path !== '/' || typeof to.query.pr !== 'string') return;
   try {
-    return navigateTo(prPath(parsePRUrl(to.query.pr)), { replace: true });
+    return navigateTo({ path: prPath(parsePRUrl(to.query.pr)), hash: to.hash }, { replace: true });
   } catch {
     return;
   }
