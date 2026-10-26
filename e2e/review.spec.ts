@@ -1924,7 +1924,9 @@ test.describe('diff view', () => {
     await mockGitHub(page);
     await openPR(page);
     const file = card(page, 'src/worker.py');
-    const markRequest = page.waitForRequest(request => request.url().endsWith('/graphql') && !!request.postData()?.includes('MarkFilesAsViewed'));
+    const markRequest = page.waitForRequest(
+      request => request.url().endsWith('/graphql') && !!request.postData()?.includes('MarkFilesAsViewed'),
+    );
     await file.getByRole('button', { name: 'Viewed' }).click();
     const mark = await markRequest;
     expect(JSON.parse(mark.postData()!).variables).toEqual({ pullRequestId: 'PR42', path0: 'src/worker.py' });
@@ -1936,7 +1938,9 @@ test.describe('diff view', () => {
     const reloaded = card(page, 'src/worker.py');
     await expect(reloaded.getByRole('button', { name: 'Viewed' })).toHaveAttribute('aria-pressed', 'true');
     await expect(reloaded.locator('button[aria-expanded]').first()).toHaveAttribute('aria-expanded', 'false');
-    const unmarkRequest = page.waitForRequest(request => request.url().endsWith('/graphql') && !!request.postData()?.includes('UnmarkFilesAsViewed'));
+    const unmarkRequest = page.waitForRequest(
+      request => request.url().endsWith('/graphql') && !!request.postData()?.includes('UnmarkFilesAsViewed'),
+    );
     await reloaded.getByRole('button', { name: 'Viewed' }).click();
     const unmark = await unmarkRequest;
     expect(JSON.parse(unmark.postData()!).variables).toEqual({ pullRequestId: 'PR42', path0: 'src/worker.py' });
@@ -1964,7 +1968,9 @@ test.describe('diff view', () => {
     await mockGitHub(page);
     await openPR(page);
     await page.getByRole('button', { name: 'Show file sidebar' }).click();
-    const request = page.waitForRequest(candidate => candidate.url().endsWith('/graphql') && !!candidate.postData()?.includes('MarkFilesAsViewed'));
+    const request = page.waitForRequest(
+      candidate => candidate.url().endsWith('/graphql') && !!candidate.postData()?.includes('MarkFilesAsViewed'),
+    );
     await page.getByRole('complementary', { name: 'Changed files' }).getByRole('button', { name: 'Mark src viewed' }).click();
     const body = JSON.parse((await request).postData()!);
     expect(body.variables).toEqual({
@@ -1991,7 +1997,9 @@ test.describe('diff view', () => {
     await page.locator('article').filter({ hasText: 'Retry worker' }).getByRole('button', { name: 'View changes' }).click();
     await expect(page.getByText(/Read-only range/)).toBeVisible();
     await card(page, 'src/worker.py').getByRole('button', { name: 'Viewed' }).click();
-    expect(fake.writes.filter(write => write.operation === 'MarkFilesAsViewed' || write.operation === 'UnmarkFilesAsViewed')).toHaveLength(0);
+    expect(fake.writes.filter(write => write.operation === 'MarkFilesAsViewed' || write.operation === 'UnmarkFilesAsViewed')).toHaveLength(
+      0,
+    );
   });
 
   test('collapses every diff and expands a file to full width', async ({ page }) => {
