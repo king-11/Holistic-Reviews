@@ -810,16 +810,17 @@ export default defineComponent(
         rangeViewed.value = next.viewed;
         return;
       }
-      const previous = [...ws().viewedFiles];
-      const previousViewed = new Set(previous);
-      const changed = filenames.filter(filename => next.viewed.has(filename) !== previousViewed.has(filename));
+      const changed = filenames.filter(filename => next.viewed.has(filename) !== currentViewed.has(filename));
       if (!changed.length) return;
       const pullRequestId = pr().node_id;
       const isViewed = next.viewed.has(changed[0]!);
       props.store.edit('viewedFiles', () => [...next.viewed]);
       void props.api.setFilesViewed(pullRequestId, changed, isViewed).catch(() => {
         if (ws().pr.node_id !== pullRequestId) return;
-        props.store.edit('viewedFiles', () => previous);
+        // Revert only this toggle so later toggles that did save are kept.
+        props.store.edit('viewedFiles', prev =>
+          isViewed ? prev.filter(filename => !changed.includes(filename)) : [...new Set([...prev, ...changed])],
+        );
         if (active) showToast('Could not update viewed files on GitHub.', 'error');
       });
     }
