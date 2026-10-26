@@ -6,7 +6,8 @@ import { themeTokens, type ThemeId } from './themes';
 import type { PatchLine } from './diff';
 import { motion } from 'motion-v';
 import { fade, pop } from './motion';
-import { onKeyStroke, unrefElement, useEventListener, useLocalStorage } from '@vueuse/core';
+import { onKeyStroke, unrefElement, useEventListener, useStorage } from '@vueuse/core';
+import { localInstance } from './storage';
 import { X, LoaderCircle, Search, createLucideIcon } from '@lucide/vue';
 
 // Lucide 1.x dropped brand icons; this is its former GitHub mark.
@@ -89,7 +90,7 @@ IconButton.inheritAttrs = false;
 
 // `edge` is the side the drag handle sits on; dragging it outward widens the panel.
 export function useWidth(key: string, initial: number, edge: 'left' | 'right') {
-  const width = useLocalStorage(`review.${key}-width`, initial);
+  const width = useStorage(`review.${key}-width`, initial, localInstance());
   const clamp = (value: number) => Math.round(Math.min(Math.max(value, 224), Math.min(640, window.innerWidth - 80)));
   let origin: [number, number] | null = null;
   const sign = edge === 'right' ? 1 : -1;

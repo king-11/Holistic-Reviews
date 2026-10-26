@@ -28,9 +28,10 @@ async function startLineReview(page: Page, body: string) {
 }
 
 // Inbox repositories default to the most-used one, so tests that need every repository seed an explicit choice.
+// Preferences are scoped to the connecting identity; the fake viewer signs in as `reviewer`.
 async function seedInbox(page: Page, preferences: { repos?: string[]; sorts?: Record<string, string>; merged?: string }) {
   await page.addInitScript(saved => {
-    if (!localStorage.getItem('review.inbox')) localStorage.setItem('review.inbox', JSON.stringify(saved));
+    if (!localStorage.getItem('review.inbox:reviewer')) localStorage.setItem('review.inbox:reviewer', JSON.stringify(saved));
   }, preferences);
 }
 
@@ -528,7 +529,7 @@ test.describe('routing', () => {
     context,
   }) => {
     await mockGitHub(context, { signedOut: true });
-    await page.addInitScript(() => sessionStorage.setItem('review.github-token', 'github_pat_test'));
+    await page.addInitScript(() => localStorage.setItem('review.github-token', 'github_pat_test'));
     await seedInbox(page, { repos: [] });
     await page.goto('/');
     const [tab] = await Promise.all([
@@ -537,11 +538,11 @@ test.describe('routing', () => {
     ]);
     await expect(tab).toHaveURL(prRoute);
     await expect(prHeading(tab)).toBeVisible();
-    expect(await tab.evaluate(() => sessionStorage.getItem('review.github-token'))).toBe('github_pat_test');
+    expect(await tab.evaluate(() => localStorage.getItem('review.github-token'))).toBe('github_pat_test');
     await tab.getByTitle('View your GitHub connection and token options').click();
     await tab.getByRole('button', { name: 'Disconnect and clear token' }).click();
     await expect(page.getByRole('heading', { name: 'Connect GitHub to start reviewing' })).toBeVisible();
-    expect(await page.evaluate(() => sessionStorage.getItem('review.github-token'))).toBeNull();
+    expect(await page.evaluate(() => localStorage.getItem('review.github-token'))).toBeNull();
   });
 
   test('an invalid PR number shows the load error', async ({ page }) => {
@@ -551,7 +552,7 @@ test.describe('routing', () => {
   });
 });
 
-test('browser token flow validates scopes and keeps the token in session storage only', async ({ page }) => {
+test('browser token flow validates scopes and keeps the token in local storage', async ({ page }) => {
   const hosts = new Set<string>();
   page.on('request', request => {
     if (!/^(data|blob):/.test(request.url())) hosts.add(new URL(request.url()).host);
@@ -564,7 +565,7 @@ test('browser token flow validates scopes and keeps the token in session storage
       headers: { 'access-control-expose-headers': 'X-OAuth-Scopes', 'x-oauth-scopes': token === 'ghp_noscope' ? 'read:org' : 'repo' },
     });
   });
-  const stored = () => page.evaluate(() => sessionStorage.getItem('review.github-token'));
+  const stored = () => page.evaluate(() => localStorage.getItem('review.github-token'));
   await page.goto('/');
   await page.getByRole('button', { name: 'Connect GitHub' }).first().click();
   const dialog = page.getByRole('dialog', { name: 'Connect to GitHub' });

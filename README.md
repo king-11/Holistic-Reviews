@@ -15,7 +15,7 @@ Open `http://localhost:5173`. Each pull request lives at `/<owner>/<repo>/pull/<
 
 ## Connect GitHub
 
-Click **Connect GitHub** and paste a token with `repo`, `read:org`, and `workflow` scopes (kept in `sessionStorage` for the current tab only):
+Click **Connect GitHub** and paste a token with `repo`, `read:org`, and `workflow` scopes (kept in `localStorage` so it persists across tabs and restarts):
 
 ```sh
 gh auth login --scopes repo,read:org,workflow

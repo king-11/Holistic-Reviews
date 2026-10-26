@@ -14,9 +14,10 @@ Holistic Reviews is a client-only single-page application that talks directly to
      - The app polls `GET /pulls/{n}` while GitHub computes mergeability.
 4. **Immediate local reconciliation ahead of GitHub's search index.** GitHub's `/search/issues` index lags writes by 15–60 seconds. Whenever a PR is viewed or mutated, the page records a 3-minute snapshot of its current state and section placement so the kept-alive inbox reflects approvals, merges, draft toggles, and reviewer changes immediately upon return.
 5. **Authentication & storage.**
-   - Token lives in `sessionStorage` (`review.github-token`) for the tab's lifetime and is validated via `GET /user` (requiring `repo` or `public_repo` on classic tokens).
-   - On connect/restore, the viewer's organization teams (`GET /user/teams`, formatted as `org/slug`) are cached in `localStorage` (`review.teams`) and refreshed in the background.
-   - Disconnecting clears the session token, cached teams, people directories (`review.people.*`), and in-memory PR snapshots.
+   - Token lives in `localStorage` (`review.github-token`) so it persists across tabs and browser restarts, and is validated via `GET /user` (requiring `repo` or `public_repo` on classic tokens). Other tabs sync connect/disconnect through the `storage` event.
+   - User-facing preferences are scoped per GitHub login (`review.preferences:<login>`, `review.inbox:<login>`, `review.teams:<login>`); `review.identity` remembers the last login so settings apply before a session restores. Legacy unscoped keys are migrated to the first identity that connects.
+   - On connect/restore, the viewer's organization teams (`GET /user/teams`, formatted as `org/slug`) are cached in `localStorage` (`review.teams:<login>`) and refreshed in the background.
+   - Disconnecting clears the stored token, the connecting identity's cached teams, people directories (`review.people.*`), and in-memory PR snapshots. Settings and inbox preferences persist per identity.
 
 ## Domain Specifications
 

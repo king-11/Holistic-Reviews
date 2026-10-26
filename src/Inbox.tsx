@@ -155,7 +155,7 @@ type Props = {
 
 export default defineComponent(
   (props: Props) => {
-    const preferences = readPreferences();
+    const preferences = readPreferences(props.info.user.login);
     const rail = shallowRef(preferences.rail ?? false);
 
     const query = shallowRef('');
@@ -222,7 +222,13 @@ export default defineComponent(
     const mergedLoading = shallowRef(false);
     watch(selected, () => (visibleLimits.value = {}));
     watch([selected, sorts, repoOptions, mergedFilter, rail], ([repos, savedSorts, known, merged, collapsedRail]) =>
-      savePreferences({ repos: repoDefaulted ? repos : undefined, sorts: savedSorts, known, merged, rail: collapsedRail || undefined }),
+      savePreferences(props.info.user.login, {
+        repos: repoDefaulted ? repos : undefined,
+        sorts: savedSorts,
+        known,
+        merged,
+        rail: collapsedRail || undefined,
+      }),
     );
 
     // Each merged load (full reload or filter change) bumps this so only the newest one may write its result.

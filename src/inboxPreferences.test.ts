@@ -2,11 +2,19 @@ import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultSort, needsServerRefetch, readPreferences, savePreferences } from './inboxPreferences.ts';
 
+const login = 'viewer';
+const key = `review.inbox:${login}`;
 const saved = new Map<string, string>();
 Object.assign(globalThis, {
   localStorage: {
     getItem: (key: string) => saved.get(key) ?? null,
     setItem: (key: string, value: string) => saved.set(key, value),
+    removeItem: (key: string) => saved.delete(key),
+    clear: () => saved.clear(),
+    key: (index: number) => [...saved.keys()][index] ?? null,
+    get length() {
+      return saved.size;
+    },
   },
 });
 afterEach(() => saved.clear());
@@ -20,24 +28,31 @@ describe('Inbox preferences', () => {
     [42, undefined],
   ] as const)
     it(`reads merged filter ${String(value)}`, () => {
-      saved.set('review.inbox', JSON.stringify({ merged: value }));
-      assert.equal(readPreferences().merged, expected);
+      saved.set(key, JSON.stringify({ merged: value }));
+      assert.equal(readPreferences(login).merged, expected);
     });
 
-  it('saves the merged filter with the other preferences', () => {
-    savePreferences({ repos: ['acme/app'], merged: 'reviewing' });
-    assert.deepEqual(JSON.parse(saved.get('review.inbox') ?? ''), { repos: ['acme/app'], merged: 'reviewing' });
+  it('saves the merged filter under the identity-scoped key', () => {
+    savePreferences(login, { repos: ['acme/app'], merged: 'reviewing' });
+    assert.deepEqual(JSON.parse(saved.get(key) ?? ''), { repos: ['acme/app'], merged: 'reviewing' });
+    assert.equal(saved.has('review.inbox'), false);
+  });
+
+  it('keeps identities apart', () => {
+    savePreferences('other', { repos: ['acme/other'] });
+    assert.equal(readPreferences(login).repos, undefined);
+    assert.deepEqual(readPreferences('other').repos, ['acme/other']);
   });
 
   it('ignores the old global sort and validates per-section sorts', () => {
     saved.set(
-      'review.inbox',
+      key,
       JSON.stringify({
         sort: 'created-asc',
         sorts: { requested: 'title-asc', attention: 'created-asc', ready: 'priority', returned: 'updated-asc' },
       }),
     );
-    assert.deepEqual(readPreferences().sorts, { requested: 'title-asc', attention: 'created-asc' });
+    assert.deepEqual(readPreferences(login).sorts, { requested: 'title-asc', attention: 'created-asc' });
     assert.equal(defaultSort('requested'), 'priority');
     assert.equal(defaultSort('attention'), 'updated-desc');
   });

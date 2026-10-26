@@ -1,5 +1,5 @@
 import { searchResultCap, type InboxItem, type MergedFilter, type SearchOrder } from './github.ts';
-import { tryStorage } from './storage.ts';
+import { local, scopedKey, tryStorage } from './storage.ts';
 
 const mergedFilters = ['all', 'mine', 'reviewing'] as const;
 const sectionIds = ['attention', 'requested', 'team', 'ready', 'waiting', 'drafts', 'reviewed', 'merged'] as const;
@@ -94,7 +94,7 @@ type InboxPreferences = {
   // Sidebar collapsed to an icon rail.
   rail?: boolean;
 };
-const preferencesKey = 'review.inbox';
+const preferencesKey = (login: string) => scopedKey('review.inbox', login);
 const stringList = (value: unknown) =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined;
 const sectionSorts = (value: unknown) => {
@@ -108,8 +108,8 @@ const sectionSorts = (value: unknown) => {
     ),
   ) as Partial<Record<InboxSectionId, SortChoice>>;
 };
-export function readPreferences(): InboxPreferences {
-  const saved = tryStorage(() => JSON.parse(localStorage.getItem(preferencesKey) ?? 'null')) as Record<string, unknown> | null;
+export function readPreferences(login: string): InboxPreferences {
+  const saved = tryStorage(() => JSON.parse(local.getItem(preferencesKey(login)) ?? 'null')) as Record<string, unknown> | null;
   return {
     repos: stringList(saved?.repos),
     sorts: sectionSorts(saved?.sorts),
@@ -118,7 +118,7 @@ export function readPreferences(): InboxPreferences {
     rail: saved?.rail === true || undefined,
   };
 }
-export const savePreferences = (preferences: InboxPreferences) =>
-  tryStorage(() => localStorage.setItem(preferencesKey, JSON.stringify(preferences)));
+export const savePreferences = (login: string, preferences: InboxPreferences) =>
+  local.setItem(preferencesKey(login), JSON.stringify(preferences));
 // Saved order stands in for counts, so the repository menu keeps its order until a fresh unfiltered load recounts.
 export const rankCounts = (repos: string[]) => new Map(repos.map((repo, index) => [repo, repos.length - index]));

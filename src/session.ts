@@ -1,18 +1,22 @@
 import { computed, shallowRef } from 'vue';
 import { navigateTo } from 'nuxt/app';
+import { useStorage } from '@vueuse/core';
 import { GitHub, errorMessage, parsePRUrl, prPath, type PRRef, type TokenInfo } from './github';
 import { type DiffSettings } from './DiffView';
 import { isTheme } from './themes';
 import { clearPeople } from './people';
 import { clearInboxSnapshots } from './inboxUpdates';
-import { tryStorage } from './storage';
+import { local, localInstance, localIsMemory, scopedKey, session, tryStorage } from './storage';
 
 // The app is a client-only SPA, so module state is one session shared by the shell and every page.
 const tokenKey = 'review.github-token';
-const settingsKey = 'review.preferences';
-const teamsKey = 'review.teams';
-const readTeams = () => {
-  const saved = tryStorage(() => JSON.parse(localStorage.getItem(teamsKey) ?? 'null'));
+const identityKey = 'review.identity';
+const settingsBase = 'review.preferences';
+const inboxBase = 'review.inbox';
+const teamsBase = 'review.teams';
+const teamsKey = (login: string) => scopedKey(teamsBase, login);
+const readTeams = (login: string) => {
+  const saved = tryStorage(() => JSON.parse(local.getItem(teamsKey(login)) ?? 'null'));
   return Array.isArray(saved) ? saved.filter((team): team is string => typeof team === 'string') : undefined;
 };
 const defaults: DiffSettings = {
@@ -25,24 +29,19 @@ const defaults: DiffSettings = {
   commentPlacement: 'inline',
   hideBotComments: false,
 };
-// Blocked browser storage must not break the app; state then stays in memory.
-function readSettings(): DiffSettings {
-  try {
-    const saved = JSON.parse(localStorage.getItem(settingsKey) || '{}');
-    return {
-      layout: ['split', 'unified'].includes(saved.layout) ? saved.layout : defaults.layout,
-      theme: isTheme(saved.theme) ? saved.theme : defaults.theme,
-      backgrounds: typeof saved.backgrounds === 'boolean' ? saved.backgrounds : defaults.backgrounds,
-      lineNumbers: typeof saved.lineNumbers === 'boolean' ? saved.lineNumbers : defaults.lineNumbers,
-      wordWrap: typeof saved.wordWrap === 'boolean' ? saved.wordWrap : defaults.wordWrap,
-      indicators: ['classic', 'bars', 'none'].includes(saved.indicators) ? saved.indicators : defaults.indicators,
-      commentPlacement: saved.commentPlacement === 'below' ? 'below' : 'inline',
-      hideBotComments: saved.hideBotComments === true,
-    };
-  } catch {
-    return defaults;
-  }
-}
+const sanitizeSettings = (saved: unknown): DiffSettings => {
+  const value = saved && typeof saved === 'object' ? (saved as Record<string, unknown>) : {};
+  return {
+    layout: value.layout === 'split' || value.layout === 'unified' ? value.layout : defaults.layout,
+    theme: isTheme(value.theme) ? value.theme : defaults.theme,
+    backgrounds: typeof value.backgrounds === 'boolean' ? value.backgrounds : defaults.backgrounds,
+    lineNumbers: typeof value.lineNumbers === 'boolean' ? value.lineNumbers : defaults.lineNumbers,
+    wordWrap: typeof value.wordWrap === 'boolean' ? value.wordWrap : defaults.wordWrap,
+    indicators: value.indicators === 'classic' || value.indicators === 'bars' || value.indicators === 'none' ? value.indicators : defaults.indicators,
+    commentPlacement: value.commentPlacement === 'below' ? 'below' : 'inline',
+    hideBotComments: value.hideBotComments === true,
+  };
+};
 
 const token = shallowRef('');
 export const info = shallowRef<TokenInfo | null>(null);
@@ -53,10 +52,16 @@ export const authOpen = shallowRef(false);
 // Set while a review write is in flight; the shell's route guard and header controls hold navigation until it settles.
 export const mutationBusy = shallowRef(false);
 
-export const settings = shallowRef<DiffSettings>(readSettings());
+// Settings keys are scoped per identity; the last-connected login answers before a session restores.
+export const identity = shallowRef<string | undefined>(local.getItem(identityKey) ?? undefined);
+export const settings = useStorage<DiffSettings>(
+  () => scopedKey(settingsBase, info.value?.user.login ?? identity.value),
+  defaults,
+  localInstance(),
+  { serializer: { read: raw => sanitizeSettings(tryStorage(() => JSON.parse(raw))), write: value => JSON.stringify(value) } },
+);
 export function changeSettings(value: DiffSettings) {
   settings.value = value;
-  tryStorage(() => localStorage.setItem(settingsKey, JSON.stringify(value)));
 }
 
 export function openPR(url: string) {
@@ -74,48 +79,53 @@ export function openPRRef(ref: PRRef) {
   void navigateTo(prPath(ref));
 }
 
-// Session storage is per tab, so a tab opened with a modifier click asks tabs that are already connected for the token.
-type SessionMessage = { type: 'request' } | { type: 'token'; token: string } | { type: 'disconnect' };
-const channel = typeof BroadcastChannel === 'undefined' ? undefined : new BroadcastChannel('review.session');
-let handoff: ReturnType<typeof setTimeout> | undefined;
-channel?.addEventListener('message', ({ data }: MessageEvent<SessionMessage>) => {
-  if (data.type === 'request' && token.value) channel.postMessage({ type: 'token', token: token.value } satisfies SessionMessage);
-  else if (data.type === 'token' && handoff) restoreToken(data.token);
-  else if (data.type === 'disconnect' && token.value) disconnect();
-});
+// Other tabs observe token writes and removals through the storage event; localStorage is shared, so no handshake is needed.
+if (typeof window !== 'undefined')
+  window.addEventListener('storage', event => {
+    if (event.key !== tokenKey || event.storageArea !== localInstance()) return;
+    if (event.newValue) restoreToken(event.newValue);
+    else disconnect();
+  });
 
 let restore: AbortController | undefined;
+// Earlier versions kept these keys unscoped; the first identity to connect after the upgrade claims them.
+const scopedBases = [settingsBase, inboxBase, teamsBase];
+function migrate(login: string) {
+  for (const base of scopedBases) {
+    const legacy = local.getItem(base);
+    if (legacy === null) continue;
+    if (local.getItem(`${base}:${login}`) === null) local.setItem(`${base}:${login}`, legacy);
+    local.removeItem(base);
+  }
+}
 export function connect(value: string, details: TokenInfo) {
   restore?.abort();
   const controller = (restore = new AbortController());
+  const login = details.user.login;
   token.value = value;
-  info.value = { ...details, teams: details.teams ?? readTeams() };
+  migrate(login);
+  local.setItem(identityKey, login);
+  identity.value = login;
+  info.value = { ...details, teams: details.teams ?? readTeams(login) };
   authOpen.value = false;
-  if (
-    !tryStorage(() => {
-      sessionStorage.setItem(tokenKey, value);
-      return true;
-    })
-  )
-    storageNotice.value = 'Browser storage is unavailable. Your token is kept in memory only.';
+  local.setItem(tokenKey, value);
+  if (localIsMemory()) storageNotice.value = 'Browser storage is unavailable. Your token and settings are kept in memory only.';
   // Cached teams answer right away; refreshing on load picks up membership changes without delaying sign-in.
   void new GitHub(value)
     .userTeams(controller.signal)
     .then(teams => {
       if (controller.signal.aborted || !info.value) return;
-      tryStorage(() => localStorage.setItem(teamsKey, JSON.stringify(teams)));
+      local.setItem(teamsKey(login), JSON.stringify(teams));
       info.value = { ...info.value, teams };
     })
     .catch(() => {});
 }
 export function disconnect() {
   if (mutationBusy.value) return;
-  channel?.postMessage({ type: 'disconnect' } satisfies SessionMessage);
   restore?.abort();
-  tryStorage(() => {
-    sessionStorage.removeItem(tokenKey);
-    localStorage.removeItem(teamsKey);
-  });
+  const login = info.value?.user.login;
+  local.removeItem(tokenKey);
+  if (login) local.removeItem(teamsKey(login));
   clearPeople();
   clearInboxSnapshots();
   token.value = '';
@@ -123,20 +133,16 @@ export function disconnect() {
   void navigateTo('/');
 }
 export function restoreSession() {
-  const saved = tryStorage(() => sessionStorage.getItem(tokenKey));
+  // The sessionStorage era: move a leftover tab token into shared storage once.
+  const legacy = session.getItem(tokenKey);
+  if (legacy !== null) {
+    session.removeItem(tokenKey);
+    if (local.getItem(tokenKey) === null) local.setItem(tokenKey, legacy);
+  }
+  const saved = local.getItem(tokenKey);
   if (saved) return restoreToken(saved);
-  if (!channel) return;
-  // No reply means no other tab is connected, so the connect screen only waits briefly.
-  restoring.value = true;
-  handoff = setTimeout(() => {
-    handoff = undefined;
-    restoring.value = false;
-  }, 300);
-  channel.postMessage({ type: 'request' } satisfies SessionMessage);
 }
 function restoreToken(saved: string) {
-  clearTimeout(handoff);
-  handoff = undefined;
   restoring.value = true;
   const controller = (restore = new AbortController());
   new GitHub(saved)
@@ -146,7 +152,7 @@ function restoreToken(saved: string) {
     })
     .catch(error => {
       if (controller.signal.aborted) return;
-      tryStorage(() => sessionStorage.removeItem(tokenKey));
+      local.removeItem(tokenKey);
       storageNotice.value = errorMessage(error, 'Reconnect to GitHub.');
     })
     .finally(() => (restoring.value = false));

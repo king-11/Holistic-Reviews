@@ -812,7 +812,7 @@ export async function mockGitHub(
   }
   // Time must keep moving: Vue drops a parent's handler when Date.now() hasn't advanced past when it was attached.
   await page.clock.setSystemTime(NOW);
-  if (!options.signedOut) await page.addInitScript(() => sessionStorage.setItem('review.github-token', 'github_pat_test'));
+  if (!options.signedOut) await page.addInitScript(() => localStorage.setItem('review.github-token', 'github_pat_test'));
   await page.route('https://api.github.com/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
