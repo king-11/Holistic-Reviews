@@ -666,7 +666,7 @@ export default defineComponent(
         tab.value = 'changes';
         clearFilters();
         collapsed.value = new Set<string>();
-        viewed.value = new Set<string>();
+        rangeViewed.value = new Set<string>();
         return true;
       } catch (error) {
         if (active && !controller.signal.aborted) comparisonError.value = errorMessage(error, 'Commit comparison failed.');
@@ -736,7 +736,19 @@ export default defineComponent(
       value => (selected.value ||= value[0]?.filename || ''),
     );
     const collapsed = shallowRef<Set<string>>(new Set());
-    const viewed = shallowRef<Set<string>>(new Set());
+    const rangeViewed = shallowRef<Set<string>>(new Set());
+    const prViewed = computed(() => new Set(ws().viewedFiles));
+    const viewed = computed(() => (comparison.value ? rangeViewed.value : prViewed.value));
+    let viewedFilesSettledFor = '';
+    watch(
+      () => [pr().node_id, pendingSection('viewedFiles'), ws().viewedFiles] as const,
+      ([pullRequestId, pending, files]) => {
+        if (pending || viewedFilesSettledFor === pullRequestId) return;
+        viewedFilesSettledFor = pullRequestId;
+        collapsed.value = new Set([...collapsed.value, ...files]);
+      },
+      { immediate: true },
+    );
     const displayFiles = computed(() => comparison.value?.files || ws().files);
     const files = computed(() =>
       filterFiles(displayFiles.value, { filename: filenameQuery.value, content: contentQuery.value, statuses: statusFilters.value }),
@@ -791,9 +803,26 @@ export default defineComponent(
       if (filename) revealFile(filename, 'auto');
     };
     function toggleViewed(...filenames: string[]) {
-      const next = toggleViewedFiles(filenames, viewed.value, collapsed.value);
-      viewed.value = next.viewed;
+      const currentViewed = comparison.value ? rangeViewed.value : prViewed.value;
+      const next = toggleViewedFiles(filenames, currentViewed, collapsed.value);
       collapsed.value = next.collapsed;
+      if (comparison.value) {
+        rangeViewed.value = next.viewed;
+        return;
+      }
+      const changed = filenames.filter(filename => next.viewed.has(filename) !== currentViewed.has(filename));
+      if (!changed.length) return;
+      const pullRequestId = pr().node_id;
+      const isViewed = next.viewed.has(changed[0]!);
+      props.store.edit('viewedFiles', () => [...next.viewed]);
+      void props.api.setFilesViewed(pullRequestId, changed, isViewed).catch(() => {
+        if (ws().pr.node_id !== pullRequestId) return;
+        // Revert only this toggle so later toggles that did save are kept.
+        props.store.edit('viewedFiles', prev =>
+          isViewed ? prev.filter(filename => !changed.includes(filename)) : [...new Set([...prev, ...changed])],
+        );
+        if (active) showToast('Could not update viewed files on GitHub.', 'error');
+      });
     }
     const toggleSelectedViewed = () => selected.value && toggleViewed(selected.value);
     const allCollapsed = () => files.value.length > 0 && files.value.every(file => collapsed.value.has(file.filename));
