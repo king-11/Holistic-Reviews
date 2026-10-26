@@ -274,6 +274,8 @@ export async function mockGitHub(
     ownPR?: boolean;
     requestedPRCount?: number;
     teamsDelayMs?: number;
+    viewed?: Record<string, 'VIEWED' | 'DISMISSED'>;
+    viewedFails?: boolean;
   } = {},
 ) {
   const requestedPRCount = options.requestedPRCount ?? 3;
@@ -335,6 +337,9 @@ export async function mockGitHub(
     stalePendingReadArmed: false,
     stalePendingReadServed: false,
     stalePendingReadBody: null as null | string,
+    viewedFiles: new Map<string, 'VIEWED' | 'DISMISSED' | 'UNVIEWED'>(
+      Object.entries(options.viewed ?? {}).map(([path, viewed]) => [path, viewed]),
+    ),
   };
   const reactionGroups = (id: string) =>
     reactionContents.map(content => {
@@ -376,6 +381,30 @@ export async function mockGitHub(
     switch (operation) {
       case 'ForcePushes':
         return { nodes: [{ id: 'HRFPE1', beforeCommit: { oid: FIRST } }] };
+      case 'ViewedFiles':
+        return {
+          repository: {
+            pullRequest: {
+              files: {
+                nodes: files.map(file => ({ path: file.filename, viewerViewedState: state.viewedFiles.get(file.filename) || 'UNVIEWED' })),
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          },
+        };
+      case 'MarkFilesAsViewed':
+      case 'UnmarkFilesAsViewed': {
+        if (options.viewedFails) return { errors: [{ message: 'Viewed file update failed.' }] };
+        const viewed = operation === 'MarkFilesAsViewed';
+        return Object.fromEntries(
+          Object.keys(variables)
+            .filter(key => /^path\d+$/.test(key))
+            .map(key => {
+              state.viewedFiles.set(String(variables[key]), viewed ? 'VIEWED' : 'UNVIEWED');
+              return [`f${key.slice('path'.length)}`, { pullRequest: { id: 'PR42' } }];
+            }),
+        );
+      }
       case 'Development':
         return {
           repository: {

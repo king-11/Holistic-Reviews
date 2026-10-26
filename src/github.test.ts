@@ -219,6 +219,49 @@ describe('commit history, full-file context and reactions', () => {
     assert.deepEqual(calls[1].body?.variables, { input: { subjectId: 'review-node', content: 'HEART' } });
     assert.ok(calls.every(call => call.url === 'https://api.github.com/graphql'));
   });
+  it('loads only files whose GitHub viewed state is VIEWED', async () => {
+    const calls = fake([
+      {
+        data: {
+          data: {
+            repository: {
+              pullRequest: {
+                files: {
+                  nodes: [
+                    { path: 'src/viewed.ts', viewerViewedState: 'VIEWED' },
+                    { path: 'src/dismissed.ts', viewerViewedState: 'DISMISSED' },
+                    { path: 'src/unviewed.ts', viewerViewedState: 'UNVIEWED' },
+                  ],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          },
+        },
+      },
+    ]);
+    assert.deepEqual(await new GitHub('test-only-token').viewedFiles(ref), { items: ['src/viewed.ts'], truncated: false });
+    assert.match(String(calls[0].body?.query), /query ViewedFiles/);
+    assert.deepEqual(calls[0].body?.variables, { ...ref, cursor: null });
+  });
+  it('marks multiple files with one aliased GraphQL mutation', async () => {
+    const calls = fake([
+      {
+        data: {
+          data: {
+            f0: { pullRequest: { id: 'PR42' } },
+            f1: { pullRequest: { id: 'PR42' } },
+          },
+        },
+      },
+    ]);
+    await new GitHub('test-only-token').setFilesViewed('PR42', ['src/a.ts', 'src/b.ts'], true);
+    assert.equal(calls.length, 1);
+    assert.match(String(calls[0].body?.query), /MarkFilesAsViewed/);
+    assert.match(String(calls[0].body?.query), /f0: markFileAsViewed/);
+    assert.match(String(calls[0].body?.query), /f1: markFileAsViewed/);
+    assert.deepEqual(calls[0].body?.variables, { pullRequestId: 'PR42', path0: 'src/a.ts', path1: 'src/b.ts' });
+  });
   it('surfaces reaction errors and never treats unconfirmed mutations as saved', async () => {
     const calls = fake([
       { data: { errors: [{ message: 'Comment is locked' }] } },

@@ -260,6 +260,7 @@ export function demoWorkspace(pr = demoPR): Workspace {
     pr,
     pending: [],
     files,
+    viewedFiles: [],
     related: [parent, child, demoPR],
     reviews: [],
     inlineComments: [

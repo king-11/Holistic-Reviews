@@ -208,7 +208,7 @@ export const searchPageSize = 100;
 export const searchResultCap = 1000;
 const restPageSize = 100;
 // Bounds requests on huge PRs; 30 full pages reach REST's 3,000-file ceiling, and PR commits stop at 250.
-const maxPages = { default: 30, reviews: 20, lists: 10, commits: 3, pickers: 3 } as const;
+const maxPages = { default: 30, reviews: 20, lists: 10, commits: 3, pickers: 3, viewedFiles: 30 } as const;
 // GitHub's compare endpoint returns at most 300 files.
 const compareFileLimit = 300;
 const maxTextFileBytes = 1_048_576;
@@ -245,6 +245,7 @@ export interface Workspace {
   reviewsLoaded: boolean;
   nativeStack?: NativeStack;
   reviewThreads: ReviewThread[];
+  viewedFiles: string[];
   // The viewer's pending review comments, loaded separately because they are private until submitted.
   draftComments: Comment[];
   checks?: StatusCheck[];
@@ -291,6 +292,7 @@ export const timelineEvents = [
 
 export const workspaceSections = [
   'files',
+  'viewedFiles',
   'comments',
   'inlineComments',
   'reviews',
@@ -635,6 +637,7 @@ export class GitHub {
     const { data: pr } = await this.request<PullRequest>(path, { signal });
     let current: Workspace = {
       files: [],
+      viewedFiles: [],
       comments: [],
       inlineComments: [],
       reviews: [],
@@ -681,6 +684,12 @@ export class GitHub {
               : [],
           ),
         error => settle('files', {}, [failed('Changed files', error)]),
+      ),
+      section(
+        'viewedFiles',
+        'Viewed files',
+        () => this.viewedFiles(ref, signal),
+        items => ({ viewedFiles: items }),
       ),
       this.timeline(ref, signal).then(
         ({ comments, timeline, truncated }) =>
@@ -1223,6 +1232,48 @@ export class GitHub {
       cursor = connection.pageInfo.endCursor;
     }
     return { items, truncated: true };
+  }
+
+  async viewedFiles(ref: PRRef, signal?: AbortSignal): Promise<{ items: string[]; truncated: boolean }> {
+    type Connection = {
+      nodes: { path: string; viewerViewedState: string }[];
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    };
+    type Result = { repository: { pullRequest: { files: Connection } } };
+    const items: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < maxPages.viewedFiles; page++) {
+      const data: Result | undefined = await this.graphql<Result>(
+        'query ViewedFiles($owner: String!, $repo: String!, $number: Int!, $cursor: String) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { files(first: 100, after: $cursor) { nodes { path viewerViewedState } pageInfo { hasNextPage endCursor } } } } }',
+        { ...ref, cursor },
+        signal,
+      );
+      const connection: Connection | undefined = data?.repository?.pullRequest?.files;
+      if (!connection) throw new Error('GitHub did not return viewed files. Refresh to try again.');
+      items.push(...connection.nodes.filter(node => node.viewerViewedState === 'VIEWED').map(node => node.path));
+      if (!connection.pageInfo.hasNextPage) return { items, truncated: false };
+      if (!connection.pageInfo.endCursor || connection.pageInfo.endCursor === cursor)
+        throw new Error('GitHub returned an invalid viewed files pagination cursor.');
+      cursor = connection.pageInfo.endCursor;
+    }
+    return { items, truncated: true };
+  }
+
+  async setFilesViewed(pullRequestId: string, paths: string[], viewed: boolean): Promise<void> {
+    if (!paths.length) return;
+    const mutation = viewed ? 'markFileAsViewed' : 'unmarkFileAsViewed';
+    const operation = viewed ? 'MarkFilesAsViewed' : 'UnmarkFilesAsViewed';
+    const declarations = paths.map((_, index) => `$path${index}: String!`);
+    const fields = paths.map(
+      (_, index) => `f${index}: ${mutation}(input: { pullRequestId: $pullRequestId, path: $path${index} }) { pullRequest { id } }`,
+    );
+    const variables = Object.fromEntries([['pullRequestId', pullRequestId], ...paths.map((path, index) => [`path${index}`, path])]);
+    const data = await this.graphql<Record<string, { pullRequest: { id: string } | null } | null>>(
+      `mutation ${operation}($pullRequestId: ID!, ${declarations.join(', ')}) { ${fields.join(' ')} }`,
+      variables,
+    );
+    if (paths.some((_, index) => !data?.[`f${index}`]?.pullRequest))
+      throw new Error('GitHub did not confirm the viewed file update. Refresh before retrying.');
   }
 
   async setThreadResolved(id: string, resolved: boolean) {

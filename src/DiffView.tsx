@@ -149,7 +149,7 @@ export default defineComponent(
           </button>
           <button
             class={`viewed-button ${props.viewed ? 'checked' : ''}`}
-            title={props.viewed ? 'Mark as unviewed and expand file' : 'Mark as viewed and collapse file (local to this tab)'}
+            title={props.viewed ? 'Mark as unviewed and expand file' : 'Mark as viewed and collapse file'}
             aria-pressed={props.viewed}
             onClick={() => props.onViewed()}
           >
