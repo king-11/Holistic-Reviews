@@ -1685,6 +1685,25 @@ test.describe('progressive loading', () => {
     await expect(page.getByText('Please add retry tests.')).toBeVisible();
     await expect(loader).toHaveCount(0);
   });
+
+  test('keeps the details panel steady while checks load', async ({ page }) => {
+    const fake = await mockGitHub(page, { hold: /\/commits\/[^/]+\/(?:check-runs|status)$/, singleCheck: true });
+    await openPR(page, { settled: false });
+    const panel = page.getByRole('complementary', { name: 'Pull request details' });
+    const loader = panel.getByRole('status').filter({ hasText: 'Loading checks…' });
+    const reviewers = panel.getByRole('heading', { name: /^Reviewers/ });
+    await expect(loader).toBeVisible();
+    const beforeY = (await reviewers.boundingBox())!.y;
+
+    fake.release();
+    await expect(panel.getByRole('button', { name: '1 passed' })).toBeVisible();
+    await expect(loader).toHaveCount(0);
+
+    const chips = panel.getByRole('button', { name: /^\d+ (?:failed|pending|passed)$/ });
+    await expect(chips).toHaveCount(1);
+    const afterY = (await reviewers.boundingBox())!.y;
+    expect(Math.abs(afterY - beforeY)).toBeLessThanOrEqual(1);
+  });
 });
 
 test.describe('workspace', () => {

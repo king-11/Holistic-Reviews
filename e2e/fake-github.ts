@@ -274,6 +274,7 @@ export async function mockGitHub(
     ownPR?: boolean;
     requestedPRCount?: number;
     teamsDelayMs?: number;
+    singleCheck?: boolean;
     viewed?: Record<string, 'VIEWED' | 'DISMISSED'>;
     viewedFails?: boolean;
   } = {},
@@ -809,16 +810,24 @@ export async function mockGitHub(
               html_url: 'https://github.com/acme/app/actions/runs/9/job/2',
               output: { title: '1 error' },
             },
-          ],
+          ].filter(run => !options.singleCheck || run.id === 1),
         },
       ];
     if (path === `${repoPath}/commits/${HEAD}/status`)
       return [
         200,
         {
-          statuses: [
-            { id: 3, context: 'deploy/preview', state: 'pending', target_url: 'https://preview.example/42', description: 'Building' },
-          ],
+          statuses: options.singleCheck
+            ? []
+            : [
+                {
+                  id: 3,
+                  context: 'deploy/preview',
+                  state: 'pending',
+                  target_url: 'https://preview.example/42',
+                  description: 'Building',
+                },
+              ],
         },
       ];
     const reactionsPath = path.match(/^\/repos\/acme\/app\/(issues|pulls)\/comments\/(\d+)\/reactions(?:\/(\d+))?$/);

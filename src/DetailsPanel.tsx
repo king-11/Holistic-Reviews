@@ -46,7 +46,7 @@ import {
 import type { PRWorkspace } from './prWorkspace';
 import { checkIcons } from './Checks';
 import { pop } from './motion';
-import { Avatar, IconButton, Loader, PersonLabel, SearchField, useWidth, Dismiss } from './ui';
+import { Avatar, IconButton, Loader, PersonLabel, SearchField, Spinner, useWidth, Dismiss } from './ui';
 import { usePeople, useSearch, type Person } from './people';
 import styles from './DetailsPanel.module.css';
 import switchStyles from './switch.module.css';
@@ -626,7 +626,9 @@ function Assignees(props: { details: Details }) {
 
 function Issues(props: { issues?: LinkedIssue[] }) {
   return !props.issues ? (
-    <Loader label="Loading linked issues…" />
+    <div class={styles.pending} role="status">
+      <Spinner text="Loading linked issues…" />
+    </div>
   ) : props.issues.length ? (
     <>
       {props.issues.map(issue => (
@@ -668,7 +670,12 @@ const SummaryGroup = defineComponent(
 const CheckSummary = defineComponent(
   (props: { checks?: StatusCheck[] }) => () => {
     const { checks } = props;
-    if (!checks) return <Loader label="Loading checks…" />;
+    if (!checks)
+      return (
+        <div class={styles.pending} role="status">
+          <Spinner text="Loading checks…" />
+        </div>
+      );
     return (
       <div class={styles['check-summary']}>
         {checkCounts(checks)
