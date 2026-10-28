@@ -39,6 +39,7 @@ import {
   errorMessage,
   mergeabilityPending,
   prPath,
+  teamKey,
   type ChangedFile,
   type Comment,
   type Commit,
@@ -95,8 +96,12 @@ import styles from './ReviewWorkspace.module.css';
 import switchStyles from './switch.module.css';
 
 const writtenCommentsByPR = new Map<string, Map<number, { comment: Comment; at: number }>>();
+const removedCommentIdsByPR = new Map<string, Map<number, number>>();
 type WrittenCommentChange = { removeId?: number; previousId?: number; comment?: Comment };
 const writtenCommentViews = new Map<string, Set<(change: WrittenCommentChange) => void>>();
+const writtenReviewsByPR = new Map<string, Map<number, { review: Review; at: number }>>();
+type WrittenReviewChange = { removeId?: number; previousId?: number; review?: Review };
+const writtenReviewViews = new Map<string, Set<(change: WrittenReviewChange) => void>>();
 const writtenCommentsForPR = (url: string) => {
   let comments = writtenCommentsByPR.get(url);
   if (!comments) writtenCommentsByPR.set(url, (comments = new Map()));
@@ -111,6 +116,72 @@ const registerWrittenCommentView = (url: string, view: (change: WrittenCommentCh
     views.delete(view);
     if (!views.size) writtenCommentViews.delete(url);
   };
+};
+const removedCommentIdsForPR = (url: string, now = Date.now()) => {
+  const removed = removedCommentIdsByPR.get(url);
+  if (!removed) return new Set<number>();
+  for (const [id, at] of removed) if (now - at >= snapshotLifetime) removed.delete(id);
+  if (!removed.size) removedCommentIdsByPR.delete(url);
+  return new Set(removed.keys());
+};
+const rememberRemovedComment = (url: string, id: number, at = Date.now()) => {
+  let removed = removedCommentIdsByPR.get(url);
+  if (!removed) removedCommentIdsByPR.set(url, (removed = new Map()));
+  removed.set(id, at);
+};
+const forgetRemovedComment = (url: string, id: number) => {
+  const removed = removedCommentIdsByPR.get(url);
+  removed?.delete(id);
+  if (!removed?.size) removedCommentIdsByPR.delete(url);
+};
+const writtenReviewsForPR = (url: string, now = Date.now()) => {
+  const reviews = writtenReviewsByPR.get(url);
+  if (!reviews) return [];
+  for (const [id, entry] of reviews) if (now - entry.at >= snapshotLifetime) reviews.delete(id);
+  if (!reviews.size) writtenReviewsByPR.delete(url);
+  return [...reviews.values()];
+};
+const mergeWrittenReviews = (url: string, loaded: Review[]) => {
+  const entries = writtenReviewsForPR(url);
+  const written = writtenReviewsByPR.get(url);
+  if (!written || !entries.length) return loaded;
+  const merged = [...loaded];
+  for (const entry of entries) {
+    const id = entry.review.id;
+    const serverReview = loaded.find(review => review.id === id);
+    if (serverReview) {
+      // A lagging read can still list the just-submitted review as PENDING.
+      if (serverReview.state === 'PENDING' && entry.review.state !== 'PENDING') merged[merged.indexOf(serverReview)] = entry.review;
+      else if (serverReview !== entry.review) written.delete(id);
+      continue;
+    }
+    merged.push(entry.review);
+  }
+  if (!written.size) writtenReviewsByPR.delete(url);
+  return merged;
+};
+const notifyWrittenReview = (url: string, change: WrittenReviewChange) => writtenReviewViews.get(url)?.forEach(view => view(change));
+const registerWrittenReviewView = (url: string, view: (change: WrittenReviewChange) => void) => {
+  let views = writtenReviewViews.get(url);
+  if (!views) writtenReviewViews.set(url, (views = new Set()));
+  views.add(view);
+  return () => {
+    views.delete(view);
+    if (!views.size) writtenReviewViews.delete(url);
+  };
+};
+const recordWrittenReview = (url: string, review: Review, previousId?: number) => {
+  let reviews = writtenReviewsByPR.get(url);
+  if (!reviews) writtenReviewsByPR.set(url, (reviews = new Map()));
+  if (previousId !== undefined) reviews.delete(previousId);
+  reviews.set(review.id, { review, at: Date.now() });
+  notifyWrittenReview(url, { previousId, review });
+};
+const forgetWrittenReview = (url: string, id: number) => {
+  const reviews = writtenReviewsByPR.get(url);
+  reviews?.delete(id);
+  if (!reviews?.size) writtenReviewsByPR.delete(url);
+  notifyWrittenReview(url, { removeId: id });
 };
 
 type ReviewEvent = 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES';
@@ -173,10 +244,27 @@ export default defineComponent(
     const prUrl = (number: number) => `https://github.com/${ref().owner}/${ref().repo}/pull/${number}`;
     const markdownBase = () => `${pr().html_url.replace(/\/pull\/\d+(?:\/.*)?$/, '')}/blob/${pr().head.sha}/`;
     const viewer = () => props.info.user;
-    // Submitting a review or single inline comment satisfies the viewer's request on GitHub, even before the PR reread catches up.
+    // Submitting a review or single inline comment satisfies direct and team requests before GitHub's reread catches up.
     const clearOwnRequest = () => {
-      if (pr().requested_reviewers?.some(user => user.login === viewer().login))
-        props.store.setPR({ requested_reviewers: pr().requested_reviewers!.filter(user => user.login !== viewer().login) });
+      const requestedReviewers = pr().requested_reviewers;
+      const requestedTeams = pr().requested_teams;
+      const nextReviewers = requestedReviewers?.filter(user => user.login !== viewer().login);
+      const teams = props.info.teams ?? [];
+      const nextTeams = requestedTeams?.filter(entry => !teams.includes(teamKey(pr(), entry.slug)));
+      const cleared: Partial<PullRequest> = {};
+      const previous: Partial<PullRequest> = {};
+      if (requestedReviewers && nextReviewers?.length !== requestedReviewers.length) {
+        cleared.requested_reviewers = nextReviewers;
+        previous.requested_reviewers = requestedReviewers;
+      }
+      if (requestedTeams && nextTeams?.length !== requestedTeams.length) {
+        cleared.requested_teams = nextTeams;
+        previous.requested_teams = requestedTeams;
+      }
+      if (Object.keys(cleared).length) {
+        props.store.setPR(cleared);
+        return { cleared, previous };
+      }
     };
     const ownPR = () => pr().user.id === viewer().id;
     const pendingSection = (...sections: WorkspaceSection[]) => sections.some(section => ws().pending.includes(section));
@@ -202,9 +290,32 @@ export default defineComponent(
     const stalePending = () => !!pending.value && pending.value?.commit_id !== pr().head.sha;
     const canReview = () => ws().reviewsLoaded && pr().state === 'open';
     const canReply = () => ws().reviewsLoaded && !stalePending();
+    const mergeReviews = (loaded: Review[]) => {
+      const merged = mergeWrittenReviews(pr().html_url, loaded);
+      if (merged.length !== loaded.length || merged.some((review, index) => review !== loaded[index]))
+        props.store.patch({ reviews: merged });
+      return merged;
+    };
+    const unregisterWrittenReviewView = registerWrittenReviewView(pr().html_url, change => {
+      if (change.removeId !== undefined) props.store.edit('reviews', previous => previous.filter(review => review.id !== change.removeId));
+      if (change.previousId !== undefined)
+        props.store.edit('reviews', previous => previous.filter(review => review.id !== change.previousId));
+      if (change.review)
+        props.store.edit('reviews', previous =>
+          previous.some(review => review.id === change.review!.id)
+            ? previous.map(review => (review.id === change.review!.id ? change.review! : review))
+            : [...previous, change.review!],
+        );
+      const reviews = mergeReviews(ws().reviews);
+      if (ws().reviewsLoaded) recordPR(pr(), reviews, ws().inlineComments, viewer().login, props.info.teams);
+    });
+    onUnmounted(unregisterWrittenReviewView);
     // The kept-alive inbox corrects this PR's row from what this page knows, ahead of GitHub search catching up.
     watchEffect(() => {
-      if (ws().reviewsLoaded) recordPR(pr(), ws().reviews, ws().inlineComments, viewer().login, props.info.teams);
+      if (ws().reviewsLoaded) {
+        const reviews = mergeReviews(ws().reviews);
+        recordPR(pr(), reviews, ws().inlineComments, viewer().login, props.info.teams);
+      }
     });
 
     // One flag for every write: App also reads it to hold navigation until the write lands.
@@ -324,7 +435,15 @@ export default defineComponent(
       const result = await (fresh ? props.api.fresh() : props.api).reviewComments(ref(), review.id);
       if (active && version === draftLoadVersion && pending.value?.id === review.id) {
         const written = writtenCommentsFor(result).filter(entry => entry.comment.pull_request_review_id === review.id);
-        props.store.patch({ draftComments: mergePendingComments(result, ws().draftComments, editedPendingBodies, written) });
+        props.store.patch({
+          draftComments: mergePendingComments(
+            result,
+            ws().draftComments,
+            editedPendingBodies,
+            written,
+            removedCommentIdsForPR(pr().html_url),
+          ),
+        });
       }
     }
     watchEffect(() => {
@@ -345,7 +464,15 @@ export default defineComponent(
       const pendingReview = pending.value;
       if (pendingReview) {
         const written = writtenCommentsFor(loadedDrafts).filter(entry => entry.comment.pull_request_review_id === pendingReview.id);
-        props.store.patch({ draftComments: mergePendingComments(loadedDrafts, loadedDrafts, editedPendingBodies, written) });
+        props.store.patch({
+          draftComments: mergePendingComments(
+            loadedDrafts,
+            loadedDrafts,
+            editedPendingBodies,
+            written,
+            removedCommentIdsForPR(pr().html_url),
+          ),
+        });
       }
       const loadedInline = ws().inlineComments;
       const pendingId = pending.value?.id;
@@ -353,7 +480,13 @@ export default defineComponent(
         entry => !entry.comment.pull_request_review_id || entry.comment.pull_request_review_id !== pendingId,
       );
       props.store.patch({
-        inlineComments: mergePendingComments(loadedInline, loadedInline, editedPendingBodies, written),
+        inlineComments: mergePendingComments(
+          loadedInline,
+          loadedInline,
+          editedPendingBodies,
+          written,
+          removedCommentIdsForPR(pr().html_url),
+        ),
       });
     });
     onUnmounted(unregisterWrittenComments);
@@ -363,14 +496,14 @@ export default defineComponent(
       const written = writtenCommentsFor(loaded).filter(
         entry => !entry.comment.pull_request_review_id || entry.comment.pull_request_review_id !== currentPending,
       );
-      const merged = mergePendingComments(loaded, loaded, editedPendingBodies, written);
+      const merged = mergePendingComments(loaded, loaded, editedPendingBodies, written, removedCommentIdsForPR(pr().html_url));
       if (merged.length !== loaded.length || merged.some((comment, index) => comment.id !== loaded[index]?.id))
         props.store.patch({ inlineComments: merged });
     });
     watchEffect(() => {
       const loaded = ws().comments;
       const written = writtenCommentsFor(loaded).filter(entry => !entry.comment.path && !entry.comment.pull_request_review_id);
-      const merged = mergePendingComments(loaded, loaded, editedPendingBodies, written);
+      const merged = mergePendingComments(loaded, loaded, editedPendingBodies, written, removedCommentIdsForPR(pr().html_url));
       if (merged.length !== loaded.length || merged.some((comment, index) => comment.id !== loaded[index]?.id))
         props.store.patch({ comments: merged });
     });
@@ -478,9 +611,12 @@ export default defineComponent(
       },
       remove: item => {
         const review = inPendingReview(item) ? pending.value : undefined;
+        const comment = isReview(item) ? undefined : item;
+        const commentUrl = pr().html_url;
         return mutate(
           async api => {
             await api.deleteComment(ref(), item, !!review);
+            if (comment) rememberRemovedComment(commentUrl, comment.id);
             const removedByGitHub =
               !!review &&
               (await api
@@ -503,12 +639,12 @@ export default defineComponent(
                 inlineComments: ws().inlineComments.some(other => other.id === item.id),
                 draftComments: ws().draftComments.some(other => other.id === item.id),
               };
-              const comment = isReview(item) ? undefined : item;
               const written = comment && writtenComments.get(comment.id);
               const editedBody = comment && editedPendingBodies.get(comment.id);
               if (review) ++draftLoadVersion;
               changeComment(item);
               if (comment) {
+                rememberRemovedComment(commentUrl, comment.id);
                 editedPendingBodies.delete(comment.id);
                 forgetWrittenComment(comment);
               }
@@ -517,6 +653,7 @@ export default defineComponent(
                   if (sources[key] && !ws()[key].some(other => other.id === item.id))
                     props.store.edit(key, prev => [...prev, item as Comment]);
                 if (comment) {
+                  forgetRemovedComment(commentUrl, comment.id);
                   if (editedBody !== undefined) editedPendingBodies.set(comment.id, editedBody);
                   if (written) {
                     writtenComments.set(comment.id, written);
@@ -726,30 +863,34 @@ export default defineComponent(
       const pendingAtCall = pending.value;
       const comments = [...ws().draftComments];
       const commentIds = new Set(comments.map(comment => comment.id));
-      const requestedReviewers = pr().requested_reviewers;
-      const requestedTeams = pr().requested_teams;
-      const optimisticReviewers = requestedReviewers?.filter(user => user.login !== viewer().login);
+      const reviewUrl = pr().html_url;
       await mutate(
         async api => {
           const current = pendingAtCall;
           const result = await api.submitReview(ref(), pr().head.sha, reviewEvent, summary, current);
+          recordWrittenReview(reviewUrl, result, optimistic.id);
           entered.set(`review-${result.id}`, 'grow-in');
-          props.store.edit('reviews', prev => [...prev.filter(review => review.id !== optimistic.id && review.id !== current?.id), result]);
+          props.store.edit('reviews', prev => [
+            ...prev.filter(review => review.id !== optimistic.id && review.id !== current?.id && review.id !== result.id),
+            result,
+          ]);
           done(`${reviewEvent === 'APPROVE' ? 'Approval' : 'Review'} submitted to GitHub.`, await refreshThreads());
         },
         {
           apply: () => {
             entered.set(`review-${optimistic.id}`, 'grow-in');
             props.store.edit('reviews', prev => [...prev.filter(review => review.id !== pendingAtCall?.id), optimistic]);
+            recordWrittenReview(reviewUrl, optimistic);
             props.store.edit('inlineComments', prev => [
               ...prev,
               ...comments.filter(comment => !prev.some(other => other.id === comment.id)),
             ]);
             props.store.edit('draftComments', prev => prev.filter(comment => !commentIds.has(comment.id)));
-            clearOwnRequest();
+            const requestChange = clearOwnRequest();
             reviewBody.value = '';
             dialog.value = null;
             return () => {
+              forgetWrittenReview(reviewUrl, optimistic.id);
               props.store.edit('reviews', prev => [
                 ...prev.filter(review => review.id !== optimistic.id),
                 ...(pendingAtCall && !prev.some(review => review.id === pendingAtCall.id) ? [pendingAtCall] : []),
@@ -759,13 +900,7 @@ export default defineComponent(
                 ...prev,
                 ...comments.filter(comment => !prev.some(other => other.id === comment.id)),
               ]);
-              if (
-                requestedReviewers &&
-                pr()
-                  .requested_reviewers?.map(user => user.login)
-                  .join() === optimisticReviewers?.map(user => user.login).join()
-              )
-                props.store.setPR({ requested_reviewers: requestedReviewers, requested_teams: requestedTeams });
+              if (requestChange) props.store.rollbackPR(requestChange.cleared, requestChange.previous);
               if (!dialog.value) {
                 event.value = reviewEvent;
                 reviewBody.value = summary;

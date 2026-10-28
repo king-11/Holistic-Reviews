@@ -388,6 +388,55 @@ test('lists pending comments in the review sheet and reuses comment edit and del
   expect(writes(fake, 'DeletePullRequestReviewComment')).toHaveLength(1);
 });
 
+test('keeps an edited pending comment deleted while a stale read lands during the held delete', async ({ page }) => {
+  const fake = await mockGitHub(page, { stalePendingReadAfterEdit: true });
+  await seedInbox(page, { repos: ['acme/app'] });
+  await openPR(page);
+  await startLineReview(page, 'Only pending');
+  await page.getByRole('button', { name: 'Review changes' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Submit your review' });
+  await dialog.getByRole('button', { name: 'Edit comment' }).click();
+  await dialog.getByRole('textbox', { name: 'Edit comment' }).fill('Edited pending');
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  await expect.poll(() => writes(fake, 'UpdatePullRequestReviewComment')).toHaveLength(1);
+  await expect(page.getByRole('status').getByText('Comment updated on GitHub.')).toBeVisible();
+
+  let release = () => {};
+  let started = () => {};
+  const gate = new Promise<void>(resolve => (release = resolve));
+  const requestStarted = new Promise<void>(resolve => (started = resolve));
+  await page.route('https://api.github.com/graphql', async route => {
+    const query = route.request().postDataJSON()?.query as string | undefined;
+    if (query?.includes('mutation DeletePullRequestReviewComment')) {
+      started();
+      await gate;
+    }
+    await route.fallback();
+  });
+  await dialog.getByRole('button', { name: 'Delete comment' }).click();
+  const confirmDelete = dialog.getByRole('button', { name: 'Delete?', exact: true });
+  await expect(confirmDelete).toBeVisible();
+  await confirmDelete.click();
+  await requestStarted;
+  fake.armStalePendingRead();
+  await dialog.getByRole('button', { name: 'Close dialog' }).click();
+  try {
+    await page.getByRole('button', { name: 'Inbox', exact: true }).click();
+    await expect(page).toHaveURL(/\/$/);
+    await page
+      .getByRole('link', { name: /Improve worker retries/ })
+      .first()
+      .click();
+    await expect(page.getByRole('heading', { name: 'Improve worker retries', level: 1 })).toBeVisible();
+    await expect.poll(() => fake.stalePendingReadServed).toBe(true);
+    await expect(page.locator('.review-layout[aria-busy="false"]')).toBeVisible();
+    await expect(page.getByText(/^(?:Only pending|Edited pending)$/)).toHaveCount(0);
+  } finally {
+    release();
+  }
+  await expect.poll(() => writes(fake, 'DeletePullRequestReviewComment')).toHaveLength(1);
+});
+
 test.describe('inbox after acting on a pull request', () => {
   // Fake search keeps returning the old results, like GitHub's index does for up to a minute after a write.
   const openFromInbox = async (page: Page) => {
@@ -2370,10 +2419,56 @@ test.describe('inline comments and reviews', () => {
     await expect(page.getByRole('link', { name: /Improve worker retries/ })).toBeVisible();
   });
 
+  test('keeps a held approval in Conversation and Reviewed after reopening the PR', async ({ page }) => {
+    const fake = await mockGitHub(page);
+    await seedInbox(page, { repos: ['acme/app'] });
+    await openPR(page);
+    await expect(page.getByRole('button', { name: 'Review changes' })).toBeEnabled();
+    let release = () => {};
+    let started = () => {};
+    const gate = new Promise<void>(resolve => (release = resolve));
+    const requestStarted = new Promise<void>(resolve => (started = resolve));
+    await page.route('https://api.github.com/repos/acme/app/pulls/42/reviews', async route => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      started();
+      await gate;
+      await route.fallback();
+    });
+    await page.getByRole('button', { name: 'Review changes' }).click();
+    await page.getByRole('radio', { name: /^Approve/ }).check();
+    await page.getByRole('button', { name: 'Submit review' }).click();
+    await requestStarted;
+    const approval = page.locator('.conversation [data-review-state="APPROVED"]').filter({ hasText: 'You' });
+    try {
+      await page.getByRole('button', { name: 'Inbox', exact: true }).click();
+      await expect(page).toHaveURL(/\/$/);
+      const reviewed = page.locator('[data-section="reviewed"]').getByRole('link', { name: /Improve worker retries/ });
+      await expect(reviewed).toBeVisible();
+      await expect(page.locator('[data-section="team"]').getByRole('link', { name: /Improve worker retries/ })).toHaveCount(0);
+      await reviewed.click();
+      await page.getByRole('button', { name: /^Conversation/ }).click();
+      await expect(approval).toHaveCount(1);
+      await page.getByRole('button', { name: 'Inbox', exact: true }).click();
+      await expect(page.locator('[data-section="reviewed"]').getByRole('link', { name: /Improve worker retries/ })).toBeVisible();
+      await expect(page.locator('[data-section="team"]').getByRole('link', { name: /Improve worker retries/ })).toHaveCount(0);
+    } finally {
+      release();
+    }
+    await expect.poll(() => writes(fake, '/repos/acme/app/pulls/42/reviews')).toHaveLength(1);
+    await page.getByRole('link', { name: /Improve worker retries/ }).click();
+    await page.getByRole('button', { name: /^Conversation/ }).click();
+    await expect(approval).toHaveCount(1);
+  });
+
   test('a held conversation comment survives navigation and reconciles to one copy', async ({ page }) => {
     const fake = await mockGitHub(page);
     await openPR(page);
     await page.getByRole('button', { name: /^Conversation/ }).click();
+    let temporaryReactionRequests = 0;
+    await page.route(/\/issues\/comments\/-\d+\/reactions$/, async route => {
+      temporaryReactionRequests++;
+      await route.fulfill({ status: 404, json: { message: 'PR or repository not found' } });
+    });
     let release = () => {};
     let started = () => {};
     const gate = new Promise<void>(resolve => (release = resolve));
@@ -2389,6 +2484,11 @@ test.describe('inline comments and reviews', () => {
     await page.getByRole('button', { name: 'Comment', exact: true }).click();
     await requestStarted;
     await expect(page.getByText('Held conversation comment', { exact: true })).toHaveCount(1);
+    const optimisticComment = page.locator('.conversation-comment').filter({ hasText: 'Held conversation comment' });
+    await optimisticComment.locator('.comment-reactions').scrollIntoViewIfNeeded();
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    expect(temporaryReactionRequests).toBe(0);
+    await expect(page.locator('.reaction-error')).toHaveCount(0);
     await page.getByRole('button', { name: 'Inbox', exact: true }).click();
     await page.getByRole('link', { name: /Improve worker retries/ }).click();
     await page.getByRole('button', { name: /^Conversation/ }).click();

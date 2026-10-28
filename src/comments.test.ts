@@ -82,8 +82,24 @@ describe('comment panel and bot visibility', () => {
   ];
   for (const [name, loaded, current, edited, written, now, expected] of cases)
     it(name, () => {
-      const actual = mergePendingComments(loaded, current, edited, [{ comment: written as Comment, at: 100 }], now);
+      const actual = mergePendingComments(loaded, current, edited, [{ comment: written as Comment, at: 100 }], new Set(), now);
       assert.deepEqual(actual, expected ? [expected] : []);
+    });
+  const removedCases: [string, Comment[], Comment[], ReadonlyMap<number, string>, Comment, ReadonlySet<number>][] = [
+    [
+      'filters removed ids from loaded and current comments',
+      [comment(24, person)],
+      [{ ...comment(24, person), body: 'Edited pending' }],
+      new Map([[24, 'Edited pending']]),
+      comment(24, person),
+      new Set([24]),
+    ],
+    ['filters a removed id from written snapshots', [], [], new Map(), comment(25, person), new Set([25])],
+  ];
+  for (const [name, loaded, current, edited, written, removedIds] of removedCases)
+    it(name, () => {
+      const actual = mergePendingComments(loaded, current, edited, [{ comment: written, at: 100 }], removedIds, 100);
+      assert.deepEqual(actual, []);
     });
   it('restores pending REST comment locations from canonical GraphQL threads, including left-side replies', () => {
     const root = { ...comment(1, person, null), side: undefined };

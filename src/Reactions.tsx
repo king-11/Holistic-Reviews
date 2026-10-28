@@ -113,7 +113,8 @@ export default defineComponent(
     const open = shallowRef(false);
     const position = shallowRef({ left: 0, top: 0 });
     const state = () => props.actions.state(props.comment);
-    const disabled = () => !!props.pending || !state().loaded || !state().viewerCanReact;
+    const pending = () => !!props.pending || props.comment.id < 0;
+    const disabled = () => pending() || !state().loaded || !state().viewerCanReact;
     let observer: IntersectionObserver | undefined;
     onMounted(() => {
       if (!('IntersectionObserver' in window)) {
@@ -141,9 +142,9 @@ export default defineComponent(
       onCleanup(() => document.removeEventListener('keydown', escape));
     });
     watch(
-      () => visible.value && !props.pending,
-      ready => {
-        if (ready) void props.actions.load(props.comment);
+      () => [visible.value, pending(), props.comment.id] as const,
+      ([isVisible, isPending, id]) => {
+        if (isVisible && !isPending && id >= 0) void props.actions.load(props.comment);
       },
       { immediate: true },
     );
@@ -186,7 +187,7 @@ export default defineComponent(
           <button
             class={`${styles['reaction-add']}`}
             title={
-              props.pending
+              pending()
                 ? 'Reactions are available after this review is published'
                 : state().loaded && !state().viewerCanReact
                   ? 'GitHub does not allow reactions on this comment'

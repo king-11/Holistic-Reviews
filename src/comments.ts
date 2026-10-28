@@ -65,32 +65,35 @@ export function mergePendingComments(
   current: Comment[],
   editedBodies: ReadonlyMap<number, string>,
   written: { comment: Comment; at: number }[] = [],
+  removedIds: ReadonlySet<number> = new Set(),
   now = Date.now(),
 ) {
-  const liveWritten = written.filter(entry => now - entry.at < snapshotLifetime);
+  const liveWritten = written.filter(entry => now - entry.at < snapshotLifetime && !removedIds.has(entry.comment.id));
   const matchesTemporary = (comment: Comment, other: Comment) =>
     comment.id < 0 && comment.path === other.path && comment.body === other.body && (comment.line === other.line || other.line == null);
-  const fresh = loaded.map(comment => {
-    const temporary = liveWritten.find(entry => matchesTemporary(entry.comment, comment))?.comment;
-    const merged = temporary
-      ? {
-          ...temporary,
-          ...comment,
-          path: comment.path ?? temporary.path,
-          line: comment.line ?? temporary.line,
-          side: comment.side ?? temporary.side,
-          start_line: comment.start_line ?? temporary.start_line,
-          start_side: comment.start_side ?? temporary.start_side,
-          pull_request_review_id: comment.pull_request_review_id ?? temporary.pull_request_review_id,
-        }
-      : comment;
-    return editedBodies.has(merged.id) ? { ...merged, body: editedBodies.get(merged.id)! } : merged;
-  });
+  const fresh = loaded
+    .filter(comment => !removedIds.has(comment.id))
+    .map(comment => {
+      const temporary = liveWritten.find(entry => matchesTemporary(entry.comment, comment))?.comment;
+      const merged = temporary
+        ? {
+            ...temporary,
+            ...comment,
+            path: comment.path ?? temporary.path,
+            line: comment.line ?? temporary.line,
+            side: comment.side ?? temporary.side,
+            start_line: comment.start_line ?? temporary.start_line,
+            start_side: comment.start_side ?? temporary.start_side,
+            pull_request_review_id: comment.pull_request_review_id ?? temporary.pull_request_review_id,
+          }
+        : comment;
+      return editedBodies.has(merged.id) ? { ...merged, body: editedBodies.get(merged.id)! } : merged;
+    });
   const presentIds = new Set(fresh.map(comment => comment.id));
   return [
     ...fresh,
     ...current
-      .filter(comment => editedBodies.has(comment.id) && !presentIds.has(comment.id))
+      .filter(comment => !removedIds.has(comment.id) && editedBodies.has(comment.id) && !presentIds.has(comment.id))
       .map(comment => ({ ...comment, body: editedBodies.get(comment.id)! })),
     ...liveWritten
       .map(({ comment }) => (editedBodies.has(comment.id) ? { ...comment, body: editedBodies.get(comment.id)! } : comment))
