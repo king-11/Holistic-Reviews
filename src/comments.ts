@@ -98,7 +98,7 @@ export function mergePendingComments(
         comment =>
           !presentIds.has(comment.id) &&
           !fresh.some(other => matchesTemporary(comment, other)) &&
-          !current.some(other => other.id === comment.id && !editedBodies.has(comment.id)),
+          !current.some(other => other.id === comment.id),
       ),
   ];
 }

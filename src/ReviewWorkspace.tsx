@@ -503,11 +503,26 @@ export default defineComponent(
                 inlineComments: ws().inlineComments.some(other => other.id === item.id),
                 draftComments: ws().draftComments.some(other => other.id === item.id),
               };
+              const comment = isReview(item) ? undefined : item;
+              const written = comment && writtenComments.get(comment.id);
+              const editedBody = comment && editedPendingBodies.get(comment.id);
+              if (review) ++draftLoadVersion;
               changeComment(item);
+              if (comment) {
+                editedPendingBodies.delete(comment.id);
+                forgetWrittenComment(comment);
+              }
               return () => {
                 for (const key of Object.keys(sources) as (keyof typeof sources)[])
                   if (sources[key] && !ws()[key].some(other => other.id === item.id))
                     props.store.edit(key, prev => [...prev, item as Comment]);
+                if (comment) {
+                  if (editedBody !== undefined) editedPendingBodies.set(comment.id, editedBody);
+                  if (written) {
+                    writtenComments.set(comment.id, written);
+                    notifyWrittenComment(pr().html_url, { comment: written.comment });
+                  } else recordWrittenComment(editedBody === undefined ? comment : { ...comment, body: editedBody });
+                }
               };
             },
           },

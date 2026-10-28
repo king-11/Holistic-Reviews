@@ -69,6 +69,15 @@ describe('comment panel and bot visibility', () => {
       100,
       { ...comment(22, person), body: 'Edited pending' },
     ],
+    [
+      'does not duplicate an edited write already in the current list',
+      [],
+      [{ ...comment(23, person), body: 'Edited pending' }],
+      new Map([[23, 'Edited pending']]),
+      comment(23, person),
+      100,
+      { ...comment(23, person), body: 'Edited pending' },
+    ],
     ['drops an absent write after the snapshot lifetime', [], [], new Map(), comment(20, person), snapshotLifetime + 101, undefined],
   ];
   for (const [name, loaded, current, edited, written, now, expected] of cases)
