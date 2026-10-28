@@ -49,7 +49,14 @@ const duration = (seconds: number) =>
       : `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 
 export default defineComponent(
-  (props: { checks?: StatusCheck[]; loading: boolean; busy: boolean; prRef: PRRef; onMutate: Mutate; entrance: string }) => {
+  (props: {
+    checks?: StatusCheck[];
+    loading: boolean;
+    prRef: PRRef;
+    onMutate: Mutate;
+    onChecks: (checks: StatusCheck[]) => void;
+    entrance: string;
+  }) => {
     // Sections the user flipped away from their default, so defaults keep following the checks as they settle.
     const flipped = shallowRef(new Set<CheckState>());
     const urgent = () => props.checks!.some(check => check.state === 'pending' || blockingStates.includes(check.state));
@@ -60,11 +67,32 @@ export default defineComponent(
       if (!next.delete(state)) next.add(state);
       flipped.value = next;
     };
-    const rerun = (failedOnly: boolean) =>
-      props.onMutate(api => api.rerunChecks(props.prRef, props.checks!, failedOnly), {
+    let nextRun = 0;
+    const pendingRuns = new Map<string, number>();
+    const rerun = (failedOnly: boolean) => {
+      const checks = props.checks!;
+      const affected = checks.filter(check => check.job && (!failedOnly || blockingStates.includes(check.state)));
+      const previous = new Map(affected.map(check => [check.id, check]));
+      const token = ++nextRun;
+      return props.onMutate(api => api.rerunChecks(props.prRef, checks, failedOnly), {
         toast: failedOnly ? 'Re-running failed checks' : 'Re-running all checks',
         refresh: 'all',
+        apply: () => {
+          for (const check of affected) pendingRuns.set(check.id, token);
+          props.onChecks(checks.map(check => (previous.has(check.id) ? { ...check, state: 'pending', detail: 'Queued to rerun' } : check)));
+          return () => {
+            for (const check of affected) if (pendingRuns.get(check.id) === token) pendingRuns.delete(check.id);
+            props.onChecks(
+              (props.checks ?? []).map(check =>
+                previous.has(check.id) && !pendingRuns.has(check.id) && check.detail === 'Queued to rerun'
+                  ? previous.get(check.id)!
+                  : check,
+              ),
+            );
+          };
+        },
       });
+    };
     const jobs = (failedOnly: boolean) => props.checks!.some(check => check.job && (!failedOnly || blockingStates.includes(check.state)));
     const row = (check: StatusCheck) => {
       const Icon = checkIcons[check.state];
@@ -87,11 +115,25 @@ export default defineComponent(
           {!!check.job && (
             <IconButton
               label={`Re-run ${check.name}`}
-              disabled={props.busy}
               onClick={() =>
                 props.onMutate(api => api.rerunJob(props.prRef, check.job!.id), {
                   toast: `Re-running ${check.name}`,
                   refresh: 'all',
+                  apply: () => {
+                    const previous = check;
+                    const token = ++nextRun;
+                    pendingRuns.set(check.id, token);
+                    props.onChecks(
+                      props.checks!.map(item => (item.id === check.id ? { ...item, state: 'pending', detail: 'Queued to rerun' } : item)),
+                    );
+                    return () => {
+                      if (pendingRuns.get(check.id) !== token) return;
+                      pendingRuns.delete(check.id);
+                      props.onChecks(
+                        (props.checks ?? []).map(item => (item.id === check.id && item.detail === 'Queued to rerun' ? previous : item)),
+                      );
+                    };
+                  },
                 })
               }
             >
@@ -125,11 +167,11 @@ export default defineComponent(
                 <span key={state} data-state={state} style={{ flexGrow: group.length }} />
               ))}
             </div>
-            <button class="button small" disabled={props.busy || !jobs(true)} onClick={() => rerun(true)}>
+            <button class="button small" disabled={!jobs(true)} onClick={() => rerun(true)}>
               <RefreshCw size={13} />
               Re-run failed checks
             </button>
-            <button class="button small" disabled={props.busy || !jobs(false)} onClick={() => rerun(false)}>
+            <button class="button small" disabled={!jobs(false)} onClick={() => rerun(false)}>
               Re-run all checks
             </button>
           </div>
@@ -153,5 +195,5 @@ export default defineComponent(
       );
     };
   },
-  { props: ['checks', 'loading', 'busy', 'prRef', 'onMutate', 'entrance'] },
+  { props: ['checks', 'loading', 'prRef', 'onMutate', 'onChecks', 'entrance'] },
 );

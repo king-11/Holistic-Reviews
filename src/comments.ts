@@ -1,7 +1,10 @@
 import type { ChangedFile, Comment, Review, ReviewThread, User } from './github';
 import { commentGroups, diffSides, patchLines, threadsForComments, type DiffSide } from './diff.ts';
+import { snapshotLifetime } from './inboxUpdates.ts';
 
 export type CommentFilter = 'open' | 'resolved' | 'all';
+let nextTemporaryId = -Date.now() * 1000;
+export const temporaryId = () => nextTemporaryId--;
 
 export type CommentEntry =
   | {
@@ -57,13 +60,46 @@ export function withThreadLocations(comments: Comment[], threads: ReviewThread[]
   });
 }
 
-export function preservePendingCommentEdits(loaded: Comment[], current: Comment[], editedBodies: ReadonlyMap<number, string>) {
-  const loadedIds = new Set(loaded.map(comment => comment.id));
+export function mergePendingComments(
+  loaded: Comment[],
+  current: Comment[],
+  editedBodies: ReadonlyMap<number, string>,
+  written: { comment: Comment; at: number }[] = [],
+  now = Date.now(),
+) {
+  const liveWritten = written.filter(entry => now - entry.at < snapshotLifetime);
+  const matchesTemporary = (comment: Comment, other: Comment) =>
+    comment.id < 0 && comment.path === other.path && comment.body === other.body && (comment.line === other.line || other.line == null);
+  const fresh = loaded.map(comment => {
+    const temporary = liveWritten.find(entry => matchesTemporary(entry.comment, comment))?.comment;
+    const merged = temporary
+      ? {
+          ...temporary,
+          ...comment,
+          path: comment.path ?? temporary.path,
+          line: comment.line ?? temporary.line,
+          side: comment.side ?? temporary.side,
+          start_line: comment.start_line ?? temporary.start_line,
+          start_side: comment.start_side ?? temporary.start_side,
+          pull_request_review_id: comment.pull_request_review_id ?? temporary.pull_request_review_id,
+        }
+      : comment;
+    return editedBodies.has(merged.id) ? { ...merged, body: editedBodies.get(merged.id)! } : merged;
+  });
+  const presentIds = new Set(fresh.map(comment => comment.id));
   return [
-    ...loaded.map(comment => (editedBodies.has(comment.id) ? { ...comment, body: editedBodies.get(comment.id)! } : comment)),
+    ...fresh,
     ...current
-      .filter(comment => editedBodies.has(comment.id) && !loadedIds.has(comment.id))
+      .filter(comment => editedBodies.has(comment.id) && !presentIds.has(comment.id))
       .map(comment => ({ ...comment, body: editedBodies.get(comment.id)! })),
+    ...liveWritten
+      .map(({ comment }) => (editedBodies.has(comment.id) ? { ...comment, body: editedBodies.get(comment.id)! } : comment))
+      .filter(
+        comment =>
+          !presentIds.has(comment.id) &&
+          !fresh.some(other => matchesTemporary(comment, other)) &&
+          !current.some(other => other.id === comment.id && !editedBodies.has(comment.id)),
+      ),
   ];
 }
 

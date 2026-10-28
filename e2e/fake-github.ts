@@ -525,7 +525,14 @@ export async function mockGitHub(
           start_side: input.startSide,
           pull_request_review_id: review.id,
         });
-        return { addPullRequestReviewThread: { thread: { id: `T${comment.id}` } } };
+        return {
+          addPullRequestReviewThread: {
+            thread: {
+              id: `T${comment.id}`,
+              comments: { nodes: [{ databaseId: comment.id, createdAt: comment.created_at, url: comment.html_url || '' }] },
+            },
+          },
+        };
       }
       case 'AddPullRequestReviewThreadReply': {
         const review = state.reviews.find(review => review.node_id === input.pullRequestReviewId)!;

@@ -9,6 +9,7 @@ import {
   type InboxItem,
   type MergedFilter,
   type PullRequest,
+  type PRRef,
   type Review,
 } from './github.ts';
 
@@ -25,6 +26,24 @@ export interface PRSnapshot {
 
 // GitHub search catches up with writes within about a minute; past this, what search says wins again.
 export const snapshotLifetime = 3 * 60_000;
+const writtenPRs = new Map<string, { fields: Partial<PullRequest>; at: number }>();
+const prKey = (ref: PRRef) => `${ref.owner}/${ref.repo}#${ref.number}`;
+export function recordPRFields(ref: PRRef, fields: Partial<PullRequest>) {
+  const previous = writtenPRs.get(prKey(ref))?.fields ?? {};
+  writtenPRs.set(prKey(ref), { fields: { ...previous, ...fields }, at: Date.now() });
+}
+export function writtenPRFields(ref: PRRef) {
+  const key = prKey(ref);
+  const entry = writtenPRs.get(key);
+  if (!entry || Date.now() - entry.at >= snapshotLifetime) {
+    writtenPRs.delete(key);
+    return {};
+  }
+  return entry.fields;
+}
+export function clearWrittenPRFields(ref: PRRef) {
+  writtenPRs.delete(prKey(ref));
+}
 
 function involvement(pr: PullRequest, reviews: Review[], comments: Comment[], viewer: string, teams?: string[]) {
   const row = pullRequestReviewers(pr, reviews).find(reviewer => reviewer.login === viewer);
@@ -103,6 +122,7 @@ export const isRecentlyMutated = (url: string, now = Date.now()) => {
 export function clearInboxSnapshots() {
   snapshots.value = new Map();
   mutated.clear();
+  writtenPRs.clear();
 }
 
 export interface InboxView {

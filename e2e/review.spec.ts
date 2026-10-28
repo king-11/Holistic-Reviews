@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page, type Request } from '@playwright/test';
 import { FIRST, HEAD, mockGitHub, openPR } from './fake-github.ts';
 
 type Fake = Awaited<ReturnType<typeof mockGitHub>>;
@@ -25,6 +25,9 @@ async function startLineReview(page: Page, body: string) {
   await composer(page).fill(body);
   await page.getByRole('group', { name: 'Line comment' }).getByRole('button', { name: 'Start a review' }).click();
   await expect(page.getByRole('button', { name: 'Discard pending', exact: true })).toBeVisible();
+  await expect(
+    page.locator('[role="status"][data-tone="ok"]').filter({ hasText: 'Review started with this pending comment.' }),
+  ).toBeVisible();
 }
 
 // Inbox repositories default to the most-used one, so tests that need every repository seed an explicit choice.
@@ -1242,7 +1245,7 @@ test.describe('sequence shortcuts', () => {
       await expect(dialog.getByRole('textbox')).toBeFocused();
     });
 
-  test('r then y approves immediately and holds navigation until GitHub answers', async ({ page }) => {
+  test('r then y approves optimistically and keeps the inbox reachable while GitHub answers', async ({ page }) => {
     let release = () => {};
     const gate = new Promise<void>(resolve => (release = resolve));
     await page.route('https://api.github.com/repos/acme/app/pulls/42/reviews', async route => {
@@ -1251,12 +1254,12 @@ test.describe('sequence shortcuts', () => {
     });
     await page.keyboard.press('r');
     await page.keyboard.press('y');
-    await expect(page.getByRole('button', { name: 'Review home' })).toBeDisabled();
-    await page.keyboard.press('g');
-    await page.keyboard.press('i');
+    await expect(page.getByRole('button', { name: 'Inbox', exact: true })).toBeEnabled();
+    await page.getByRole('button', { name: 'Inbox', exact: true }).click();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.locator('[data-section="reviewed"]').getByRole('link', { name: /Improve worker retries/ })).toBeVisible();
     release();
-    await expect(page.getByRole('status').getByText('Approval submitted to GitHub.')).toBeVisible();
-    await expect(page).toHaveURL(/\/acme\/app\/pull\/42$/);
+    await expect(page).toHaveURL(/\/$/);
   });
 
   test('r then c focuses the conversation comment box', async ({ page }) => {
@@ -2240,8 +2243,190 @@ test.describe('inline comments and reviews', () => {
     await page.getByRole('button', { name: 'Review changes' }).click();
     await page.getByRole('radio', { name: /^Approve/ }).check();
     await page.getByRole('button', { name: 'Submit review' }).click();
-    await expect.poll(() => lastWrite(fake, `/repos/acme/app/pulls/42/reviews/${review.id}/events`)).toMatchObject({ event: 'APPROVE' });
+    await expect.poll(() => writes(fake, /\/repos\/acme\/app\/pulls\/42\/reviews\/\d+\/events$/)).toHaveLength(1);
+    expect(writes(fake, /\/repos\/acme\/app\/pulls\/42\/reviews\/\d+\/events$/)[0].body).toMatchObject({ event: 'APPROVE' });
     expect(writes(fake, '/repos/acme/app/pulls/42/reviews')).toHaveLength(1);
+  });
+
+  test('a held review comment survives navigation and reconciles to one copy', async ({ page }) => {
+    const fake = await mockGitHub(page);
+    await openPR(page);
+    await startLineReview(page, 'First pending');
+    let release = () => {};
+    let started = () => {};
+    const gate = new Promise<void>(resolve => (release = resolve));
+    const requestStarted = new Promise<void>(resolve => (started = resolve));
+    await page.route('https://api.github.com/graphql', async route => {
+      const query = route.request().postDataJSON()?.query as string | undefined;
+      if (query?.includes('mutation AddPullRequestReviewThread')) {
+        started();
+        await gate;
+      }
+      await route.fallback();
+    });
+
+    await lineNumber(page, 'src/worker.py', 12).click();
+    await composer(page).fill('Held pending comment');
+    await page
+      .getByRole('group', { name: 'Line comment' })
+      .getByRole('button', { name: /review comment/i })
+      .click();
+    await requestStarted;
+    await expect(composer(page)).toHaveCount(0);
+    await expect(page.getByText('Held pending comment', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Inbox', exact: true }).click();
+    await expect(page).toHaveURL(/\/$/);
+    await page.getByRole('link', { name: /Improve worker retries/ }).click();
+    await expect(page.getByText('Held pending comment', { exact: true })).toHaveCount(1);
+
+    release();
+    await expect.poll(() => writes(fake, 'AddPullRequestReviewThread')).toHaveLength(1);
+    await expect(page.getByText('Held pending comment', { exact: true })).toHaveCount(1);
+  });
+
+  test('a failed held review comment rolls back and restores its composer', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    await startLineReview(page, 'First pending');
+    let release = () => {};
+    let started = () => {};
+    const gate = new Promise<void>(resolve => (release = resolve));
+    const requestStarted = new Promise<void>(resolve => (started = resolve));
+    await page.route('https://api.github.com/graphql', async route => {
+      const query = route.request().postDataJSON()?.query as string | undefined;
+      if (!query?.includes('mutation AddPullRequestReviewThread')) return route.fallback();
+      started();
+      await gate;
+      await route.fulfill({ status: 500, json: { message: 'Write rejected' } });
+    });
+
+    await lineNumber(page, 'src/worker.py', 12).click();
+    await composer(page).fill('Failed pending comment');
+    await page
+      .getByRole('group', { name: 'Line comment' })
+      .getByRole('button', { name: /review comment/i })
+      .click();
+    await requestStarted;
+    await expect(page.getByText('Failed pending comment', { exact: true })).toBeVisible();
+    await expect(composer(page)).toHaveCount(0);
+    release();
+    await expect(page.getByText('Failed pending comment', { exact: true })).toHaveCount(0);
+    await expect(composer(page)).toHaveValue('Failed pending comment');
+    await expect(page.getByText('Write rejected', { exact: true })).toBeVisible();
+  });
+
+  test('a lagging pending-comments reread keeps a newly written comment visible', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    await startLineReview(page, 'First pending');
+    let staleReads = 0;
+    let releaseStaleRead = () => {};
+    const staleRead = new Promise<void>(resolve => (releaseStaleRead = resolve));
+    await page.route(/\/pulls\/42\/reviews\/\d+\/comments/, async route => {
+      staleReads++;
+      await staleRead;
+      await route.fulfill({ status: 200, json: [] });
+    });
+    await lineNumber(page, 'src/worker.py', 12).click();
+    await composer(page).fill('Written despite stale REST');
+    await page
+      .getByRole('group', { name: 'Line comment' })
+      .getByRole('button', { name: /review comment/i })
+      .click();
+    await expect.poll(() => staleReads).toBeGreaterThan(0);
+    await expect(page.getByText('Written despite stale REST', { exact: true })).toHaveCount(1);
+    releaseStaleRead();
+    await expect(page.getByText('Written despite stale REST', { exact: true })).toHaveCount(1);
+  });
+
+  test('a failed review submission restores the inbox row and links a global error toast', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    let release = () => {};
+    let started = () => {};
+    const gate = new Promise<void>(resolve => (release = resolve));
+    const requestStarted = new Promise<void>(resolve => (started = resolve));
+    await page.route('https://api.github.com/repos/acme/app/pulls/42/reviews', async route => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      started();
+      await gate;
+      await route.fulfill({ status: 500, json: { message: 'Write rejected' } });
+    });
+    await expect(page.getByRole('button', { name: 'Review changes' })).toBeEnabled();
+    await page.getByRole('button', { name: 'Review changes' }).click();
+    await page.getByRole('radio', { name: /^Approve/ }).check();
+    await page.getByRole('button', { name: 'Submit review' }).click();
+    await requestStarted;
+    await expect(page.getByRole('dialog', { name: 'Submit your review' })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Inbox', exact: true }).click();
+    await expect(page).toHaveURL(/\/$/);
+    const reviewed = page.locator('[data-section="reviewed"]').getByRole('link', { name: /Improve worker retries/ });
+    await expect(reviewed).toBeVisible();
+    release();
+    const toast = page.getByRole('alert').filter({ hasText: 'Write rejected' });
+    await expect(toast).toContainText('acme/app#42');
+    await expect(toast.getByRole('link', { name: 'Open PR' })).toHaveAttribute('href', '/acme/app/pull/42');
+    await expect(reviewed).toHaveCount(0);
+    await expect(page.getByRole('link', { name: /Improve worker retries/ })).toBeVisible();
+  });
+
+  test('a held conversation comment survives navigation and reconciles to one copy', async ({ page }) => {
+    const fake = await mockGitHub(page);
+    await openPR(page);
+    await page.getByRole('button', { name: /^Conversation/ }).click();
+    let release = () => {};
+    let started = () => {};
+    const gate = new Promise<void>(resolve => (release = resolve));
+    const requestStarted = new Promise<void>(resolve => (started = resolve));
+    await page.route('https://api.github.com/repos/acme/app/issues/42/comments', async route => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      started();
+      await gate;
+      await route.fallback();
+    });
+    const draft = page.getByRole('textbox', { name: 'Leave a comment' });
+    await draft.fill('Held conversation comment');
+    await page.getByRole('button', { name: 'Comment', exact: true }).click();
+    await requestStarted;
+    await expect(page.getByText('Held conversation comment', { exact: true })).toHaveCount(1);
+    await page.getByRole('button', { name: 'Inbox', exact: true }).click();
+    await page.getByRole('link', { name: /Improve worker retries/ }).click();
+    await page.getByRole('button', { name: /^Conversation/ }).click();
+    await expect(page.getByText('Held conversation comment', { exact: true })).toHaveCount(1);
+    release();
+    await expect.poll(() => writes(fake, '/repos/acme/app/issues/42/comments')).toHaveLength(1);
+    await expect(page.getByText('Held conversation comment', { exact: true })).toHaveCount(1);
+  });
+
+  test('a failed queued comment preserves the later successful comment', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    await page.getByRole('button', { name: /^Conversation/ }).click();
+    let release = () => {};
+    let firstStarted = () => {};
+    const gate = new Promise<void>(resolve => (release = resolve));
+    const requestStarted = new Promise<void>(resolve => (firstStarted = resolve));
+    let posts = 0;
+    await page.route('https://api.github.com/repos/acme/app/issues/42/comments', async route => {
+      if (route.request().method() === 'POST' && ++posts === 1) {
+        firstStarted();
+        await gate;
+        await route.fulfill({ status: 500, json: { message: 'First write rejected' } });
+        return;
+      }
+      await route.fallback();
+    });
+    const draft = page.getByRole('textbox', { name: 'Leave a comment' });
+    await draft.fill('First queued comment');
+    await page.getByRole('button', { name: 'Comment', exact: true }).click();
+    await requestStarted;
+    await draft.fill('Second queued comment');
+    await page.getByRole('button', { name: 'Comment', exact: true }).click();
+    await expect(page.getByText('Second queued comment', { exact: true })).toHaveCount(1);
+    release();
+    await expect(page.getByText('First queued comment', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Second queued comment', { exact: true })).toHaveCount(1);
+    await expect(page.getByText('Comment posted to GitHub.')).toBeVisible();
   });
 
   test('a reply can start the review', async ({ page }) => {
@@ -2321,6 +2506,7 @@ test.describe('inline comments and reviews', () => {
       await expect.poll(() => fake.writes.at(-1)).toMatchObject({ operation: 'DeletePullRequestReviewComment' });
       if (emptyReviewDeletes) await expect(page.getByText('Comment deleted. GitHub removed the now-empty pending review.')).toBeVisible();
       else {
+        await expect(page.getByText('Comment deleted from GitHub.')).toBeVisible();
         await page.getByRole('button', { name: 'Discard pending', exact: true }).click();
         await page.getByRole('button', { name: 'Discard review', exact: true }).click();
         await expect(page.getByText('Pending review discarded.')).toBeVisible();
@@ -2370,6 +2556,169 @@ test.describe('inline comments and reviews', () => {
     });
   }
 });
+
+type OptimisticWriteCase = {
+  name: string;
+  matches: (request: Request) => boolean;
+  start: (page: Page) => Promise<void>;
+  optimistic: (page: Page) => Promise<void>;
+  rollback: (page: Page) => Promise<void>;
+};
+
+const optimisticWriteCases: OptimisticWriteCase[] = [
+  {
+    name: 'inline comment',
+    matches: request => request.method() === 'POST' && new URL(request.url()).pathname === '/repos/acme/app/pulls/42/comments',
+    start: async page => {
+      await lineNumber(page, 'src/worker.py', 10, 'addition').click();
+      await composer(page).fill('Optimistic inline comment');
+      await page.getByRole('group', { name: 'Line comment' }).getByRole('button', { name: 'Add single comment' }).click();
+    },
+    optimistic: async page => {
+      await expect(composer(page)).toHaveCount(0);
+      await expect(page.getByText('Optimistic inline comment', { exact: true })).toBeVisible();
+    },
+    rollback: async page => {
+      await expect(page.getByText('Optimistic inline comment', { exact: true })).toHaveCount(0);
+      await expect(composer(page)).toHaveValue('Optimistic inline comment');
+    },
+  },
+  {
+    name: 'PR comment',
+    matches: request => request.method() === 'POST' && new URL(request.url()).pathname === '/repos/acme/app/issues/42/comments',
+    start: async page => {
+      await page.getByRole('button', { name: /^Conversation/ }).click();
+      await page.getByRole('textbox', { name: 'Leave a comment' }).fill('Optimistic PR comment');
+      await page.getByRole('button', { name: 'Comment', exact: true }).click();
+    },
+    optimistic: async page => {
+      await expect(page.getByRole('textbox', { name: 'Leave a comment' })).toHaveValue('');
+      await expect(page.getByText('Optimistic PR comment', { exact: true })).toBeVisible();
+    },
+    rollback: async page => {
+      await expect(page.getByText('Optimistic PR comment', { exact: true })).toHaveCount(0);
+      await expect(page.getByRole('textbox', { name: 'Leave a comment' })).toHaveValue('Optimistic PR comment');
+    },
+  },
+  {
+    name: 'label',
+    matches: request => request.method() === 'PUT' && new URL(request.url()).pathname === '/repos/acme/app/issues/42/labels',
+    start: async page => {
+      const panel = page.getByRole('complementary', { name: 'Pull request details' });
+      await panel.getByRole('button', { name: 'Edit labels' }).click();
+      const picker = panel.getByRole('dialog', { name: 'Edit labels' });
+      await picker.getByRole('button', { name: 'bug', exact: true }).click();
+    },
+    optimistic: async page => {
+      const option = page
+        .getByRole('complementary', { name: 'Pull request details' })
+        .getByRole('dialog', { name: 'Edit labels' })
+        .getByRole('button', { name: 'bug', exact: true });
+      await expect(option).toHaveAttribute('aria-pressed', 'true');
+    },
+    rollback: async page => {
+      const option = page
+        .getByRole('complementary', { name: 'Pull request details' })
+        .getByRole('dialog', { name: 'Edit labels' })
+        .getByRole('button', { name: 'bug', exact: true });
+      await expect(option).toHaveAttribute('aria-pressed', 'false');
+    },
+  },
+  {
+    name: 'reaction',
+    matches: request => request.method() === 'POST' && new URL(request.url()).pathname === '/repos/acme/app/pulls/comments/101/reactions',
+    start: async page => {
+      const comment = page.locator('.thread-comment').filter({ hasText: 'Please rename this' });
+      await comment.scrollIntoViewIfNeeded();
+      const add = comment.getByRole('button', { name: 'Add a reaction' });
+      await expect(add).toBeEnabled();
+      await add.click();
+      await page.getByRole('group', { name: 'Choose a reaction' }).getByRole('button', { name: 'React with thumbs up' }).click();
+    },
+    optimistic: async page => {
+      const comment = page.locator('.thread-comment').filter({ hasText: 'Please rename this' });
+      await expect(comment.getByRole('button', { name: 'thumbs up: 1 reactions' })).toHaveAttribute('aria-pressed', 'true');
+    },
+    rollback: async page => {
+      const comment = page.locator('.thread-comment').filter({ hasText: 'Please rename this' });
+      await expect(comment.getByRole('button', { name: /thumbs up:/ })).toHaveCount(0);
+    },
+  },
+  {
+    name: 'thread resolution',
+    matches: request => request.url().endsWith('/graphql') && request.postDataJSON()?.query?.includes('mutation ResolveReviewThread'),
+    start: async page => {
+      await card(page, 'src/worker.py').getByRole('button', { name: 'Resolve', exact: true }).first().click();
+    },
+    optimistic: async page => {
+      await expect(card(page, 'src/worker.py').getByRole('button', { name: /^Resolved thread on line 10/ })).toBeVisible();
+    },
+    rollback: async page => {
+      await expect(card(page, 'src/worker.py').getByRole('button', { name: /^Unresolved thread on line 10/ })).toBeVisible();
+    },
+  },
+  {
+    name: 'title edit',
+    matches: request => request.method() === 'PATCH' && new URL(request.url()).pathname === '/repos/acme/app/pulls/42',
+    start: async page => {
+      await page.getByRole('button', { name: 'Improve worker retries', exact: true }).click();
+      await page.getByRole('textbox', { name: 'Pull request title' }).fill('Optimistic title');
+      await page.keyboard.press('Enter');
+    },
+    optimistic: async page => {
+      await expect(page.getByRole('heading', { name: 'Optimistic title', exact: true })).toBeVisible();
+    },
+    rollback: async page => {
+      const title = page.getByRole('textbox', { name: 'Pull request title' });
+      await expect(title).toHaveValue('Optimistic title');
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('heading', { name: 'Improve worker retries', exact: true })).toBeVisible();
+    },
+  },
+  {
+    name: 'review submission',
+    matches: request => request.method() === 'POST' && new URL(request.url()).pathname === '/repos/acme/app/pulls/42/reviews',
+    start: async page => {
+      await page.getByRole('button', { name: 'Review changes' }).click();
+      await page.getByRole('radio', { name: /^Comment/ }).check();
+      await page.getByRole('textbox', { name: 'Review summary' }).fill('Optimistic review summary');
+      await page.getByRole('button', { name: 'Submit review' }).click();
+    },
+    optimistic: async page => {
+      await expect(page.getByRole('dialog', { name: 'Submit your review' })).toHaveCount(0);
+      await page.getByRole('button', { name: /^Conversation/ }).click();
+      await expect(page.getByText('Optimistic review summary', { exact: true })).toBeVisible();
+    },
+    rollback: async page => {
+      await expect(page.getByText('Optimistic review summary', { exact: true })).toHaveCount(0);
+      const dialog = page.getByRole('dialog', { name: 'Submit your review' });
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByRole('textbox', { name: 'Review summary' })).toHaveValue('Optimistic review summary');
+    },
+  },
+];
+
+for (const scenario of optimisticWriteCases)
+  test(`optimistic write: ${scenario.name} updates immediately and rolls back on failure`, async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    let release = () => {};
+    let start = () => {};
+    const held = new Promise<void>(resolve => (release = resolve));
+    const requestStarted = new Promise<void>(resolve => (start = resolve));
+    await page.route('https://api.github.com/**', async route => {
+      if (!scenario.matches(route.request())) return route.fallback();
+      start();
+      await held;
+      await route.fulfill({ status: 500, json: { message: 'Write rejected' } });
+    });
+    await scenario.start(page);
+    await requestStarted;
+    await scenario.optimistic(page);
+    release();
+    await scenario.rollback(page);
+    await expect(page.getByText('Write rejected', { exact: true })).toBeVisible();
+  });
 
 test.describe('comments panel and settings', () => {
   test('filters open, resolved and all threads and jumps to a thread', async ({ page }) => {

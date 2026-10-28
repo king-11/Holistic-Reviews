@@ -9,12 +9,13 @@ import {
   diffLinePreview,
   filterCommentEntries,
   isBot,
+  mergePendingComments,
   parseCommentAnchor,
-  preservePendingCommentEdits,
   visibleThreads,
   withThreadLocations,
 } from './comments.ts';
 import type { ChangedFile, Comment, Review, ReviewThread, User } from './github.ts';
+import { snapshotLifetime } from './inboxUpdates.ts';
 
 const file: ChangedFile = {
   filename: 'src/work.ts',
@@ -39,11 +40,42 @@ const resolved: ReviewThread = { id: 'thread-3', rootCommentId: 3, resolved: tru
 const open: ReviewThread = { id: 'thread-1', rootCommentId: 1, resolved: false, canResolve: true, canUnresolve: false };
 
 describe('comment panel and bot visibility', () => {
-  it('keeps locally edited pending bodies when a reread returns stale comments', () => {
-    const edited = { ...comment(1, person), body: 'Edited pending' };
-    const stale = { ...edited, body: 'First pending' };
-    assert.deepEqual(preservePendingCommentEdits([stale], [edited], new Map([[edited.id, edited.body]])), [edited]);
-  });
+  const cases: [string, Comment[], Comment[], ReadonlyMap<number, string>, Comment, number, Comment | undefined][] = [
+    ['keeps a confirmed write missing from a reread', [], [], new Map(), comment(20, person), 100, comment(20, person)],
+    [
+      'drops a confirmed write once the reread includes its id',
+      [comment(20, person)],
+      [],
+      new Map(),
+      comment(20, person),
+      100,
+      comment(20, person),
+    ],
+    [
+      'replaces a temporary write when path, line, and body match',
+      [{ ...comment(21, person), body: 'local draft' }],
+      [],
+      new Map(),
+      { ...comment(-1, person), body: 'local draft' },
+      100,
+      { ...comment(21, person), body: 'local draft', start_line: undefined, start_side: undefined, pull_request_review_id: undefined },
+    ],
+    [
+      'keeps an edited body over a stale reread',
+      [{ ...comment(22, person), body: 'First pending' }],
+      [{ ...comment(22, person), body: 'Edited pending' }],
+      new Map([[22, 'Edited pending']]),
+      comment(22, person),
+      100,
+      { ...comment(22, person), body: 'Edited pending' },
+    ],
+    ['drops an absent write after the snapshot lifetime', [], [], new Map(), comment(20, person), snapshotLifetime + 101, undefined],
+  ];
+  for (const [name, loaded, current, edited, written, now, expected] of cases)
+    it(name, () => {
+      const actual = mergePendingComments(loaded, current, edited, [{ comment: written as Comment, at: 100 }], now);
+      assert.deepEqual(actual, expected ? [expected] : []);
+    });
   it('restores pending REST comment locations from canonical GraphQL threads, including left-side replies', () => {
     const root = { ...comment(1, person, null), side: undefined };
     const reply = { ...comment(2, person, null), in_reply_to_id: 1 };

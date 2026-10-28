@@ -24,7 +24,7 @@ import styles from './ReviewWorkspace.module.css';
 // Title, status, branches, stack and description: everything above the tabs that edits the PR itself.
 export default defineComponent(
   (props: { view: PRView; onOpen: (url: string) => void }) => {
-    const { ws, pr, ref, prUrl, markdownBase, busy, mutate, copy, details, approved, relations, stalePending } = props.view;
+    const { ws, pr, ref, prUrl, markdownBase, mutate, copy, details, approved, relations, stalePending } = props.view;
     const stackOpen = shallowRef(false);
     const focused = new WeakSet<Element>();
     // Function refs rerun on every patch; focus each editor only when it first mounts.
@@ -37,14 +37,54 @@ export default defineComponent(
     const titleDraft = shallowRef<string | null>(null);
     const saveTitle = () => {
       const title = titleDraft.value?.trim();
+      const previous = pr().title;
       titleDraft.value = null;
-      if (title && title !== pr().title) void mutate(api => api.editPR(ref(), { title }), { toast: 'Title updated', refresh: 'all' });
+      if (title && title !== previous)
+        void mutate(
+          async api => {
+            const confirmed = await api.editPR(ref(), { title });
+            if (pr().title === title) props.view.store.setPR({ title: confirmed.title });
+          },
+          {
+            toast: 'Title updated',
+            refresh: 'all',
+            apply: () => {
+              props.view.store.setPR({ title });
+              return () => {
+                if (pr().title === title) {
+                  props.view.store.rollbackPR({ title }, { title: previous });
+                  if (titleDraft.value === null) titleDraft.value = title;
+                }
+              };
+            },
+          },
+        );
     };
     const bodyDraft = shallowRef<string | null>(null);
     const descriptionOpen = shallowRef(true);
-    const saveBody = async () => {
-      if (await mutate(api => api.editPR(ref(), { body: bodyDraft.value ?? '' }), { toast: 'Description updated', refresh: 'all' }))
-        bodyDraft.value = null;
+    const saveBody = () => {
+      const body = bodyDraft.value ?? '';
+      const previous = pr().body;
+      bodyDraft.value = null;
+      void mutate(
+        async api => {
+          const confirmed = await api.editPR(ref(), { body });
+          if (pr().body === body) props.view.store.setPR({ body: confirmed.body });
+        },
+        {
+          toast: 'Description updated',
+          refresh: 'all',
+          apply: () => {
+            props.view.store.setPR({ body });
+            return () => {
+              if (pr().body === body) {
+                props.view.store.rollbackPR({ body }, { body: previous });
+                if (bodyDraft.value === null) bodyDraft.value = body;
+              }
+            };
+          },
+        },
+      );
     };
     const prStatus = () => {
       const current = pr();
@@ -91,7 +131,7 @@ export default defineComponent(
               />
             ) : (
               <h1>
-                <button class="pr-title-button" title="Edit title" disabled={busy.value} onClick={() => (titleDraft.value = pr().title)}>
+                <button class="pr-title-button" title="Edit title" onClick={() => (titleDraft.value = pr().title)}>
                   {pr().title}
                 </button>
               </h1>
@@ -175,7 +215,7 @@ export default defineComponent(
                         <button
                           class={`dependency-row ${entry.number === pr().number ? styles['current-entry'] : ''}`}
                           title={`${entry.number === pr().number ? 'Current PR' : 'Open stacked PR'} #${entry.number}: ${entry.title}`}
-                          disabled={busy.value || entry.number === pr().number}
+                          disabled={entry.number === pr().number}
                           onClick={() => props.onOpen(entry.url)}
                         >
                           <span class="dependency-position">
@@ -196,7 +236,6 @@ export default defineComponent(
                         <button
                           class="dependency-row"
                           title={`Open parent PR #${parent.number}: ${parent.title}`}
-                          disabled={busy.value}
                           onClick={() => props.onOpen(prUrl(parent.number))}
                         >
                           <span>#{parent.number}</span>
@@ -212,7 +251,6 @@ export default defineComponent(
                         <button
                           class="dependency-row"
                           title={`Open child PR #${child.number}: ${child.title}`}
-                          disabled={busy.value}
                           onClick={() => props.onOpen(prUrl(child.number))}
                         >
                           <span>#{child.number}</span>
@@ -239,7 +277,6 @@ export default defineComponent(
             {bodyDraft.value === null && (
               <button
                 class="button small"
-                disabled={busy.value}
                 onClick={() => {
                   descriptionOpen.value = true;
                   bodyDraft.value = pr().body ?? '';
@@ -256,7 +293,6 @@ export default defineComponent(
                 aria-label="Pull request description"
                 value={bodyDraft.value}
                 maxlength={65000}
-                disabled={busy.value}
                 inputRef={focusOnce}
                 onInput={value => (bodyDraft.value = value)}
               />
@@ -266,7 +302,7 @@ export default defineComponent(
                   <button class="button small" onClick={() => (bodyDraft.value = null)}>
                     Cancel
                   </button>
-                  <button class="button small primary" disabled={busy.value} onClick={saveBody}>
+                  <button class="button small primary" onClick={saveBody}>
                     Save
                   </button>
                 </div>
