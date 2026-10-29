@@ -53,7 +53,11 @@ import switchStyles from './switch.module.css';
 
 // `toast` announces the outcome in the toast, failures included; without it a failure shows in the page's error banner.
 // `refresh` rereads after the write: GitHub recomputes review requests and mergeability, so most writes need `pr`.
-export type MutateOptions = { toast?: string; refresh?: 'pr' | 'all' | 'none' };
+export type MutateOptions = {
+  toast?: string;
+  refresh?: 'pr' | 'all' | 'none';
+  apply?: () => () => void;
+};
 export type Mutate = (work: (api: GitHub) => Promise<unknown>, options?: MutateOptions) => Promise<boolean>;
 
 const readiness: Record<string, [string, string]> = {
@@ -236,10 +240,9 @@ export const MergeControls = defineComponent(
                 class={switchStyles.switch}
                 checked={!!pr.auto_merge}
                 disabled={props.disabled || pr.mergeable_state === 'dirty' || !autoMergeMethod()}
-                onChange={async e => {
+                onChange={e => {
                   const input = e.target as HTMLInputElement;
-                  const saved = await props.onAutoMerge(input.checked);
-                  if (!saved) input.checked = !input.checked;
+                  void props.onAutoMerge(input.checked);
                 }}
               />
             </label>
@@ -266,7 +269,8 @@ export const MoreMenu = defineComponent(
       const { details } = props;
       const pr = details.pr();
       const { onMutate, prRef } = details.source();
-      const change = (toast: string, work: Parameters<Mutate>[0]) => () => void onMutate(work, { toast, refresh: 'all' });
+      const change = (toast: string, work: Parameters<Mutate>[0], apply: NonNullable<MutateOptions['apply']>) => () =>
+        void onMutate(work, { toast, refresh: 'all', apply });
       const actions: [string, typeof GitPullRequest, () => void][] = pr.merged
         ? []
         : pr.state === 'open'
@@ -274,11 +278,57 @@ export const MoreMenu = defineComponent(
               [
                 pr.draft ? 'Ready for review' : 'Convert to draft',
                 pr.draft ? GitPullRequest : GitPullRequestDraft,
-                change(pr.draft ? 'Marked ready for review' : 'Converted to draft', api => api.setDraft(pr, !pr.draft)),
+                change(
+                  pr.draft ? 'Marked ready for review' : 'Converted to draft',
+                  api => api.setDraft(pr, !pr.draft),
+                  () => {
+                    const previous = pr.draft;
+                    details.source().store.setPR({ draft: !previous });
+                    open.value = false;
+                    return () => {
+                      if (details.pr().draft === !previous) details.source().store.rollbackPR({ draft: !previous }, { draft: previous });
+                      open.value = true;
+                    };
+                  },
+                ),
               ],
-              ['Close pull request', GitPullRequestClosed, change('Pull request closed', api => api.editPR(prRef, { state: 'closed' }))],
+              [
+                'Close pull request',
+                GitPullRequestClosed,
+                change(
+                  'Pull request closed',
+                  api => api.editPR(prRef, { state: 'closed' }),
+                  () => {
+                    const previous = pr.state;
+                    details.source().store.setPR({ state: 'closed' });
+                    open.value = false;
+                    return () => {
+                      if (details.pr().state === 'closed') details.source().store.rollbackPR({ state: 'closed' }, { state: previous });
+                      open.value = true;
+                    };
+                  },
+                ),
+              ],
             ]
-          : [['Reopen pull request', GitPullRequest, change('Pull request reopened', api => api.editPR(prRef, { state: 'open' }))]];
+          : [
+              [
+                'Reopen pull request',
+                GitPullRequest,
+                change(
+                  'Pull request reopened',
+                  api => api.editPR(prRef, { state: 'open' }),
+                  () => {
+                    const previous = pr.state;
+                    details.source().store.setPR({ state: 'open' });
+                    open.value = false;
+                    return () => {
+                      if (details.pr().state === 'open') details.source().store.rollbackPR({ state: 'open' }, { state: previous });
+                      open.value = true;
+                    };
+                  },
+                ),
+              ],
+            ];
       return (
         <div class="popover-anchor">
           <IconButton label="More pull request actions" active={open.value} onClick={() => (open.value = !open.value)}>
@@ -444,19 +494,90 @@ export function useDetails(input: () => DetailsInput) {
   const labels = () => pr().labels ?? [];
   // Label and reviewer writes return the new values; patching them keeps the sidebar right while GitHub's reread lags.
   const setPR = (change: Partial<PullRequest>) => input().store.setPR(change);
-  const setLabels = (names: string[]) =>
-    void source().onMutate(async api => setPR({ labels: await api.setLabels(source().prRef, names) }), {
-      toast: 'Labels updated',
-      refresh: 'pr',
-    });
-  const request = (logins: string[], remove = false) =>
-    void source().onMutate(
+  const sameNames = (a: { login: string }[] = [], b: { login: string }[] = []) =>
+    a
+      .map(user => user.login)
+      .sort()
+      .join() ===
+    b
+      .map(user => user.login)
+      .sort()
+      .join();
+  const sameTeams = (a: { slug: string }[] = [], b: { slug: string }[] = []) =>
+    a
+      .map(team => team.slug)
+      .sort()
+      .join() ===
+    b
+      .map(team => team.slug)
+      .sort()
+      .join();
+  const setLabels = (names: string[]) => {
+    const previous = labels();
+    const optimistic = names.map(name => previous.find(label => label.name === name) ?? { name, color: 'ededed' });
+    return source().onMutate(
       async api => {
-        const { requested_reviewers, requested_teams } = await api.requestReviewers(source().prRef, logins, remove);
-        setPR({ requested_reviewers, requested_teams });
+        const confirmed = await api.setLabels(source().prRef, names);
+        if (
+          labels()
+            .map(label => label.name)
+            .sort()
+            .join() === names.slice().sort().join()
+        )
+          setPR({ labels: confirmed });
       },
-      { toast: `Review ${remove ? 'request removed' : 'requested'} from ${logins.join(', ')}`, refresh: 'pr' },
+      {
+        toast: 'Labels updated',
+        refresh: 'pr',
+        apply: () => {
+          setPR({ labels: optimistic });
+          return () => {
+            if (
+              labels()
+                .map(label => label.name)
+                .sort()
+                .join() === names.slice().sort().join()
+            )
+              source().store.rollbackPR({ labels: optimistic }, { labels: previous });
+          };
+        },
+      },
     );
+  };
+  const request = (logins: string[], remove = false) => {
+    const currentPR = pr();
+    const oldUsers = currentPR.requested_reviewers ?? [];
+    const oldTeams = currentPR.requested_teams ?? [];
+    const users = logins.filter(login => !login.includes('/'));
+    const teams = logins.filter(login => login.includes('/')).map(login => login.split('/').at(-1)!);
+    const optimisticUsers = remove
+      ? oldUsers.filter(user => !users.includes(user.login))
+      : [...oldUsers, ...users.filter(login => !oldUsers.some(user => user.login === login)).map(login => ({ id: 0, login }))];
+    const optimisticTeams = remove
+      ? oldTeams.filter(team => !teams.includes(team.slug))
+      : [...oldTeams, ...teams.filter(slug => !oldTeams.some(team => team.slug === slug)).map(slug => ({ slug, name: slug }))];
+    const stillOptimistic = () => sameNames(pr().requested_reviewers, optimisticUsers) && sameTeams(pr().requested_teams, optimisticTeams);
+    return source().onMutate(
+      async api => {
+        const result = await api.requestReviewers(source().prRef, logins, remove);
+        if (stillOptimistic()) setPR({ requested_reviewers: result.requested_reviewers, requested_teams: result.requested_teams });
+      },
+      {
+        toast: `Review ${remove ? 'request removed' : 'requested'} from ${logins.join(', ')}`,
+        refresh: 'pr',
+        apply: () => {
+          setPR({ requested_reviewers: optimisticUsers, requested_teams: optimisticTeams });
+          return () => {
+            if (stillOptimistic())
+              source().store.rollbackPR(
+                { requested_reviewers: optimisticUsers, requested_teams: optimisticTeams },
+                { requested_reviewers: oldUsers, requested_teams: oldTeams },
+              );
+          };
+        },
+      },
+    );
+  };
   return {
     source,
     pr,
@@ -464,7 +585,7 @@ export function useDetails(input: () => DetailsInput) {
     labels,
     setLabels,
     request,
-    disabled: () => source().busy,
+    disabled: () => false,
     rerequestable: () => reviewers.value.map(([login]) => login).filter(login => requestable(pr(), login)),
   };
 }

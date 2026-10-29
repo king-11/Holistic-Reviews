@@ -1216,7 +1216,20 @@ describe('GitHub review actions (mocked; no real writes)', () => {
   });
   const comment = { body: 'feedback', path: 'a.ts', line: 5, side: 'RIGHT' } as const;
   const range = { start_line: 2, start_side: 'LEFT' } as const;
-  const thread = { data: { data: { addPullRequestReviewThread: { thread: { id: 'thread' } } } } };
+  const thread = {
+    data: {
+      data: {
+        addPullRequestReviewThread: {
+          thread: {
+            id: 'thread',
+            comments: {
+              nodes: [{ databaseId: 90, createdAt: '2026-10-17T10:00:00Z', url: 'https://github.com/acme/app/pull/42#discussion_r90' }],
+            },
+          },
+        },
+      },
+    },
+  };
   for (const [name, review, start, response, path, sent] of [
     [
       'publishes a direct comment with commit, path, line and side',
@@ -1328,7 +1341,20 @@ describe('GitHub review actions (mocked; no real writes)', () => {
       { data: demoPR },
       { data: { data: { addPullRequestReviewThreadReply: { comment: reply } } } },
       { data: demoPR },
-      { data: { data: { addPullRequestReviewThread: { thread: { id: 'new-thread' } } } } },
+      {
+        data: {
+          data: {
+            addPullRequestReviewThread: {
+              thread: {
+                id: 'new-thread',
+                comments: {
+                  nodes: [{ databaseId: 91, createdAt: '2026-10-17T10:00:00Z', url: 'https://github.com/acme/app/pull/42#discussion_r91' }],
+                },
+              },
+            },
+          },
+        },
+      },
       { data: demoPR },
       { data: { ...pending, state: 'COMMENTED' } },
     ]);

@@ -11,6 +11,29 @@
   font-size: var(--text-xs);
   min-height: 32px;
 }
+.mutation-toast {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--color-red) 32%, var(--color-border-strong));
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--color-surface) 92%, var(--color-red-soft));
+  color: var(--color-strong);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  box-shadow: var(--shadow-panel);
+}
+.mutation-toast a {
+  flex-shrink: 0;
+  color: var(--color-accent);
+  text-decoration: underline;
+}
 .menu-option {
   display: flex;
   align-items: center;

@@ -1,6 +1,6 @@
 import { shallowRef } from 'vue';
 import { errorMessage, mergeabilityPending, prPath, type GitHub, type PRRef, type PullRequest, type Workspace } from './github.ts';
-import { inboxChangedAt, isRecentlyMutated } from './inboxUpdates.ts';
+import { clearWrittenPRFields, inboxChangedAt, isRecentlyMutated, recordPRFields, writtenPRFields } from './inboxUpdates.ts';
 
 const mergeRecheckDelays = [2000, 4000, 8000, 16000, 30000];
 // Lists written locally while a section loads; the server copy may predate the write, so local-only items survive it.
@@ -31,10 +31,13 @@ export function createPRWorkspace(prRef: () => PRRef, api: () => GitHub | null, 
   let loadVersion = 0;
   let mergeTimer: ReturnType<typeof setTimeout> | undefined;
   let received: Workspace | undefined;
-  // PR fields this session wrote; GitHub's replicas can serve older values for a while, so rereads keep these until a
-  // manual refresh or another PR.
-  let written: Partial<PullRequest> = {};
-  const withWritten = (state: Workspace): Workspace => ({ ...state, pr: { ...state.pr, ...written } });
+  const withWritten = (state: Workspace): Workspace => {
+    const written = writtenPRFields(prRef());
+    return {
+      ...state,
+      pr: { ...state.pr, ...written },
+    };
+  };
 
   const current = () => {
     if (!workspace.value) throw new Error('The pull request is not loaded.');
@@ -45,8 +48,13 @@ export function createPRWorkspace(prRef: () => PRRef, api: () => GitHub | null, 
     workspace.value = { ...workspace.value, ...(typeof change === 'function' ? change(workspace.value) : change) };
   }
   function setPR(change: Partial<PullRequest>) {
-    written = { ...written, ...change };
+    recordPRFields(prRef(), change);
     patch(state => ({ pr: { ...state.pr, ...change } }));
+  }
+  function rollbackPR(expected: Partial<PullRequest>, previous: Partial<PullRequest>) {
+    const written = writtenPRFields(prRef());
+    if (Object.entries(expected).every(([key, value]) => JSON.stringify(written[key as keyof PullRequest]) === JSON.stringify(value)))
+      setPR(previous);
   }
   const edit = <K extends keyof Workspace>(key: K, next: (previous: Workspace[K]) => Workspace[K]) =>
     patch(state => ({ [key]: next(state[key]) }) as Partial<Workspace>);
@@ -69,7 +77,7 @@ export function createPRWorkspace(prRef: () => PRRef, api: () => GitHub | null, 
     try {
       const pr = await client.fresh().pullRequest(prRef());
       if (version !== loadVersion || !current()) return false;
-      patch({ pr: { ...pr, ...written } });
+      patch({ pr: { ...pr, ...writtenPRFields(prRef()) } });
       return true;
     } catch {
       return false;
@@ -91,7 +99,6 @@ export function createPRWorkspace(prRef: () => PRRef, api: () => GitHub | null, 
     received = undefined;
     error.value = '';
     if (!refresh) {
-      written = {};
       workspace.value = null;
       loading.value = true;
     }
@@ -119,13 +126,13 @@ export function createPRWorkspace(prRef: () => PRRef, api: () => GitHub | null, 
   }
   const refresh = (scope: 'pr' | 'all') => void (scope === 'pr' ? refreshPR() : load(true));
   const reload = () => {
-    written = {};
+    clearWrittenPRFields(prRef());
     refresh('all');
   };
   function dispose() {
     controller?.abort();
     clearTimeout(mergeTimer);
   }
-  return { workspace, loading, error, current, patch, edit, setPR, load, refresh, reload, dispose };
+  return { workspace, loading, error, current, patch, edit, setPR, rollbackPR, load, refresh, reload, dispose };
 }
 export type PRWorkspace = ReturnType<typeof createPRWorkspace>;

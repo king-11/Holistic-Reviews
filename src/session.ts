@@ -50,8 +50,33 @@ export const api = computed(() => (token.value ? new GitHub(token.value) : null)
 export const restoring = shallowRef(false);
 export const storageNotice = shallowRef('');
 export const authOpen = shallowRef(false);
-// Set while a review write is in flight; the shell's route guard and header controls hold navigation until it settles.
+// Writes stay ordered across page changes.
 export const mutationBusy = shallowRef(false);
+export const mutationToast = shallowRef<{ id: number; message: string; path: string; pr: string } | null>(null);
+let mutationQueue = Promise.resolve();
+let queuedMutations = 0;
+let mutationToastTimer: ReturnType<typeof setTimeout> | undefined;
+
+export function enqueueMutation<T>(work: () => Promise<T>): Promise<T> {
+  queuedMutations++;
+  mutationBusy.value = true;
+  const run = mutationQueue.then(work).finally(() => {
+    queuedMutations--;
+    mutationBusy.value = queuedMutations > 0;
+  });
+  mutationQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+export function showMutationFailure(ref: PRRef, message: string) {
+  const id = (mutationToast.value?.id ?? 0) + 1;
+  mutationToast.value = { id, message, path: prPath(ref), pr: `${ref.owner}/${ref.repo}#${ref.number}` };
+  clearTimeout(mutationToastTimer);
+  mutationToastTimer = setTimeout(() => (mutationToast.value = null), Math.max(4000, message.length * 60));
+}
 
 export const settings = shallowRef<DiffSettings>(readSettings());
 export function changeSettings(value: DiffSettings) {

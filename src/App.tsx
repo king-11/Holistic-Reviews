@@ -1,7 +1,7 @@
 import { computed, defineComponent, onMounted, onUnmounted, shallowRef } from 'vue';
 import { AnimatePresence } from 'motion-v';
 import { ArrowRight, Check, ChevronDown, Command, Keyboard, KeyRound, LogOut, Palette, Search, ShieldCheck, X } from '@lucide/vue';
-import { navigateTo, useRouter } from 'nuxt/app';
+import { navigateTo } from 'nuxt/app';
 import AuthDialog from './AuthDialog';
 import { CommandBar } from './CommandBar';
 import { commandDefinitions, comboKeys, createShortcuts, eventCombo, modalOpen, shortcutGroups, type CommandContext } from './shortcuts';
@@ -16,6 +16,7 @@ import {
   disconnect,
   info,
   mutationBusy,
+  mutationToast,
   openPRRef,
   restoreSession,
   restoring,
@@ -65,8 +66,6 @@ export default defineComponent((_, { slots }) => {
       ),
     modalOpen,
   );
-  // Leaving mid-write would drop the response that reconciles local review state, matching the disabled header controls.
-  onUnmounted(useRouter().beforeEach(() => !mutationBusy.value));
   onMounted(() => {
     restoreSession();
     const keyHandler = (event: KeyboardEvent) => {
@@ -112,13 +111,7 @@ export default defineComponent((_, { slots }) => {
   return () => (
     <div class={`app min-h-screen bg-surface`}>
       <header class="global-header">
-        <button
-          class="brand"
-          title="Return to your pull request inbox"
-          onClick={() => void navigateTo('/')}
-          disabled={mutationBusy.value}
-          aria-label="Review home"
-        >
+        <button class="brand" title="Return to your pull request inbox" onClick={() => void navigateTo('/')} aria-label="Review home">
           <img class={`${styles['brand-mark']}`} src={logoUrl} alt="" width={28} height={28} />
           <span>
             review<span class="text-indigo">.</span>
@@ -127,7 +120,7 @@ export default defineComponent((_, { slots }) => {
         <span class="header-divider" />
         <span class="header-subtitle">A little more focus.</span>
         <div class="header-right">
-          <button class="quick-open" title="Open the command bar (⌘K or Ctrl+K)" onClick={openCommandBar} disabled={mutationBusy.value}>
+          <button class="quick-open" title="Open the command bar (⌘K or Ctrl+K)" onClick={openCommandBar}>
             <Search size={14} />
             <span>Command bar</span>
             <kbd>
@@ -179,7 +172,6 @@ export default defineComponent((_, { slots }) => {
                 <button
                   class="account-button"
                   title="View your GitHub connection and token options"
-                  disabled={mutationBusy.value}
                   onClick={() => (accountOpen.value = !accountOpen.value)}
                 >
                   <Avatar login={info.value!.user.login} src={info.value!.user.avatar_url} small />
@@ -257,6 +249,22 @@ export default defineComponent((_, { slots }) => {
         </main>
       )}
       {slots.default?.()}
+      {!!mutationToast.value && (
+        <div key={mutationToast.value.id} class={styles['mutation-toast']} role="alert">
+          <span>
+            Write failed for {mutationToast.value.pr}: {mutationToast.value.message}
+          </span>
+          <a
+            href={mutationToast.value.path}
+            onClick={event => {
+              event.preventDefault();
+              void navigateTo(mutationToast.value!.path);
+            }}
+          >
+            Open PR
+          </a>
+        </div>
+      )}
       <AnimatePresence>
         {!!authOpen.value && <AuthDialog key="auth" onClose={() => (authOpen.value = false)} onConnect={connect} />}
         <CommandBar

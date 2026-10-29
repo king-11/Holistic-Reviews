@@ -3,6 +3,7 @@ import { motion } from 'motion-v';
 import { pop } from './motion';
 import { SmilePlus } from '@lucide/vue';
 import { errorMessage, type GitHub, type PRRef, type ReactionContent, type ReactionSubject, type Reactions } from './github';
+import type { Mutate } from './DetailsPanel';
 import styles from './Reactions.module.css';
 
 export const reactionChoices: { content: ReactionContent; emoji: string; label: string }[] = [
@@ -28,8 +29,10 @@ export interface ReactionActions {
 }
 const initial: ReactionState = { reactionGroups: [], viewerCanReact: false, loading: false, loaded: false, busy: false, error: '' };
 
-export function createReactionActions(api: () => GitHub, ref: () => PRRef, viewerId: () => number): ReactionActions {
+export function createReactionActions(api: () => GitHub, ref: () => PRRef, viewerId: () => number, mutate: Mutate): ReactionActions {
   const states = shallowRef<Record<string, ReactionState>>({});
+  const latestToggle = new Map<string, number>();
+  let toggleId = 0;
   const key = (comment: ReactionSubject) => comment.node_id ?? String(comment.id);
   const state = (comment: ReactionSubject) => states.value[key(comment)] || initial;
   const update = (comment: ReactionSubject, patch: Partial<ReactionState>) => {
@@ -51,19 +54,54 @@ export function createReactionActions(api: () => GitHub, ref: () => PRRef, viewe
     },
     async toggle(comment, content) {
       const current = state(comment);
-      if (!current.loaded || current.busy || !current.viewerCanReact) return;
-      update(comment, { busy: true, error: '' });
+      if (!current.loaded || !current.viewerCanReact) return;
       const mine = current.reactionGroups.find(group => group.content === content)?.viewerHasReacted || false;
-      try {
-        const result = await api().setReaction(ref(), comment, content, !mine, viewerId(), current);
-        update(comment, result);
-      } catch (error) {
+      const desired = !mine;
+      const sequence = ++toggleId;
+      const toggleKey = `${key(comment)}:${content}`;
+      latestToggle.set(toggleKey, sequence);
+      const result = await mutate(
+        async client => {
+          const confirmed = await client.setReaction(ref(), comment, content, desired, viewerId(), state(comment));
+          update(comment, latestToggle.get(toggleKey) === sequence ? { ...confirmed, busy: true } : { mine: confirmed.mine });
+        },
+        {
+          toast: 'Reaction updated',
+          refresh: 'none',
+          apply: () => {
+            update(comment, {
+              reactionGroups: (() => {
+                const groups = current.reactionGroups.filter(group => group.content !== content);
+                const oldCount = current.reactionGroups.find(group => group.content === content)?.reactors.totalCount ?? 0;
+                const count = Math.max(0, oldCount + (desired ? 1 : -1));
+                if (count) groups.push({ content, viewerHasReacted: desired, reactors: { totalCount: count } });
+                return groups;
+              })(),
+              busy: true,
+              error: '',
+            });
+            return () => {
+              if (latestToggle.get(toggleKey) !== sequence) return;
+              update(comment, {
+                reactionGroups: (() => {
+                  const groups = state(comment).reactionGroups.filter(group => group.content !== content);
+                  const count = Math.max(
+                    0,
+                    (state(comment).reactionGroups.find(group => group.content === content)?.reactors.totalCount ?? 0) + (mine ? 1 : -1),
+                  );
+                  if (count) groups.push({ content, viewerHasReacted: mine, reactors: { totalCount: count } });
+                  return groups;
+                })(),
+              });
+            };
+          },
+        },
+      );
+      if (latestToggle.get(toggleKey) === sequence)
         update(comment, {
-          error: `${errorMessage(error, 'Reaction could not be confirmed.')} Refresh reactions before trying again.`,
+          busy: false,
+          ...(!result ? { error: 'Reaction could not be confirmed. Refresh reactions before trying again.' } : {}),
         });
-      } finally {
-        update(comment, { busy: false });
-      }
     },
   };
 }
@@ -75,7 +113,8 @@ export default defineComponent(
     const open = shallowRef(false);
     const position = shallowRef({ left: 0, top: 0 });
     const state = () => props.actions.state(props.comment);
-    const disabled = () => !!props.pending || state().busy || !state().loaded || !state().viewerCanReact;
+    const pending = () => !!props.pending || props.comment.id < 0;
+    const disabled = () => pending() || !state().loaded || !state().viewerCanReact;
     let observer: IntersectionObserver | undefined;
     onMounted(() => {
       if (!('IntersectionObserver' in window)) {
@@ -103,9 +142,9 @@ export default defineComponent(
       onCleanup(() => document.removeEventListener('keydown', escape));
     });
     watch(
-      () => visible.value && !props.pending,
-      ready => {
-        if (ready) void props.actions.load(props.comment);
+      () => [visible.value, pending(), props.comment.id] as const,
+      ([isVisible, isPending, id]) => {
+        if (isVisible && !isPending && id >= 0) void props.actions.load(props.comment);
       },
       { immediate: true },
     );
@@ -148,7 +187,7 @@ export default defineComponent(
           <button
             class={`${styles['reaction-add']}`}
             title={
-              props.pending
+              pending()
                 ? 'Reactions are available after this review is published'
                 : state().loaded && !state().viewerCanReact
                   ? 'GitHub does not allow reactions on this comment'

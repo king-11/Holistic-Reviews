@@ -1319,25 +1319,41 @@ export class GitHub {
     await this.ensureHead(ref, sha);
     if (review) {
       if (review.commit_id !== sha) throw new Error('Your pending review is on an older commit. Discard it and start a new review.');
-      const added = await this.mutation<{ thread: { id: string } | null }>(
+      const added = await this.mutation<{
+        thread: { id: string; comments: { nodes: { databaseId: number; createdAt: string; url: string }[] } } | null;
+      }>(
         'addPullRequestReviewThread',
         { pullRequestReviewId: review.node_id, body, path, line, side, ...(start ? { startLine: start.line, startSide: start.side } : {}) },
-        'thread { id }',
+        'thread { id comments(first: 1) { nodes { databaseId createdAt url } } }',
       );
       if (!added?.thread) throw new Error('GitHub did not confirm the review comment.');
-      return;
-    }
-    await this.request<Comment>(`${refPath(ref)}/comments`, {
-      method: 'POST',
-      body: JSON.stringify({
+      const comment = added.thread.comments.nodes[0];
+      if (!comment?.databaseId) throw new Error('GitHub did not confirm the review comment.');
+      return {
+        id: comment.databaseId,
+        created_at: comment.createdAt,
+        html_url: comment.url,
         body,
         path,
         line,
         side,
         ...(start ? { start_line: start.line, start_side: start.side } : {}),
-        commit_id: sha,
-      }),
-    });
+        pull_request_review_id: review.id,
+      } as Comment;
+    }
+    return (
+      await this.request<Comment>(`${refPath(ref)}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({
+          body,
+          path,
+          line,
+          side,
+          ...(start ? { start_line: start.line, start_side: start.side } : {}),
+          commit_id: sha,
+        }),
+      })
+    ).data;
   }
 
   async reviewComments(ref: PRRef, id: number) {

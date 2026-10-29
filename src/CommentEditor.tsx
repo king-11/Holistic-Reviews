@@ -68,7 +68,8 @@ export const CommentActions = defineComponent(
 export const CommentBody = defineComponent(
   (props: { item: Editable; actions: EditActions; baseUrl?: string }) => {
     const save = async (body: string) => {
-      if (await props.actions.save(props.item, body)) editing.value = null;
+      editing.value = null;
+      if (!(await props.actions.save(props.item, body)) && !editing.value) editing.value = { key: key(props.item), body };
     };
     return () => {
       const draft = editing.value?.key === key(props.item) ? editing.value : null;

@@ -57,7 +57,6 @@ export default defineComponent(
       resolved => (open.value = !resolved),
     );
     const replyOpen = shallowRef(false);
-    const busy = shallowRef(false);
     const error = shallowRef('');
     const root = () => props.root || props.comments[0];
     const rootId = () => root().in_reply_to_id || root().id;
@@ -79,37 +78,29 @@ export default defineComponent(
       pending() ? 'Pending review' : props.thread ? (props.thread.resolved ? 'Resolved thread' : 'Unresolved thread') : 'Thread';
     async function changeResolution() {
       const thread = props.thread;
-      if (!thread || busy.value) return;
+      if (!thread) return;
       const next = !thread.resolved;
-      busy.value = true;
       error.value = '';
       try {
         if (!(await props.onResolve(thread.id, next)))
           error.value = 'Could not update this thread. Check the connection and your GitHub permissions.';
       } catch {
         error.value = 'Could not update this thread. Refresh before trying again.';
-      } finally {
-        busy.value = false;
       }
     }
     async function postReply(startReview = false) {
-      if (!reply().trim() || busy.value || props.replies.disabled) return;
-      busy.value = true;
+      const body = reply().trim();
+      if (!body || props.replies.disabled) return;
       error.value = '';
       try {
-        if (await props.replies.onReply(rootId(), reply().trim(), startReview)) {
-          setReply('');
-          replyOpen.value = false;
-        }
+        if ((await props.replies.onReply(rootId(), body, startReview)) && !reply().trim()) replyOpen.value = false;
       } catch (failure) {
         error.value = errorMessage(failure, 'Reply could not be confirmed. Refresh before posting it again.');
-      } finally {
-        busy.value = false;
       }
     }
     return () => {
       const expanded = replyOpen.value || !!reply().trim(),
-        locked = busy.value || props.replies.disabled;
+        locked = props.replies.disabled;
       return (
         <section
           ref={element}
@@ -137,11 +128,10 @@ export default defineComponent(
               <button
                 class="thread-resolve"
                 title={props.thread.resolved ? 'Reopen this thread on GitHub' : 'Mark this thread as resolved on GitHub'}
-                disabled={busy.value}
                 onClick={() => void changeResolution()}
               >
                 {props.thread.resolved ? <RotateCcw size={15} /> : <Check size={16} />}
-                {busy.value ? 'Saving…' : props.thread.resolved ? 'Reopen' : 'Resolve'}
+                {props.thread.resolved ? 'Reopen' : 'Resolve'}
               </button>
             )}
           </div>
@@ -218,7 +208,7 @@ export default defineComponent(
                       type="submit"
                       disabled={locked || !reply().trim()}
                     >
-                      {busy.value ? 'Saving…' : props.replies.pendingReviewId ? 'Add review reply' : 'Reply'}
+                      {props.replies.pendingReviewId ? 'Add review reply' : 'Reply'}
                     </button>
                     {!props.replies.pendingReviewId && props.replies.canStartReview && (
                       <button

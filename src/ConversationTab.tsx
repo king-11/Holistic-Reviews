@@ -18,10 +18,10 @@ import {
 } from '@lucide/vue';
 import type { Comment, Review, TimelineEvent, User } from './github';
 import { ReviewIcon } from './DetailsPanel';
-import { Avatar, CodeSnippet, IconButton, Loader, Spinner, Timestamp } from './ui';
+import { Avatar, CodeSnippet, IconButton, Loader, Timestamp } from './ui';
 import Markdown from './MarkdownView';
 import MentionField from './MentionField';
-import { commentAnchor, commentSnippet } from './comments';
+import { commentAnchor, commentSnippet, temporaryId } from './comments';
 import { CommentActions, CommentBody } from './CommentEditor';
 import ReactionBar from './Reactions';
 import { FileCodeIcon } from './FileIcon';
@@ -46,12 +46,10 @@ export default defineComponent(
   (props: { view: PRView; mode: 'conversation' | 'review'; draft: ShallowRef<string>; onChanges: () => void }) => {
     const {
       store,
-      api,
       ws,
       ref,
       markdownBase,
       viewer,
-      busy,
       mutate,
       done,
       entered,
@@ -227,13 +225,31 @@ export default defineComponent(
     async function postComment(e: SubmitEvent) {
       e.preventDefault();
       if (!draft.value.trim()) return;
-      await mutate(async () => {
-        const result = await api.comment(ref(), draft.value.trim());
-        entered.set(`comment-${result.id}`, 'grow-in');
-        store.edit('comments', prev => [...prev, result]);
-        draft.value = '';
-        done('Comment posted to GitHub.');
-      });
+      const text = draft.value.trim();
+      const previous = draft.value;
+      const optimistic: Comment = { id: temporaryId(), body: text, user: viewer(), created_at: new Date().toISOString() };
+      await mutate(
+        async github => {
+          const result = await github.comment(ref(), text);
+          store.edit('comments', prev => prev.map(comment => (comment.id === optimistic.id ? result : comment)));
+          props.view.recordWrittenComment(result, optimistic.id);
+          entered.set(`comment-${result.id}`, 'grow-in');
+          done('Comment posted to GitHub.');
+        },
+        {
+          apply: () => {
+            store.edit('comments', prev => [...prev, optimistic]);
+            props.view.recordWrittenComment(optimistic);
+            entered.set(`comment-${optimistic.id}`, 'grow-in');
+            draft.value = '';
+            return () => {
+              store.edit('comments', prev => prev.filter(comment => comment.id !== optimistic.id));
+              props.view.forgetWrittenComment(optimistic);
+              if (!draft.value) draft.value = previous;
+            };
+          },
+        },
+      );
     }
 
     const codeComment = (comment: Comment) => (
@@ -371,7 +387,6 @@ export default defineComponent(
               value={props.draft.value}
               onInput={value => (props.draft.value = value)}
               maxlength={65000}
-              disabled={busy.value}
             />
             <div class={styles['comment-form-footer']}>
               <span>Posted publicly to this PR on GitHub.</span>
@@ -379,16 +394,10 @@ export default defineComponent(
                 class="button primary"
                 title="Publish a comment to the PR conversation immediately"
                 type="submit"
-                disabled={busy.value || !props.draft.value.trim()}
+                disabled={!props.draft.value.trim()}
               >
-                {busy.value ? (
-                  <Spinner text="Posting…" />
-                ) : (
-                  <>
-                    <MessageSquare size={14} />
-                    Comment
-                  </>
-                )}
+                <MessageSquare size={14} />
+                Comment
               </button>
             </div>
           </form>
