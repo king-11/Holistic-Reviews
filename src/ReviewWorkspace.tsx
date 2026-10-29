@@ -323,6 +323,10 @@ export default defineComponent(
     };
 
     const editedPendingBodies = new Map<number, string>();
+    const replyDrafts = shallowRef<Record<number, { body: string; error?: string }>>({});
+    const replyDraftTokens = new Map<number, number>();
+    // A comment keeps a temporary id until GitHub confirms it; replies and their drafts are keyed by that id.
+    const commentIdMap = new Map<number, number>();
     const recordWrittenComment = (comment: Comment, previousId?: number, at = Date.now()) => {
       if (previousId !== undefined) commentWrites.remove(pr().html_url, previousId);
       commentWrites.set(pr().html_url, comment.id, { comment, at });
@@ -503,10 +507,28 @@ export default defineComponent(
         props.store.edit(key, prev => prev.filter(other => other.id !== comment.id));
       forgetWrittenComment(comment);
     };
+    // Once GitHub confirms a comment, everything keyed by its temporary id has to follow it to the real one, or the
+    // thread splits and a half-typed reply is lost.
+    const followCommentId = (from: number, to: number) => {
+      commentIdMap.set(from, to);
+      for (const key of ['draftComments', 'inlineComments', 'comments'] as const)
+        props.store.edit(key, prev => prev.map(other => (other.in_reply_to_id === from ? { ...other, in_reply_to_id: to } : other)));
+      update(replyDrafts, prev => {
+        if (!prev[from]) return prev;
+        const next = { ...prev, [to]: prev[from]! };
+        delete next[from];
+        return next;
+      });
+      if (replyDraftTokens.has(from)) {
+        replyDraftTokens.set(to, replyDraftTokens.get(from)!);
+        replyDraftTokens.delete(from);
+      }
+    };
     const replaceLocalComment = (temporary: Comment, comment: Comment) => {
       const confirmed = { ...temporary, ...comment, user: comment.user ?? temporary.user };
       for (const key of ['draftComments', 'inlineComments', 'comments'] as const)
         props.store.edit(key, prev => prev.map(other => (other.id === temporary.id ? confirmed : other)));
+      if (confirmed.id !== temporary.id) followCommentId(temporary.id, confirmed.id);
       recordWrittenComment(confirmed, temporary.id);
       return confirmed;
     };
@@ -615,8 +637,6 @@ export default defineComponent(
       mutate,
     );
 
-    const replyDrafts = shallowRef<Record<number, { body: string; error?: string }>>({});
-    const replyDraftTokens = new Map<number, number>();
     const replyActions: ReplyActions = {
       reactions,
       edits,
@@ -680,15 +700,27 @@ export default defineComponent(
         in_reply_to_id: id,
       };
       const previousDraft = replyDrafts.value[id]?.body ?? body;
+      let discarded = false;
+      // The root comment may have been temporary when the reply was sent; resolve it to GitHub's id by the time
+      // this write runs, after the parent's own write has landed.
+      const draftKey = () => commentIdMap.get(id) ?? id;
       const saved = mutate(
         async api => {
           if (!canReply()) throw new Error('Refresh this PR and its active review before replying.');
           if (startReview && !canReview()) throw new Error('Reviews can only be started on open pull requests.');
+          const parentId = draftKey();
+          if (parentId < 0) {
+            // The comment being replied to was never saved, so this reply has nothing to attach to.
+            discarded = true;
+            throw new Error(
+              'The comment you replied to was not saved, so this reply was discarded. Post it again once the comment appears.',
+            );
+          }
           let review = pending.value;
-          let thread = ws().reviewThreads.find(item => item.rootCommentId === id);
+          let thread = ws().reviewThreads.find(item => item.rootCommentId === parentId);
           if ((review || startReview) && !thread) {
             const result = await api.fresh().reviewThreads(ref());
-            thread = result.items.find(item => item.rootCommentId === id);
+            thread = result.items.find(item => item.rootCommentId === parentId);
             if (!thread) throw new Error('Thread metadata is unavailable. Open this thread on GitHub or refresh before starting a review.');
           }
           if (starting) {
@@ -697,12 +729,13 @@ export default defineComponent(
             review = pending.value;
           }
           if (review?.id && review.id < 0) review = undefined;
-          const result = await api.reply(ref(), id, body, review, thread?.id);
+          const result = await api.reply(ref(), parentId, body, review, thread?.id);
           const comment = replaceLocalComment(optimistic, {
             ...result,
             path: root.path,
             line: root.line,
             side: root.side,
+            in_reply_to_id: parentId,
             pull_request_review_id: review?.id || result.pull_request_review_id,
           });
           if (review) {
@@ -726,23 +759,23 @@ export default defineComponent(
         {
           apply: () => {
             const undo = placeOptimistic(optimistic, optimisticReview, !!(current || starting));
-            replyDraftTokens.set(id, optimistic.id);
-            update(replyDrafts, prev => ({ ...prev, [id]: { body: '' } }));
+            replyDraftTokens.set(draftKey(), optimistic.id);
+            update(replyDrafts, prev => ({ ...prev, [draftKey()]: { body: '' } }));
             return () => {
               undo();
-              if (replyDraftTokens.get(id) === optimistic.id) {
-                replyDraftTokens.delete(id);
-                update(replyDrafts, prev => ({ ...prev, [id]: { body: previousDraft } }));
-              }
+              if (!discarded && replyDraftTokens.get(draftKey()) === optimistic.id) {
+                replyDraftTokens.delete(draftKey());
+                update(replyDrafts, prev => ({ ...prev, [draftKey()]: { body: previousDraft } }));
+              } else if (discarded) replyDraftTokens.delete(draftKey());
             };
           },
         },
       );
       void saved.then(ok => {
-        if (!ok && !replyDraftTokens.has(id) && replyDrafts.value[id]?.body === previousDraft)
+        if (!ok && !discarded && !replyDraftTokens.has(draftKey()) && replyDrafts.value[draftKey()]?.body === previousDraft)
           update(replyDrafts, prev => ({
             ...prev,
-            [id]: { body: previousDraft, error: error.value || 'Reply was not saved. Refresh before trying again.' },
+            [draftKey()]: { body: previousDraft, error: error.value || 'Reply was not saved. Refresh before trying again.' },
           }));
       });
       return saved;
