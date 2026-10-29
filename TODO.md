@@ -4,7 +4,7 @@
   - Preserve existing GitHub, diff, Markdown, review, and test behavior.
   - Use Nuxt static-site generation where possible.
   - Decide how authenticated API calls and any future backend/webhook features work with SSG.
-  - Keep credentials in `sessionStorage` no more proxy
+  - Credentials persist in `localStorage`, scoped settings per identity
 
 - [x] Add a formatter and linter
   - Use https://oxc.rs/docs/guide/usage/formatter.html

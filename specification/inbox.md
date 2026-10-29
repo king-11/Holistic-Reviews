@@ -21,7 +21,7 @@ Rendered as a segmented radio group (`All`, `By me`, `Review requested`) in the 
 - **All:** `is:merged` when at least one repository is selected; disabled when no repository is selected (falls back to `By me`).
 - **By me:** `is:merged author:<viewer>`.
 - **Review requested:** `is:merged (review-requested:<viewer> OR reviewed-by:<viewer>) -author:<viewer>` with `advanced_search=true`.
-- The selected filter is saved in `review.inbox` preferences and restored after reload.
+- The selected filter is saved in `review.inbox:<login>` preferences and restored after reload.
 
 ## Authored PR Classification (`classifyReview`)
 
@@ -44,7 +44,7 @@ Each row (`InboxRow`) is a `<NuxtLink>` to `/<owner>/<repo>/pull/<number>` displ
 
 ## Repository Filter & Sorting
 
-- **Default repository:** After the first unfiltered load, the repository with the highest PR count is selected automatically. Subsequent changes are persisted in `localStorage` (`review.inbox`: `repos`, `sorts`, `merged`, `known`).
+- **Default repository:** After the first unfiltered load, the repository with the highest PR count is selected automatically. Subsequent changes are persisted in `localStorage` scoped to the viewer (`review.inbox:<login>`: `repos`, `sorts`, `merged`, `known`).
 - **Sorting per section:**
   - `Updated` (`updated-desc` / `updated-asc`) and `Created` (`created-desc` / `created-asc`) sort on the server via `/search/issues` parameters and also sort loaded items client-side.
   - `Title` (`title-asc` / `title-desc`) and `Size of change` (`size-desc` / `size-asc`, where `size = additions + deletions`) sort loaded items client-side.

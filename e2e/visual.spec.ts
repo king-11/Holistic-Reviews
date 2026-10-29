@@ -16,7 +16,7 @@ async function settle(page: Page) {
   await page.mouse.move(0, 0);
 }
 async function setTheme(page: Page, theme: string) {
-  await page.addInitScript(value => localStorage.setItem('review.preferences', JSON.stringify({ theme: value })), theme);
+  await page.addInitScript(value => localStorage.setItem('review.preferences:reviewer', JSON.stringify({ theme: value })), theme);
 }
 
 for (const theme of ['paper', 'pierre-light', 'solarized-light'] as const) {

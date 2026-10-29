@@ -1,6 +1,6 @@
 import { inject, onScopeDispose, shallowRef, watch, type InjectionKey } from 'vue';
 import { errorMessage, type GitHub } from './github.ts';
-import { tryStorage } from './storage.ts';
+import { local, tryStorage } from './storage.ts';
 
 export type Person = { login: string; name?: string | null; avatarUrl?: string };
 export type PeopleKind = 'assignable' | 'mentionable';
@@ -46,7 +46,7 @@ export class PeopleDirectory {
     this.repo = repo;
     this.client = client;
     this.key = `${peopleStoragePrefix}${repo.owner}/${repo.repo}`;
-    const saved = tryStorage(() => JSON.parse(localStorage.getItem(this.key) ?? 'null')) as {
+    const saved = tryStorage(() => JSON.parse(local.getItem(this.key) ?? 'null')) as {
       people?: Saved<Person>[];
       searches?: Record<string, Search>;
     } | null;
@@ -147,9 +147,7 @@ export class PeopleDirectory {
   persist() {
     evict(this.people, caps.people);
     evict(this.searches, caps.searches);
-    tryStorage(() =>
-      localStorage.setItem(this.key, JSON.stringify({ people: [...this.people.values()], searches: Object.fromEntries(this.searches) })),
-    );
+    local.setItem(this.key, JSON.stringify({ people: [...this.people.values()], searches: Object.fromEntries(this.searches) }));
   }
 }
 
@@ -169,10 +167,8 @@ export function clearPeople() {
   unsaved.clear();
   directories.clear();
   profiles.clear();
-  tryStorage(() => {
-    const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index));
-    for (const key of keys) if (key?.startsWith(peopleStoragePrefix)) localStorage.removeItem(key);
-  });
+  const keys = Array.from({ length: local.length }, (_, index) => local.key(index));
+  for (const key of keys) if (key?.startsWith(peopleStoragePrefix)) local.removeItem(key);
 }
 
 export const peopleKey: InjectionKey<() => PeopleDirectory> = Symbol('people');
