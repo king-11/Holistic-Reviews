@@ -2820,6 +2820,69 @@ for (const scenario of optimisticWriteCases)
     await expect(page.getByText('Write rejected', { exact: true })).toBeVisible();
   });
 
+// A new comment keeps a temporary id until GitHub confirms it; a reply sent in that window has to resolve the
+// parent's real id once the write lands.
+async function holdNewInlineComment(page: Page, fail: boolean) {
+  let release = () => {};
+  let started = () => {};
+  const held = new Promise<void>(resolve => (release = resolve));
+  const requestStarted = new Promise<void>(resolve => (started = resolve));
+  await page.route('https://api.github.com/**', async route => {
+    const request = route.request();
+    if (!(request.method() === 'POST' && new URL(request.url()).pathname === '/repos/acme/app/pulls/42/comments')) return route.fallback();
+    started();
+    await held;
+    if (fail) return route.fulfill({ status: 500, json: { message: 'Parent rejected' } });
+    await route.fallback();
+  });
+  return { release, requestStarted };
+}
+
+async function postHeldComment(page: Page) {
+  await lineNumber(page, 'src/worker.py', 10, 'addition').click();
+  await composer(page).fill('Held parent comment');
+  await page.getByRole('group', { name: 'Line comment' }).getByRole('button', { name: 'Add single comment' }).click();
+}
+
+test('a reply to a comment that is still syncing posts under the real parent', async ({ page }) => {
+  const fake = await mockGitHub(page);
+  await openPR(page);
+  const gate = await holdNewInlineComment(page, false);
+  await postHeldComment(page);
+  await gate.requestStarted;
+
+  const thread = page.locator('.review-thread').filter({ hasText: 'Held parent comment' });
+  await thread.getByRole('textbox', { name: /Reply to thread on/ }).fill('Reply to unsynced parent');
+  await thread.getByRole('button', { name: 'Reply', exact: true }).click();
+
+  gate.release();
+  await expect(page.getByText('Reply posted to GitHub.', { exact: true })).toBeVisible();
+  const replies = fake.writes.filter(write => /\/comments\/-?\d+\/replies$/.test(write.path));
+  expect(replies).toHaveLength(1);
+  expect(replies[0]!.path).toMatch(/\/pulls\/42\/comments\/\d+\/replies$/);
+  // The reply joins the parent's thread instead of splitting off with the temporary id.
+  await expect(
+    page.locator('.review-thread').filter({ hasText: 'Held parent comment' }).getByText('Reply to unsynced parent'),
+  ).toBeVisible();
+});
+
+test('a reply to a comment that fails to save is discarded with a clear error', async ({ page }) => {
+  const fake = await mockGitHub(page);
+  await openPR(page);
+  const gate = await holdNewInlineComment(page, true);
+  await postHeldComment(page);
+  await gate.requestStarted;
+
+  const thread = page.locator('.review-thread').filter({ hasText: 'Held parent comment' });
+  await thread.getByRole('textbox', { name: /Reply to thread on/ }).fill('Doomed reply');
+  await thread.getByRole('button', { name: 'Reply', exact: true }).click();
+
+  gate.release();
+  await expect(page.getByText(/The comment you replied to was not saved/)).toBeVisible();
+  await expect(page.getByText('Doomed reply', { exact: true })).toHaveCount(0);
+  expect(fake.writes.filter(write => write.path.endsWith('replies'))).toHaveLength(0);
+});
+
 test.describe('comments panel and settings', () => {
   test('filters open, resolved and all threads and jumps to a thread', async ({ page }) => {
     await mockGitHub(page);
