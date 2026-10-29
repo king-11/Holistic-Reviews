@@ -438,6 +438,39 @@ export async function mockGitHub(
         return {
           repository: { pullRequest: { reviewThreads: { nodes: threadNodes(), pageInfo: { hasNextPage: false, endCursor: null } } } },
         };
+      case 'ReviewComments': {
+        const review = state.reviews.find(candidate => candidate.node_id === variables.id);
+        // A reread that lands before an edit is confirmed still reports the old body.
+        const stale = state.stalePendingComment;
+        const serveStale = !!stale && state.stalePendingReadArmed;
+        if (serveStale) {
+          state.stalePendingComment = null;
+          state.stalePendingReadArmed = false;
+          state.stalePendingReadServed = true;
+          state.stalePendingReadBody = stale!.body;
+        }
+        const nodes = review
+          ? state.inline
+              .filter(comment => comment.pull_request_review_id === review.id)
+              .map(comment => ({
+                databaseId: comment.id,
+                id: comment.node_id,
+                body: serveStale && comment.id === stale!.id ? stale!.body : comment.body,
+                path: comment.path,
+                line: comment.line,
+                startLine: comment.start_line ?? null,
+                outdated: false,
+                subjectType: 'LINE',
+                createdAt: comment.created_at,
+                url: comment.html_url ?? '',
+                diffHunk: comment.diff_hunk ?? '',
+                author: { login: comment.user.login, __typename: comment.user.type ?? 'User', databaseId: comment.user.id },
+                replyTo: comment.in_reply_to_id ? { databaseId: comment.in_reply_to_id } : null,
+                pullRequestReview: { databaseId: review.id },
+              }))
+          : [];
+        return { node: { comments: { nodes, pageInfo: { hasNextPage: false, endCursor: null } } } };
+      }
       case 'CommentReactions':
         return { node: { viewerCanReact: true, reactionGroups: reactionGroups(variables.id) } };
       case 'AddReaction':
@@ -727,14 +760,10 @@ export async function mockGitHub(
       for (const comment of body!.comments || []) addInline({ ...comment, pull_request_review_id: id });
       return [200, review];
     }
-    const reviewPath = path.match(/\/pulls\/42\/reviews\/(\d+)(\/events|\/comments)?$/);
+    const reviewPath = path.match(/\/pulls\/42\/reviews\/(\d+)(\/events)?$/);
     if (reviewPath) {
       const review = state.reviews.find(review => review.id === Number(reviewPath[1]));
       if (!review) return [404, { message: 'Not Found' }];
-      if (reviewPath[2] === '/comments') {
-        const comments = state.inline.filter(comment => comment.pull_request_review_id === review.id);
-        return [200, review.state === 'PENDING' ? comments.map(comment => ({ ...comment, line: null })) : comments];
-      }
       if (method === 'GET') return [200, review];
       if (method === 'DELETE') {
         state.reviews = state.reviews.filter(other => other !== review);
@@ -874,19 +903,6 @@ export async function mockGitHub(
       }
       if (request.method() !== 'GET') state.writes.push({ method: request.method(), path, body });
       let [status, data, headers] = rest(request.method(), path, url.searchParams, body);
-      if (
-        request.method() === 'GET' &&
-        state.stalePendingComment &&
-        state.stalePendingReadArmed &&
-        /^\/repos\/acme\/app\/pulls\/42\/reviews\/\d+\/comments$/.test(path)
-      ) {
-        const stale = state.stalePendingComment;
-        state.stalePendingComment = null;
-        state.stalePendingReadArmed = false;
-        state.stalePendingReadServed = true;
-        state.stalePendingReadBody = stale.body;
-        data = (data as Comment[]).map(comment => (comment.id === stale.id ? { ...comment, body: stale.body } : comment));
-      }
       await route.fulfill({ status, headers, body: status === 204 ? '' : JSON.stringify(data), contentType: 'application/json' });
     } catch (error) {
       await route.fulfill({ status: 500, json: { message: String(error) } });

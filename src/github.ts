@@ -1356,8 +1356,61 @@ export class GitHub {
     ).data;
   }
 
-  async reviewComments(ref: PRRef, id: number) {
-    return (await this.fresh().pages<Comment>(`${refPath(ref)}/reviews/${id}/comments`)).items;
+  // REST reports a pending review's comments without a line, so callers had to wait for thread metadata to place
+  // them and the comment fell to the bottom of the file meanwhile. GraphQL reports the line (and start line, subject
+  // and outdated state) directly, so read them there instead.
+  async reviewComments(review: Pick<Review, 'id' | 'node_id'>, signal?: AbortSignal): Promise<Comment[]> {
+    type Node = {
+      databaseId: number | null;
+      id: string;
+      body: string;
+      path: string;
+      line: number | null;
+      startLine: number | null;
+      outdated: boolean;
+      subjectType: 'LINE' | 'FILE';
+      createdAt: string;
+      url: string;
+      diffHunk: string;
+      author: { login: string; __typename: string; databaseId?: number | null } | null;
+      replyTo: { databaseId: number | null } | null;
+      pullRequestReview: { databaseId: number } | null;
+    };
+    type Connection = { nodes: Node[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+    type Result = { node: { comments: Connection } | null };
+    const comments: Comment[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < maxPages.lists; page++) {
+      const data: Result | undefined = await this.fresh().graphql<Result>(
+        'query ReviewComments($id: ID!, $cursor: String) { node(id: $id) { ... on PullRequestReview { comments(first: 100, after: $cursor) { nodes { databaseId id body path line startLine outdated subjectType createdAt url diffHunk author { login __typename ... on User { databaseId } ... on Bot { databaseId } } replyTo { databaseId } pullRequestReview { databaseId } } pageInfo { hasNextPage endCursor } } } } }',
+        { id: review.node_id, cursor },
+        signal,
+      );
+      const connection: Connection | undefined = data?.node?.comments;
+      if (!connection) break;
+      for (const node of connection.nodes) {
+        if (node?.databaseId == null) continue;
+        comments.push({
+          id: node.databaseId,
+          node_id: node.id,
+          body: node.body,
+          user: { id: node.author?.databaseId ?? 0, login: node.author?.login ?? 'ghost', type: node.author?.__typename },
+          created_at: node.createdAt,
+          html_url: node.url,
+          path: node.path,
+          line: node.line,
+          start_line: node.startLine,
+          subject_type: node.subjectType === 'FILE' ? 'file' : 'line',
+          outdated: node.outdated,
+          diff_hunk: node.diffHunk,
+          pull_request_review_id: node.pullRequestReview?.databaseId ?? review.id,
+          ...(node.replyTo?.databaseId ? { in_reply_to_id: node.replyTo.databaseId } : {}),
+        });
+      }
+      if (!connection.pageInfo.hasNextPage || !connection.pageInfo.endCursor) break;
+      cursor = connection.pageInfo.endCursor;
+    }
+    return comments;
   }
 
   async reply(ref: PRRef, commentId: number, body: string, review?: Review, threadId?: string): Promise<Comment> {

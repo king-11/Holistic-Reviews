@@ -19,13 +19,35 @@ import { demoPR } from './fixtures.ts';
 const ref = { owner: 'acme', repo: 'app', number: 42 };
 const sha = demoPR.head.sha;
 const pending: Review = { id: 7, node_id: 'review-node', user: { id: 1, login: 'me' }, state: 'PENDING', body: '', commit_id: sha };
+const reviewCommentNode = {
+  databaseId: 101,
+  id: 'comment-node',
+  body: 'old',
+  path: 'a.ts',
+  line: 5,
+  startLine: null,
+  outdated: false,
+  subjectType: 'LINE',
+  createdAt: '2024-01-01T00:00:00Z',
+  url: 'https://github.com/acme/app/pull/42#discussion_r101',
+  diffHunk: '@@ -1,3 +1,3 @@',
+  author: { login: 'me', __typename: 'User', databaseId: 1 },
+  replyTo: null,
+  pullRequestReview: { databaseId: 7 },
+};
 const reviewComment: Comment = {
   id: 101,
   node_id: 'comment-node',
   body: 'old',
-  user: pending.user,
+  user: { id: 1, login: 'me', type: 'User' },
   created_at: '2024-01-01T00:00:00Z',
+  html_url: 'https://github.com/acme/app/pull/42#discussion_r101',
   path: 'a.ts',
+  line: 5,
+  start_line: null,
+  subject_type: 'line',
+  outdated: false,
+  diff_hunk: '@@ -1,3 +1,3 @@',
   pull_request_review_id: 7,
 };
 type Call = { url: string; init: RequestInit; body: Record<string, unknown> | undefined };
@@ -768,9 +790,12 @@ describe('GitHub authentication and safe requests', () => {
       await api().pullRequest(ref);
       assert.equal(calls[0].init.cache, cache);
     });
-  it('reads pending review comments without using the browser HTTP cache', async () => {
-    const calls = fake([{ data: [reviewComment] }]);
-    assert.deepEqual(await new GitHub('test-only-token').reviewComments(ref, pending.id), [reviewComment]);
+  it('reads pending review comments from GraphQL so they keep their line, without the browser HTTP cache', async () => {
+    const calls = fake([
+      { data: { data: { node: { comments: { nodes: [reviewCommentNode], pageInfo: { hasNextPage: false, endCursor: null } } } } } },
+    ]);
+    assert.deepEqual(await new GitHub('test-only-token').reviewComments(pending), [reviewComment]);
+    assert.equal(calls[0].url, 'https://api.github.com/graphql');
     assert.equal(calls[0].init.cache, 'no-cache');
   });
   it('memoises the fresh client and reuses it for fresh reads', () => {
