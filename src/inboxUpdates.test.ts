@@ -1,14 +1,7 @@
 import { beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  clearInboxSnapshots,
-  inboxSnapshots,
-  placement,
-  recordPR,
-  snapshotLifetime,
-  withSnapshots,
-  type InboxView,
-} from './inboxUpdates.ts';
+import { clearInboxSnapshots, inboxSnapshots, placement, recordPR, withSnapshots, type InboxView } from './inboxUpdates.ts';
+import { snapshotLifetime } from './snapshots.ts';
 import {
   pullRequestReviewers,
   reviewDecision,

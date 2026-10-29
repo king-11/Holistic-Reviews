@@ -51,6 +51,15 @@ export function createPRWorkspace(prRef: () => PRRef, api: () => GitHub | null, 
     recordPRFields(prRef(), change);
     patch(state => ({ pr: { ...state.pr, ...change } }));
   }
+  // Apply fields optimistically and hand back the undo. rollbackPR restores them only if a later write to the same
+  // field hasn't superseded this one, so an old failure never clobbers a newer value.
+  function applyPR(change: Partial<PullRequest>) {
+    const current = workspace.value?.pr;
+    const previous: Partial<PullRequest> = {};
+    for (const key of Object.keys(change) as (keyof PullRequest)[]) (previous as Record<string, unknown>)[key] = current?.[key];
+    setPR(change);
+    return () => rollbackPR(change, previous);
+  }
   function rollbackPR(expected: Partial<PullRequest>, previous: Partial<PullRequest>) {
     const written = writtenPRFields(prRef());
     if (Object.entries(expected).every(([key, value]) => JSON.stringify(written[key as keyof PullRequest]) === JSON.stringify(value)))
@@ -133,6 +142,6 @@ export function createPRWorkspace(prRef: () => PRRef, api: () => GitHub | null, 
     controller?.abort();
     clearTimeout(mergeTimer);
   }
-  return { workspace, loading, error, current, patch, edit, setPR, rollbackPR, load, refresh, reload, dispose };
+  return { workspace, loading, error, current, patch, edit, setPR, applyPR, rollbackPR, load, refresh, reload, dispose };
 }
 export type PRWorkspace = ReturnType<typeof createPRWorkspace>;

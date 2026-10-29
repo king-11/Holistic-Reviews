@@ -62,7 +62,8 @@ import DiffView, { type ContextLoader, type DiffSettings } from './DiffView';
 import { IconButton, Loader, Modal, SearchField, Spinner, inputValue, update, Dismiss } from './ui';
 import MentionField from './MentionField';
 import { peopleDirectory, peopleKey } from './people';
-import { markInboxStale, recordPR, snapshotLifetime } from './inboxUpdates';
+import { markInboxStale, recordPR } from './inboxUpdates';
+import { createChangeViews, createSnapshotStore } from './snapshots';
 import { toggleViewedFiles, verifiedContextLines } from './diff';
 import {
   commentEntries,
@@ -95,56 +96,22 @@ import { commandDefinitions, type CommandContext } from './shortcuts';
 import styles from './ReviewWorkspace.module.css';
 import switchStyles from './switch.module.css';
 
-const writtenCommentsByPR = new Map<string, Map<number, { comment: Comment; at: number }>>();
-const removedCommentIdsByPR = new Map<string, Map<number, number>>();
 type WrittenCommentChange = { removeId?: number; previousId?: number; comment?: Comment };
-const writtenCommentViews = new Map<string, Set<(change: WrittenCommentChange) => void>>();
-const writtenReviewsByPR = new Map<string, Map<number, { review: Review; at: number }>>();
 type WrittenReviewChange = { removeId?: number; previousId?: number; review?: Review };
-const writtenReviewViews = new Map<string, Set<(change: WrittenReviewChange) => void>>();
-const writtenCommentsForPR = (url: string) => {
-  let comments = writtenCommentsByPR.get(url);
-  if (!comments) writtenCommentsByPR.set(url, (comments = new Map()));
-  return comments;
-};
-const notifyWrittenComment = (url: string, change: WrittenCommentChange) => writtenCommentViews.get(url)?.forEach(view => view(change));
-const registerWrittenCommentView = (url: string, view: (change: WrittenCommentChange) => void) => {
-  let views = writtenCommentViews.get(url);
-  if (!views) writtenCommentViews.set(url, (views = new Set()));
-  views.add(view);
-  return () => {
-    views.delete(view);
-    if (!views.size) writtenCommentViews.delete(url);
-  };
-};
-const removedCommentIdsForPR = (url: string, now = Date.now()) => {
-  const removed = removedCommentIdsByPR.get(url);
-  if (!removed) return new Set<number>();
-  for (const [id, at] of removed) if (now - at >= snapshotLifetime) removed.delete(id);
-  if (!removed.size) removedCommentIdsByPR.delete(url);
-  return new Set(removed.keys());
-};
-const rememberRemovedComment = (url: string, id: number, at = Date.now()) => {
-  let removed = removedCommentIdsByPR.get(url);
-  if (!removed) removedCommentIdsByPR.set(url, (removed = new Map()));
-  removed.set(id, at);
-};
-const forgetRemovedComment = (url: string, id: number) => {
-  const removed = removedCommentIdsByPR.get(url);
-  removed?.delete(id);
-  if (!removed?.size) removedCommentIdsByPR.delete(url);
-};
-const writtenReviewsForPR = (url: string, now = Date.now()) => {
-  const reviews = writtenReviewsByPR.get(url);
-  if (!reviews) return [];
-  for (const [id, entry] of reviews) if (now - entry.at >= snapshotLifetime) reviews.delete(id);
-  if (!reviews.size) writtenReviewsByPR.delete(url);
-  return [...reviews.values()];
-};
+const commentWrites = createSnapshotStore<{ comment: Comment; at: number }>();
+const reviewWrites = createSnapshotStore<{ review: Review; at: number }>();
+const removedComments = createSnapshotStore<{ at: number }>();
+const commentViews = createChangeViews<WrittenCommentChange>();
+const reviewViews = createChangeViews<WrittenReviewChange>();
+
+const removedCommentIdsForPR = (url: string, now = Date.now()) => new Set(removedComments.live(url, now).map(([id]) => id));
+const rememberRemovedComment = (url: string, id: number, at = Date.now()) => removedComments.set(url, id, { at });
+const forgetRemovedComment = (url: string, id: number) => removedComments.remove(url, id);
+
+const writtenReviewsForPR = (url: string, now = Date.now()) => reviewWrites.live(url, now).map(([, entry]) => entry);
 const mergeWrittenReviews = (url: string, loaded: Review[]) => {
   const entries = writtenReviewsForPR(url);
-  const written = writtenReviewsByPR.get(url);
-  if (!written || !entries.length) return loaded;
+  if (!entries.length) return loaded;
   const merged = [...loaded];
   for (const entry of entries) {
     const id = entry.review.id;
@@ -152,36 +119,21 @@ const mergeWrittenReviews = (url: string, loaded: Review[]) => {
     if (serverReview) {
       // A lagging read can still list the just-submitted review as PENDING.
       if (serverReview.state === 'PENDING' && entry.review.state !== 'PENDING') merged[merged.indexOf(serverReview)] = entry.review;
-      else if (serverReview !== entry.review) written.delete(id);
+      else if (serverReview !== entry.review) reviewWrites.remove(url, id);
       continue;
     }
     merged.push(entry.review);
   }
-  if (!written.size) writtenReviewsByPR.delete(url);
   return merged;
 };
-const notifyWrittenReview = (url: string, change: WrittenReviewChange) => writtenReviewViews.get(url)?.forEach(view => view(change));
-const registerWrittenReviewView = (url: string, view: (change: WrittenReviewChange) => void) => {
-  let views = writtenReviewViews.get(url);
-  if (!views) writtenReviewViews.set(url, (views = new Set()));
-  views.add(view);
-  return () => {
-    views.delete(view);
-    if (!views.size) writtenReviewViews.delete(url);
-  };
-};
 const recordWrittenReview = (url: string, review: Review, previousId?: number) => {
-  let reviews = writtenReviewsByPR.get(url);
-  if (!reviews) writtenReviewsByPR.set(url, (reviews = new Map()));
-  if (previousId !== undefined) reviews.delete(previousId);
-  reviews.set(review.id, { review, at: Date.now() });
-  notifyWrittenReview(url, { previousId, review });
+  if (previousId !== undefined) reviewWrites.remove(url, previousId);
+  reviewWrites.set(url, review.id, { review, at: Date.now() });
+  reviewViews.notify(url, { previousId, review });
 };
 const forgetWrittenReview = (url: string, id: number) => {
-  const reviews = writtenReviewsByPR.get(url);
-  reviews?.delete(id);
-  if (!reviews?.size) writtenReviewsByPR.delete(url);
-  notifyWrittenReview(url, { removeId: id });
+  reviewWrites.remove(url, id);
+  reviewViews.notify(url, { removeId: id });
 };
 
 type ReviewEvent = 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES';
@@ -217,6 +169,7 @@ export interface PRView {
   reactions: ReactionActions;
   recordWrittenComment: (comment: Comment, previousId?: number) => void;
   forgetWrittenComment: (comment: Comment) => void;
+  replaceLocalComment: (temporary: Comment, comment: Comment) => Comment;
   displayFiles: ComputedRef<ChangedFile[]>;
   selectFile: (filename: string) => void;
 }
@@ -252,19 +205,9 @@ export default defineComponent(
       const teams = props.info.teams ?? [];
       const nextTeams = requestedTeams?.filter(entry => !teams.includes(teamKey(pr(), entry.slug)));
       const cleared: Partial<PullRequest> = {};
-      const previous: Partial<PullRequest> = {};
-      if (requestedReviewers && nextReviewers?.length !== requestedReviewers.length) {
-        cleared.requested_reviewers = nextReviewers;
-        previous.requested_reviewers = requestedReviewers;
-      }
-      if (requestedTeams && nextTeams?.length !== requestedTeams.length) {
-        cleared.requested_teams = nextTeams;
-        previous.requested_teams = requestedTeams;
-      }
-      if (Object.keys(cleared).length) {
-        props.store.setPR(cleared);
-        return { cleared, previous };
-      }
+      if (requestedReviewers && nextReviewers?.length !== requestedReviewers.length) cleared.requested_reviewers = nextReviewers;
+      if (requestedTeams && nextTeams?.length !== requestedTeams.length) cleared.requested_teams = nextTeams;
+      if (Object.keys(cleared).length) return props.store.applyPR(cleared);
     };
     const ownPR = () => pr().user.id === viewer().id;
     const pendingSection = (...sections: WorkspaceSection[]) => sections.some(section => ws().pending.includes(section));
@@ -296,7 +239,7 @@ export default defineComponent(
         props.store.patch({ reviews: merged });
       return merged;
     };
-    const unregisterWrittenReviewView = registerWrittenReviewView(pr().html_url, change => {
+    const unregisterWrittenReviewView = reviewViews.subscribe(pr().html_url, change => {
       if (change.removeId !== undefined) props.store.edit('reviews', previous => previous.filter(review => review.id !== change.removeId));
       if (change.previousId !== undefined)
         props.store.edit('reviews', previous => previous.filter(review => review.id !== change.previousId));
@@ -380,11 +323,10 @@ export default defineComponent(
     };
 
     const editedPendingBodies = new Map<number, string>();
-    const writtenComments = writtenCommentsForPR(pr().html_url);
     const recordWrittenComment = (comment: Comment, previousId?: number, at = Date.now()) => {
-      if (previousId !== undefined) writtenComments.delete(previousId);
-      writtenComments.set(comment.id, { comment, at });
-      notifyWrittenComment(pr().html_url, { previousId, comment });
+      if (previousId !== undefined) commentWrites.remove(pr().html_url, previousId);
+      commentWrites.set(pr().html_url, comment.id, { comment, at });
+      commentViews.notify(pr().html_url, { previousId, comment });
     };
     const sameTemporaryComment = (temporary: Comment, comment: Comment) =>
       temporary.id < 0 &&
@@ -392,12 +334,8 @@ export default defineComponent(
       temporary.body === comment.body &&
       (temporary.line === comment.line || comment.line == null);
     function writtenCommentsFor(loaded: Comment[]) {
-      const now = Date.now();
-      for (const [id, entry] of writtenComments) {
-        if (now - entry.at >= snapshotLifetime) {
-          writtenComments.delete(id);
-          continue;
-        }
+      const url = pr().html_url;
+      for (const [id, entry] of commentWrites.live(url)) {
         const match =
           loaded.find(comment => comment.id === entry.comment.id) ||
           (entry.comment.id < 0 ? loaded.find(comment => sameTemporaryComment(entry.comment, comment)) : undefined);
@@ -416,16 +354,17 @@ export default defineComponent(
                 pull_request_review_id: match.pull_request_review_id ?? entry.comment.pull_request_review_id,
               }
             : { ...match, ...entry.comment, id: match.id };
-        if (match.id !== id) writtenComments.delete(id);
-        writtenComments.set(match.id, { comment: confirmed, at: entry.at });
+        if (match.id !== id) commentWrites.remove(url, id);
+        commentWrites.set(url, match.id, { comment: confirmed, at: entry.at });
       }
-      return [...writtenComments.values()];
+      return commentWrites.live(url).map(([, entry]) => entry);
     }
     const forgetWrittenComments = (reviewId: number) => {
-      for (const [id, entry] of writtenComments)
+      const url = pr().html_url;
+      for (const [id, entry] of commentWrites.live(url))
         if (entry.comment.pull_request_review_id === reviewId) {
-          writtenComments.delete(id);
-          notifyWrittenComment(pr().html_url, { removeId: id });
+          commentWrites.remove(url, id);
+          commentViews.notify(url, { removeId: id });
         }
     };
     let draftLoadVersion = 0;
@@ -453,7 +392,7 @@ export default defineComponent(
           if (active) notice.value = `Pending comments could not be loaded: ${errorMessage(error, String(error))}`;
         });
     });
-    const unregisterWrittenComments = registerWrittenCommentView(pr().html_url, change => {
+    const unregisterWrittenComments = commentViews.subscribe(pr().html_url, change => {
       if (change.removeId !== undefined)
         for (const key of ['draftComments', 'inlineComments', 'comments'] as const)
           props.store.edit(key, prev => prev.filter(comment => comment.id !== change.removeId));
@@ -555,15 +494,14 @@ export default defineComponent(
         props.store.edit('draftComments', prev => withBody(prev, item.id, body));
       }
     };
+    const forgetWrittenComment = (comment: Comment) => {
+      commentWrites.remove(pr().html_url, comment.id);
+      commentViews.notify(pr().html_url, { removeId: comment.id });
+    };
     const removeLocalComment = (comment: Comment) => {
       for (const key of ['draftComments', 'inlineComments', 'comments'] as const)
         props.store.edit(key, prev => prev.filter(other => other.id !== comment.id));
-      writtenComments.delete(comment.id);
-      notifyWrittenComment(pr().html_url, { removeId: comment.id });
-    };
-    const forgetWrittenComment = (comment: Comment) => {
-      writtenComments.delete(comment.id);
-      notifyWrittenComment(pr().html_url, { removeId: comment.id });
+      forgetWrittenComment(comment);
     };
     const replaceLocalComment = (temporary: Comment, comment: Comment) => {
       const confirmed = { ...temporary, ...comment, user: comment.user ?? temporary.user };
@@ -573,7 +511,8 @@ export default defineComponent(
       return confirmed;
     };
     const updateWrittenComments = (updateComment: (comment: Comment) => Comment) => {
-      for (const [id, entry] of writtenComments) writtenComments.set(id, { ...entry, comment: updateComment(entry.comment) });
+      const url = pr().html_url;
+      for (const [id, entry] of commentWrites.live(url)) commentWrites.set(url, id, { ...entry, comment: updateComment(entry.comment) });
     };
     const inPendingReview = (item: Editable) => !isReview(item) && !!pending.value && item.pull_request_review_id === pending.value.id;
     const edits: EditActions = {
@@ -639,7 +578,7 @@ export default defineComponent(
                 inlineComments: ws().inlineComments.some(other => other.id === item.id),
                 draftComments: ws().draftComments.some(other => other.id === item.id),
               };
-              const written = comment && writtenComments.get(comment.id);
+              const written = comment && commentWrites.get(commentUrl, comment.id);
               const editedBody = comment && editedPendingBodies.get(comment.id);
               if (review) ++draftLoadVersion;
               changeComment(item);
@@ -656,8 +595,8 @@ export default defineComponent(
                   forgetRemovedComment(commentUrl, comment.id);
                   if (editedBody !== undefined) editedPendingBodies.set(comment.id, editedBody);
                   if (written) {
-                    writtenComments.set(comment.id, written);
-                    notifyWrittenComment(pr().html_url, { comment: written.comment });
+                    commentWrites.set(commentUrl, comment.id, written);
+                    commentViews.notify(commentUrl, { comment: written.comment });
                   } else recordWrittenComment(editedBody === undefined ? comment : { ...comment, body: editedBody });
                 }
               };
@@ -697,15 +636,38 @@ export default defineComponent(
       },
       onReply: replyToComment,
     };
+    // A pending review is created lazily: the first comment that starts one carries a temporary review, and every
+    // later comment joins it. These two helpers give the inline composer and the thread reply that same scaffolding.
+    const startOptimisticReview = (starting: boolean) => {
+      const id = starting ? temporaryId() : undefined;
+      const review: Review | undefined = starting
+        ? { id: id!, node_id: '', user: viewer(), state: 'PENDING', body: '', commit_id: pr().head.sha }
+        : undefined;
+      return { id, review };
+    };
+    const placeOptimistic = (optimistic: Comment, review: Review | undefined, inPending: boolean) => {
+      if (review) props.store.edit('reviews', prev => [...prev, review]);
+      props.store.edit(inPending ? 'draftComments' : 'inlineComments', prev => [...prev, optimistic]);
+      recordWrittenComment(optimistic);
+      return () => {
+        removeLocalComment(optimistic);
+        if (review) props.store.edit('reviews', prev => prev.filter(item => item.id !== review.id));
+      };
+    };
+    // Swap the temporary review for GitHub's once it exists, repointing the comments that joined it.
+    const confirmStartedReview = (startId: number, review: Review, repoint: (comment: Comment) => boolean) => {
+      props.store.edit('reviews', prev =>
+        prev.some(item => item.id === startId) ? prev.map(item => (item.id === startId ? review : item)) : [...prev, review],
+      );
+      props.store.edit('draftComments', prev => prev.map(item => (repoint(item) ? { ...item, pull_request_review_id: review.id } : item)));
+      updateWrittenComments(item => (repoint(item) ? { ...item, pull_request_review_id: review.id } : item));
+    };
     function replyToComment(id: number, body: string, startReview = false) {
       const root = allComments.value.find(comment => comment.id === id);
       if (!root) return Promise.resolve(false);
       const current = pending.value;
       const starting = startReview && !current;
-      const startId = starting ? temporaryId() : undefined;
-      const optimisticReview: Review | undefined = starting
-        ? { id: startId!, node_id: '', user: viewer(), state: 'PENDING', body: '', commit_id: pr().head.sha }
-        : undefined;
+      const { id: startId, review: optimisticReview } = startOptimisticReview(starting);
       const optimistic: Comment = {
         id: temporaryId(),
         body,
@@ -731,19 +693,7 @@ export default defineComponent(
           }
           if (starting) {
             review = await api.startReview(ref(), pr().head.sha);
-            props.store.edit('reviews', prev =>
-              prev.some(item => item.id === startId) ? prev.map(item => (item.id === startId ? review! : item)) : [...prev, review!],
-            );
-            props.store.edit('draftComments', prev =>
-              prev.map(item =>
-                item.id === optimistic.id || item.pull_request_review_id === startId
-                  ? { ...item, pull_request_review_id: review!.id }
-                  : item,
-              ),
-            );
-            updateWrittenComments(item =>
-              item.id === optimistic.id || item.pull_request_review_id === startId ? { ...item, pull_request_review_id: review!.id } : item,
-            );
+            confirmStartedReview(startId!, review, item => item.id === optimistic.id || item.pull_request_review_id === startId);
             review = pending.value;
           }
           if (review?.id && review.id < 0) review = undefined;
@@ -775,15 +725,11 @@ export default defineComponent(
         },
         {
           apply: () => {
-            if (optimisticReview) props.store.edit('reviews', prev => [...prev, optimisticReview]);
-            if (current || starting) props.store.edit('draftComments', prev => [...prev, optimistic]);
-            else props.store.edit('inlineComments', prev => [...prev, optimistic]);
-            recordWrittenComment(optimistic);
+            const undo = placeOptimistic(optimistic, optimisticReview, !!(current || starting));
             replyDraftTokens.set(id, optimistic.id);
             update(replyDrafts, prev => ({ ...prev, [id]: { body: '' } }));
             return () => {
-              removeLocalComment(optimistic);
-              if (optimisticReview) props.store.edit('reviews', prev => prev.filter(item => item.id !== startId));
+              undo();
               if (replyDraftTokens.get(id) === optimistic.id) {
                 replyDraftTokens.delete(id);
                 update(replyDrafts, prev => ({ ...prev, [id]: { body: previousDraft } }));
@@ -900,7 +846,7 @@ export default defineComponent(
                 ...prev,
                 ...comments.filter(comment => !prev.some(other => other.id === comment.id)),
               ]);
-              if (requestChange) props.store.rollbackPR(requestChange.cleared, requestChange.previous);
+              if (requestChange) requestChange();
               if (!dialog.value) {
                 event.value = reviewEvent;
                 reviewBody.value = summary;
@@ -986,10 +932,7 @@ export default defineComponent(
       };
       const pendingAtCall = pending.value;
       const starting = start && !pendingAtCall;
-      const startId = starting ? temporaryId() : undefined;
-      const optimisticReview: Review | undefined = starting
-        ? { id: startId!, node_id: '', user: viewer(), state: 'PENDING', body: '', commit_id: pr().head.sha }
-        : undefined;
+      const { id: startId, review: optimisticReview } = startOptimisticReview(starting);
       const optimistic: Comment = {
         id: temporaryId(),
         body: text,
@@ -1007,14 +950,7 @@ export default defineComponent(
           let refreshWarning = '';
           if (starting) {
             current = await api.startReview(ref(), pr().head.sha, input);
-            props.store.edit('reviews', prev =>
-              prev.some(review => review.id === startId)
-                ? prev.map(review => (review.id === startId ? current! : review))
-                : [...prev, current!],
-            );
-            const confirmed = { ...optimistic, pull_request_review_id: current.id };
-            props.store.edit('draftComments', prev => prev.map(comment => (comment.id === optimistic.id ? confirmed : comment)));
-            recordWrittenComment(confirmed, optimistic.id);
+            confirmStartedReview(startId!, current, comment => comment.id === optimistic.id);
           } else {
             if (current?.id && current.id < 0) current = undefined;
             const result = await api.inlineComment(ref(), pr().head.sha, input, current);
@@ -1048,16 +984,12 @@ export default defineComponent(
         },
         {
           apply: () => {
-            if (optimisticReview) props.store.edit('reviews', prev => [...prev, optimisticReview]);
-            if (pendingAtCall || starting) props.store.edit('draftComments', prev => [...prev, optimistic]);
-            else props.store.edit('inlineComments', prev => [...prev, optimistic]);
-            recordWrittenComment(optimistic);
+            const undo = placeOptimistic(optimistic, optimisticReview, !!(pendingAtCall || starting));
             inlineBody.value = '';
             dialog.value = null;
             error.value = '';
             return () => {
-              removeLocalComment(optimistic);
-              if (optimisticReview) props.store.edit('reviews', prev => prev.filter(review => review.id !== startId));
+              undo();
               if (!inlineBody.value) {
                 inlineLocation.value = location;
                 inlineBody.value = text;
@@ -1084,7 +1016,6 @@ export default defineComponent(
       if (next) props.onOpen(next.url);
     };
     const mergePR = (method: MergeMethod) => {
-      const previous = { state: pr().state, merged: pr().merged };
       const optimistic = { state: 'closed' as const, merged: true };
       return mutate(
         async api => {
@@ -1094,16 +1025,12 @@ export default defineComponent(
         {
           toast: 'Pull request merged',
           refresh: 'all',
-          apply: () => {
-            props.store.setPR(optimistic);
-            return () => props.store.rollbackPR(optimistic, previous);
-          },
+          apply: () => props.store.applyPR(optimistic),
         },
       );
     };
     const setAutoMerge = (enable: boolean) => {
       const method = pr().auto_merge?.merge_method ?? ws().mergeMethods?.[0];
-      const previousAutoMerge = pr().auto_merge ?? null;
       const optimistic = enable && method ? { merge_method: method, enabled_by: viewer() } : null;
       return mutate(
         async api => {
@@ -1119,12 +1046,7 @@ export default defineComponent(
         {
           toast: enable ? 'Auto-merge enabled' : 'Auto-merge turned off',
           refresh: 'all',
-          apply: () => {
-            props.store.setPR({ auto_merge: optimistic });
-            return () => {
-              if (pr().auto_merge === optimistic) props.store.setPR({ auto_merge: previousAutoMerge });
-            };
-          },
+          apply: () => props.store.applyPR({ auto_merge: optimistic }),
         },
       );
     };
@@ -1646,6 +1568,7 @@ export default defineComponent(
       reactions,
       recordWrittenComment,
       forgetWrittenComment,
+      replaceLocalComment,
       displayFiles,
       selectFile,
     };

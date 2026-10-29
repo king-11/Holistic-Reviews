@@ -15,7 +15,7 @@ import {
   withThreadLocations,
 } from './comments.ts';
 import type { ChangedFile, Comment, Review, ReviewThread, User } from './github.ts';
-import { snapshotLifetime } from './inboxUpdates.ts';
+import { snapshotLifetime } from './snapshots.ts';
 
 const file: ChangedFile = {
   filename: 'src/work.ts',
