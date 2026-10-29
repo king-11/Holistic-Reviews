@@ -231,8 +231,7 @@ export default defineComponent(
       await mutate(
         async github => {
           const result = await github.comment(ref(), text);
-          store.edit('comments', prev => prev.map(comment => (comment.id === optimistic.id ? result : comment)));
-          props.view.recordWrittenComment(result, optimistic.id);
+          props.view.replaceLocalComment(optimistic, result);
           entered.set(`comment-${result.id}`, 'grow-in');
           done('Comment posted to GitHub.');
         },

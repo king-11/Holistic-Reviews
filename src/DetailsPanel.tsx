@@ -282,11 +282,10 @@ export const MoreMenu = defineComponent(
                   pr.draft ? 'Marked ready for review' : 'Converted to draft',
                   api => api.setDraft(pr, !pr.draft),
                   () => {
-                    const previous = pr.draft;
-                    details.source().store.setPR({ draft: !previous });
+                    const undo = details.source().store.applyPR({ draft: !pr.draft });
                     open.value = false;
                     return () => {
-                      if (details.pr().draft === !previous) details.source().store.rollbackPR({ draft: !previous }, { draft: previous });
+                      undo();
                       open.value = true;
                     };
                   },
@@ -299,11 +298,10 @@ export const MoreMenu = defineComponent(
                   'Pull request closed',
                   api => api.editPR(prRef, { state: 'closed' }),
                   () => {
-                    const previous = pr.state;
-                    details.source().store.setPR({ state: 'closed' });
+                    const undo = details.source().store.applyPR({ state: 'closed' });
                     open.value = false;
                     return () => {
-                      if (details.pr().state === 'closed') details.source().store.rollbackPR({ state: 'closed' }, { state: previous });
+                      undo();
                       open.value = true;
                     };
                   },
@@ -318,11 +316,10 @@ export const MoreMenu = defineComponent(
                   'Pull request reopened',
                   api => api.editPR(prRef, { state: 'open' }),
                   () => {
-                    const previous = pr.state;
-                    details.source().store.setPR({ state: 'open' });
+                    const undo = details.source().store.applyPR({ state: 'open' });
                     open.value = false;
                     return () => {
-                      if (details.pr().state === 'open') details.source().store.rollbackPR({ state: 'open' }, { state: previous });
+                      undo();
                       open.value = true;
                     };
                   },
@@ -494,51 +491,25 @@ export function useDetails(input: () => DetailsInput) {
   const labels = () => pr().labels ?? [];
   // Label and reviewer writes return the new values; patching them keeps the sidebar right while GitHub's reread lags.
   const setPR = (change: Partial<PullRequest>) => input().store.setPR(change);
-  const sameNames = (a: { login: string }[] = [], b: { login: string }[] = []) =>
-    a
-      .map(user => user.login)
-      .sort()
-      .join() ===
-    b
-      .map(user => user.login)
-      .sort()
-      .join();
-  const sameTeams = (a: { slug: string }[] = [], b: { slug: string }[] = []) =>
-    a
-      .map(team => team.slug)
-      .sort()
-      .join() ===
-    b
-      .map(team => team.slug)
-      .sort()
-      .join();
+  const applyPR = (change: Partial<PullRequest>) => input().store.applyPR(change);
+  // Two lists are the same set when their sorted keys line up; this tells whether a write is still the latest.
+  const sameSet = <T,>(a: T[] = [], b: T[] = [], key: (item: T) => string) => a.map(key).sort().join() === b.map(key).sort().join();
   const setLabels = (names: string[]) => {
     const previous = labels();
     const optimistic = names.map(name => previous.find(label => label.name === name) ?? { name, color: 'ededed' });
+    const unchanged = () => sameSet(labels(), optimistic, label => label.name);
     return source().onMutate(
       async api => {
         const confirmed = await api.setLabels(source().prRef, names);
-        if (
-          labels()
-            .map(label => label.name)
-            .sort()
-            .join() === names.slice().sort().join()
-        )
-          setPR({ labels: confirmed });
+        if (unchanged()) setPR({ labels: confirmed });
       },
       {
         toast: 'Labels updated',
         refresh: 'pr',
         apply: () => {
-          setPR({ labels: optimistic });
+          const undo = applyPR({ labels: optimistic });
           return () => {
-            if (
-              labels()
-                .map(label => label.name)
-                .sort()
-                .join() === names.slice().sort().join()
-            )
-              source().store.rollbackPR({ labels: optimistic }, { labels: previous });
+            if (unchanged()) undo();
           };
         },
       },
@@ -556,7 +527,9 @@ export function useDetails(input: () => DetailsInput) {
     const optimisticTeams = remove
       ? oldTeams.filter(team => !teams.includes(team.slug))
       : [...oldTeams, ...teams.filter(slug => !oldTeams.some(team => team.slug === slug)).map(slug => ({ slug, name: slug }))];
-    const stillOptimistic = () => sameNames(pr().requested_reviewers, optimisticUsers) && sameTeams(pr().requested_teams, optimisticTeams);
+    const stillOptimistic = () =>
+      sameSet(pr().requested_reviewers, optimisticUsers, user => user.login) &&
+      sameSet(pr().requested_teams, optimisticTeams, team => team.slug);
     return source().onMutate(
       async api => {
         const result = await api.requestReviewers(source().prRef, logins, remove);
@@ -566,13 +539,9 @@ export function useDetails(input: () => DetailsInput) {
         toast: `Review ${remove ? 'request removed' : 'requested'} from ${logins.join(', ')}`,
         refresh: 'pr',
         apply: () => {
-          setPR({ requested_reviewers: optimisticUsers, requested_teams: optimisticTeams });
+          const undo = applyPR({ requested_reviewers: optimisticUsers, requested_teams: optimisticTeams });
           return () => {
-            if (stillOptimistic())
-              source().store.rollbackPR(
-                { requested_reviewers: optimisticUsers, requested_teams: optimisticTeams },
-                { requested_reviewers: oldUsers, requested_teams: oldTeams },
-              );
+            if (stillOptimistic()) undo();
           };
         },
       },

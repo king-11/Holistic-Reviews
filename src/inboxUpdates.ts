@@ -12,6 +12,7 @@ import {
   type PRRef,
   type Review,
 } from './github.ts';
+import { createSnapshotStore, snapshotLifetime } from './snapshots.ts';
 
 // Where a PR belongs in each inbox group: true or false when the PR page knows, undefined when only search can tell
 // (a review requested through a team the viewer may belong to).
@@ -24,25 +25,19 @@ export interface PRSnapshot {
   at: number;
 }
 
-// GitHub search catches up with writes within about a minute; past this, what search says wins again.
-export const snapshotLifetime = 3 * 60_000;
-const writtenPRs = new Map<string, { fields: Partial<PullRequest>; at: number }>();
+const writtenPRs = createSnapshotStore<{ fields: Partial<PullRequest>; at: number }>();
+// One PR has one set of written fields, so it takes a single fixed key in the shared store.
+const writtenPRKey = 0;
 const prKey = (ref: PRRef) => `${ref.owner}/${ref.repo}#${ref.number}`;
 export function recordPRFields(ref: PRRef, fields: Partial<PullRequest>) {
-  const previous = writtenPRs.get(prKey(ref))?.fields ?? {};
-  writtenPRs.set(prKey(ref), { fields: { ...previous, ...fields }, at: Date.now() });
+  const previous = writtenPRs.get(prKey(ref), writtenPRKey)?.fields ?? {};
+  writtenPRs.set(prKey(ref), writtenPRKey, { fields: { ...previous, ...fields }, at: Date.now() });
 }
 export function writtenPRFields(ref: PRRef) {
-  const key = prKey(ref);
-  const entry = writtenPRs.get(key);
-  if (!entry || Date.now() - entry.at >= snapshotLifetime) {
-    writtenPRs.delete(key);
-    return {};
-  }
-  return entry.fields;
+  return writtenPRs.get(prKey(ref), writtenPRKey)?.fields ?? {};
 }
 export function clearWrittenPRFields(ref: PRRef) {
-  writtenPRs.delete(prKey(ref));
+  writtenPRs.remove(prKey(ref), writtenPRKey);
 }
 
 function involvement(pr: PullRequest, reviews: Review[], comments: Comment[], viewer: string, teams?: string[]) {

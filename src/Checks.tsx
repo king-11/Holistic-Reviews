@@ -10,7 +10,7 @@ import {
   CircleX,
   RefreshCw,
 } from '@lucide/vue';
-import { blockingStates, checkOrder, type CheckState, type PRRef, type StatusCheck } from './github';
+import { blockingStates, checkOrder, type CheckState, type GitHub, type PRRef, type StatusCheck } from './github';
 import type { Mutate } from './DetailsPanel';
 import { IconButton, Loader } from './ui';
 import styles from './Checks.module.css';
@@ -69,17 +69,18 @@ export default defineComponent(
     };
     let nextRun = 0;
     const pendingRuns = new Map<string, number>();
-    const rerun = (failedOnly: boolean) => {
-      const checks = props.checks!;
-      const affected = checks.filter(check => check.job && (!failedOnly || blockingStates.includes(check.state)));
+    // Both re-run buttons share the optimistic "Queued to rerun" mark and its token-guarded undo.
+    const markRerun = (affected: StatusCheck[], toast: string, work: (api: GitHub) => Promise<unknown>) => {
       const previous = new Map(affected.map(check => [check.id, check]));
       const token = ++nextRun;
-      return props.onMutate(api => api.rerunChecks(props.prRef, checks, failedOnly), {
-        toast: failedOnly ? 'Re-running failed checks' : 'Re-running all checks',
+      return props.onMutate(work, {
+        toast,
         refresh: 'all',
         apply: () => {
           for (const check of affected) pendingRuns.set(check.id, token);
-          props.onChecks(checks.map(check => (previous.has(check.id) ? { ...check, state: 'pending', detail: 'Queued to rerun' } : check)));
+          props.onChecks(
+            (props.checks ?? []).map(check => (previous.has(check.id) ? { ...check, state: 'pending', detail: 'Queued to rerun' } : check)),
+          );
           return () => {
             for (const check of affected) if (pendingRuns.get(check.id) === token) pendingRuns.delete(check.id);
             props.onChecks(
@@ -92,6 +93,13 @@ export default defineComponent(
           };
         },
       });
+    };
+    const rerun = (failedOnly: boolean) => {
+      const checks = props.checks!;
+      const affected = checks.filter(check => check.job && (!failedOnly || blockingStates.includes(check.state)));
+      return markRerun(affected, failedOnly ? 'Re-running failed checks' : 'Re-running all checks', api =>
+        api.rerunChecks(props.prRef, checks, failedOnly),
+      );
     };
     const jobs = (failedOnly: boolean) => props.checks!.some(check => check.job && (!failedOnly || blockingStates.includes(check.state)));
     const row = (check: StatusCheck) => {
@@ -115,27 +123,7 @@ export default defineComponent(
           {!!check.job && (
             <IconButton
               label={`Re-run ${check.name}`}
-              onClick={() =>
-                props.onMutate(api => api.rerunJob(props.prRef, check.job!.id), {
-                  toast: `Re-running ${check.name}`,
-                  refresh: 'all',
-                  apply: () => {
-                    const previous = check;
-                    const token = ++nextRun;
-                    pendingRuns.set(check.id, token);
-                    props.onChecks(
-                      props.checks!.map(item => (item.id === check.id ? { ...item, state: 'pending', detail: 'Queued to rerun' } : item)),
-                    );
-                    return () => {
-                      if (pendingRuns.get(check.id) !== token) return;
-                      pendingRuns.delete(check.id);
-                      props.onChecks(
-                        (props.checks ?? []).map(item => (item.id === check.id && item.detail === 'Queued to rerun' ? previous : item)),
-                      );
-                    };
-                  },
-                })
-              }
+              onClick={() => markRerun([check], `Re-running ${check.name}`, api => api.rerunJob(props.prRef, check.job!.id))}
             >
               <RefreshCw size={13} />
             </IconButton>

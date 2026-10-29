@@ -49,12 +49,10 @@ export default defineComponent(
             toast: 'Title updated',
             refresh: 'all',
             apply: () => {
-              props.view.store.setPR({ title });
+              const undo = props.view.store.applyPR({ title });
               return () => {
-                if (pr().title === title) {
-                  props.view.store.rollbackPR({ title }, { title: previous });
-                  if (titleDraft.value === null) titleDraft.value = title;
-                }
+                undo();
+                if (pr().title === previous && titleDraft.value === null) titleDraft.value = title;
               };
             },
           },
@@ -75,12 +73,10 @@ export default defineComponent(
           toast: 'Description updated',
           refresh: 'all',
           apply: () => {
-            props.view.store.setPR({ body });
+            const undo = props.view.store.applyPR({ body });
             return () => {
-              if (pr().body === body) {
-                props.view.store.rollbackPR({ body }, { body: previous });
-                if (bodyDraft.value === null) bodyDraft.value = body;
-              }
+              undo();
+              if (pr().body === previous && bodyDraft.value === null) bodyDraft.value = body;
             };
           },
         },

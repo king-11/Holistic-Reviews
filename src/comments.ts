@@ -1,6 +1,6 @@
 import type { ChangedFile, Comment, Review, ReviewThread, User } from './github';
 import { commentGroups, diffSides, patchLines, threadsForComments, type DiffSide } from './diff.ts';
-import { snapshotLifetime } from './inboxUpdates.ts';
+import { snapshotLifetime } from './snapshots.ts';
 
 export type CommentFilter = 'open' | 'resolved' | 'all';
 let nextTemporaryId = -Date.now() * 1000;
