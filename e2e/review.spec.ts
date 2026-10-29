@@ -2371,10 +2371,14 @@ test.describe('inline comments and reviews', () => {
     let staleReads = 0;
     let releaseStaleRead = () => {};
     const staleRead = new Promise<void>(resolve => (releaseStaleRead = resolve));
-    await page.route(/\/pulls\/42\/reviews\/\d+\/comments/, async route => {
+    await page.route('https://api.github.com/graphql', async route => {
+      if (!(route.request().postData()?.includes('ReviewComments') ?? false)) return route.fallback();
       staleReads++;
       await staleRead;
-      await route.fulfill({ status: 200, json: [] });
+      await route.fulfill({
+        status: 200,
+        json: { data: { node: { comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } },
+      });
     });
     await lineNumber(page, 'src/worker.py', 12).click();
     await composer(page).fill('Written despite stale REST');
@@ -2819,6 +2823,35 @@ for (const scenario of optimisticWriteCases)
     await scenario.rollback(page);
     await expect(page.getByText('Write rejected', { exact: true })).toBeVisible();
   });
+
+test('a pending comment keeps its line while thread metadata is still loading', async ({ page }) => {
+  await mockGitHub(page);
+  await openPR(page);
+  // Hold the post-write thread refresh; the comment must stay put on the line the GraphQL read gave it.
+  let release = () => {};
+  const held = new Promise<void>(resolve => (release = resolve));
+  await page.route('https://api.github.com/graphql', async route => {
+    if (route.request().postData()?.includes('ReviewThreads')) await held;
+    await route.fallback();
+  });
+
+  const commentsLoaded = page.waitForResponse(
+    response => response.url().endsWith('/graphql') && (response.request().postData()?.includes('ReviewComments') ?? false),
+  );
+  await lineNumber(page, 'src/worker.py', 10, 'addition').click();
+  await composer(page).fill('Pending line probe');
+  await page.getByRole('group', { name: 'Line comment' }).getByRole('button', { name: 'Start a review' }).click();
+  await commentsLoaded;
+
+  const thread = page.locator('.review-thread').filter({ hasText: 'Pending line probe' });
+  await expect(thread).toBeVisible();
+  // Inline means it sits in the diff annotation, not the "below the file" section.
+  expect(await thread.evaluate(element => !!element.closest('.annotation-container'))).toBe(true);
+
+  release();
+  await expect(thread).toBeVisible();
+  expect(await thread.evaluate(element => !!element.closest('.annotation-container'))).toBe(true);
+});
 
 test.describe('comments panel and settings', () => {
   test('filters open, resolved and all threads and jumps to a thread', async ({ page }) => {

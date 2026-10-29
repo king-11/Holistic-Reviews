@@ -371,7 +371,7 @@ export default defineComponent(
     async function loadPendingComments(review: Review, fresh = false) {
       if (review.id < 0) return;
       const version = ++draftLoadVersion;
-      const result = await (fresh ? props.api.fresh() : props.api).reviewComments(ref(), review.id);
+      const result = await (fresh ? props.api.fresh() : props.api).reviewComments(review);
       if (active && version === draftLoadVersion && pending.value?.id === review.id) {
         const written = writtenCommentsFor(result).filter(entry => entry.comment.pull_request_review_id === review.id);
         props.store.patch({
