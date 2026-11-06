@@ -1761,7 +1761,8 @@ export default defineComponent(
             {(tab.value === 'review' || tab.value === 'conversation') && (
               <ConversationTab view={view} mode={tab.value} draft={body} onChanges={() => (tab.value = 'changes')} />
             )}
-            {tab.value === 'changes' && (
+            {/* Keep the diff mounted: rebuilding it re-parses every patch and freezes the UI for a second or more. */}
+            <div hidden={tab.value !== 'changes'}>
               <>
                 <div class="diff-toolbar">
                   {(!sidebar.value || focusedFile.value) && (
@@ -2008,7 +2009,7 @@ export default defineComponent(
                   </span>
                 </div>
               </>
-            )}
+            </div>
           </div>
         </main>
         {!!commentsOpen.value && (

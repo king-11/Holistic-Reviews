@@ -817,6 +817,20 @@ test.describe('motion', () => {
     }
   });
 
+  test('returning to changes reuses the mounted diff instead of rebuilding every file', async ({ page }) => {
+    await mockGitHub(page);
+    await openPR(page);
+    const file = card(page, 'src/worker.py');
+    await expect(file).toBeVisible();
+    await file.evaluate(node => ((node as HTMLElement & { kept?: boolean }).kept = true));
+    await page.keyboard.press('2');
+    await expect(page.locator('.commit-card').first()).toBeVisible();
+    await page.keyboard.press('1');
+    await expect(file).toBeVisible();
+    // Rebuilding the diff re-parses every patch and freezes the UI while the tab is supposed to be instant.
+    expect(await file.evaluate(node => (node as HTMLElement & { kept?: boolean }).kept)).toBe(true);
+  });
+
   test('posting a comment confirms with a toast and grows it in instead of jumping the comment box', async ({ page }) => {
     await mockGitHub(page);
     await openPR(page);
