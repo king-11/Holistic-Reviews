@@ -89,7 +89,7 @@ import PRHeader from './PRHeader';
 import ConversationTab from './ConversationTab';
 import { CommitHistory, CommitPicker, type CommitRange } from './Commits';
 import { FileCodeIcon } from './FileIcon';
-import { filterFiles, type FileStatus } from './file_filters';
+import { filterFiles, sortFiles, type FileStatus } from './file_filters';
 import { enqueueMutation, mutationBusy, showMutationFailure } from './session';
 import { registerPRCommands } from './commandRegistry';
 import { commandDefinitions, type CommandContext } from './shortcuts';
@@ -1196,10 +1196,10 @@ export default defineComponent(
     const contentQuery = shallowRef('');
     const statusFilters = shallowRef<FileStatus[]>([]);
     const focusedFile = shallowRef<string | null>(null);
-    const selected = shallowRef(ws().files[0]?.filename || '');
+    const selected = shallowRef(sortFiles(ws().files)[0]?.filename || '');
     watch(
       () => ws().files,
-      value => (selected.value ||= value[0]?.filename || ''),
+      value => (selected.value ||= sortFiles(value)[0]?.filename || ''),
     );
     const collapsed = shallowRef<Set<string>>(new Set());
     const rangeViewed = shallowRef<Set<string>>(new Set());
@@ -1217,7 +1217,9 @@ export default defineComponent(
     );
     const displayFiles = computed(() => comparison.value?.files || ws().files);
     const files = computed(() =>
-      filterFiles(displayFiles.value, { filename: filenameQuery.value, content: contentQuery.value, statuses: statusFilters.value }),
+      sortFiles(
+        filterFiles(displayFiles.value, { filename: filenameQuery.value, content: contentQuery.value, statuses: statusFilters.value }),
+      ),
     );
     const visibleFiles = computed(() => files.value.filter(file => !focusedFile.value || file.filename === focusedFile.value));
     function clearFilters() {

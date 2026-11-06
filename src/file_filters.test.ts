@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { fileStatus, fileStatuses, filterFiles, toggleFileStatus, type FileStatus } from './file_filters.ts';
+import { fileStatus, fileStatuses, filterFiles, sortFiles, toggleFileStatus, type FileStatus } from './file_filters.ts';
 import type { ChangedFile } from './github.ts';
 
 const files: ChangedFile[] = [
@@ -80,6 +80,40 @@ describe('Git status file filters', () => {
     assert.deepEqual(toggleFileStatus(selected, 'deleted', true), ['deleted']);
     assert.deepEqual(toggleFileStatus([], 'renamed', true), ['renamed']);
     assert.deepEqual(selected, ['added', 'modified']);
+  });
+
+  it('orders files by raw path so the diff matches the sidebar tree', () => {
+    const changed: ChangedFile[] = [
+      { filename: 'java/Foo/generic_node_dispatcher/BUILD.bazel', status: 'modified', additions: 0, deletions: 0, changes: 0 },
+      { filename: 'java/Foo/GenericCrawlNode.java', status: 'modified', additions: 0, deletions: 0, changes: 0 },
+      { filename: 'java/Foo/HttpFetcherRawResponse.java', status: 'modified', additions: 0, deletions: 0, changes: 0 },
+      { filename: 'java/Foo/HttpFetchOrchestrator.java', status: 'modified', additions: 0, deletions: 0, changes: 0 },
+      { filename: 'java/Foo/result_test.go', status: 'modified', additions: 0, deletions: 0, changes: 0 },
+      { filename: 'java/Foo/result.go', status: 'modified', additions: 0, deletions: 0, changes: 0 },
+    ];
+    const sorted = sortFiles(changed);
+    assert.deepEqual(
+      sorted.map(file => file.filename),
+      [
+        'java/Foo/GenericCrawlNode.java',
+        'java/Foo/HttpFetchOrchestrator.java',
+        'java/Foo/HttpFetcherRawResponse.java',
+        'java/Foo/generic_node_dispatcher/BUILD.bazel',
+        'java/Foo/result.go',
+        'java/Foo/result_test.go',
+      ],
+    );
+    assert.deepEqual(
+      changed.map(file => file.filename),
+      [
+        'java/Foo/generic_node_dispatcher/BUILD.bazel',
+        'java/Foo/GenericCrawlNode.java',
+        'java/Foo/HttpFetcherRawResponse.java',
+        'java/Foo/HttpFetchOrchestrator.java',
+        'java/Foo/result_test.go',
+        'java/Foo/result.go',
+      ],
+    );
   });
 
   it('preserves file identity and diff metadata, and restores all files after empty results are cleared', () => {

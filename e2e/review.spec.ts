@@ -1091,9 +1091,9 @@ test.describe('keyboard shortcuts', () => {
     }
     const expanded = (path: string) => card(page, path).locator('button[aria-expanded]').first();
     for (const [move, key, path] of [
-      ['j', 'v', 'src/api/Handler.java'],
-      ['j', 'x', 'docs/guide.md'],
-      ['k', 'x', 'src/api/Handler.java'],
+      ['j', 'v', 'docs/guide.md'],
+      ['j', 'x', 'scripts/tool.unknownext'],
+      ['k', 'x', 'docs/guide.md'],
     ]) {
       await page.keyboard.press(move);
       await page.keyboard.press(key);
@@ -1320,7 +1320,7 @@ test.describe('sequence shortcuts', () => {
   test('mod arrows move between files and mod enter marks viewed', async ({ page }) => {
     await page.keyboard.press('ControlOrMeta+ArrowDown');
     await page.keyboard.press('ControlOrMeta+Enter');
-    await expect(card(page, 'src/api/Handler.java').locator('button[aria-expanded]').first()).toHaveAttribute('aria-expanded', 'false');
+    await expect(card(page, 'docs/guide.md').locator('button[aria-expanded]').first()).toHaveAttribute('aria-expanded', 'false');
   });
 
   test('g then i returns to the inbox', async ({ page }) => {

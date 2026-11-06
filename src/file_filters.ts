@@ -28,6 +28,13 @@ export function toggleFileStatus(selected: readonly FileStatus[], status: FileSt
   return selected.includes(status) ? selected.filter(value => value !== status) : [...selected, status];
 }
 
+// GitHub orders files by raw path, so match it in both the diff and the sidebar tree.
+export const compareFilenames = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+export function sortFiles(files: ChangedFile[]): ChangedFile[] {
+  return [...files].sort((a, b) => compareFilenames(a.filename, b.filename));
+}
+
 export function filterFiles(
   files: ChangedFile[],
   filters: { filename?: string; content?: string; statuses?: readonly FileStatus[] },

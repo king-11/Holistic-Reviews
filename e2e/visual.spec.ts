@@ -56,13 +56,14 @@ for (const theme of ['paper', 'pierre-light', 'solarized-light'] as const) {
 
     test('inline composer and gutter plus', async ({ page }) => {
       await openPR(page);
-      const gutter = page.locator('article').first().locator('[data-column-number="11"]').first();
+      const worker = page.locator('article').filter({ has: page.getByRole('button', { name: 'src/worker.py', exact: true }) });
+      const gutter = worker.locator('[data-column-number="11"]').first();
       await gutter.click();
       const composer = page.getByRole('textbox', { name: /^Comment on / });
       await composer.waitFor();
       await settle(page);
       await composer.evaluate(element => element.scrollIntoView({ block: 'center' }));
-      await page.locator('article').first().locator('[data-column-number="12"]').first().hover();
+      await worker.locator('[data-column-number="12"]').first().hover();
       await expect(page).toHaveScreenshot(`composer-${theme}.png`);
     });
 

@@ -5,7 +5,7 @@ import { unrefElement } from '@vueuse/core';
 import { Check, ChevronRight, ChevronsDownUp, Eye, EyeClosed, Folder, FolderOpen, ListFilter, PanelLeftClose, X } from '@lucide/vue';
 import type { ChangedFile } from './github';
 import { IconButton, Loader, SearchField, useWidth, Dismiss } from './ui';
-import { fileStatus, fileStatuses, toggleFileStatus, type FileStatus } from './file_filters';
+import { compareFilenames, fileStatus, fileStatuses, toggleFileStatus, type FileStatus } from './file_filters';
 import FileIcon from './FileIcon';
 import styles from './FileTree.module.css';
 
@@ -40,7 +40,7 @@ function buildTree(files: ChangedFile[]): TreeNode[] {
         }
         return { ...node, children: compact(node.children) };
       })
-      .sort((a, b) => Number(!!a.file) - Number(!!b.file) || a.name.localeCompare(b.name));
+      .sort((a, b) => compareFilenames(a.path, b.path));
   }
   return compact(root.children);
 }
