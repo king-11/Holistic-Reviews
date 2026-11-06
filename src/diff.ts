@@ -75,8 +75,10 @@ export function threadsForComments(comments: Comment[]) {
     groups.set(id, [...(groups.get(id) || []), comment]);
   }
   return [...groups.entries()].map(([id, items]) => {
-    const root = items.find(comment => comment.id === id) || items[0];
-    return { root, comments: [root, ...items.filter(comment => comment !== root)] };
+    // Pending comments are merged in ahead of published ones, so order each thread by creation time.
+    const ordered = [...items].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+    const root = ordered.find(comment => comment.id === id) || ordered[0];
+    return { root, comments: [root, ...ordered.filter(comment => comment !== root)] };
   });
 }
 

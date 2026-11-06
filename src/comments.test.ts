@@ -158,6 +158,13 @@ describe('comment panel and bot visibility', () => {
     assert.deepEqual(visibleThreads([root], true), []);
     assert.deepEqual(visibleThreads([root, reply], false), [{ root, comments: [root, reply] }]);
   });
+  it('keeps a thread in chronological order when a pending reply is merged in first', () => {
+    const root = comment(1, person);
+    const reply = { ...comment(2, person, null), in_reply_to_id: 1 };
+    const pending = { ...comment(3, person, null), in_reply_to_id: 1 };
+    assert.deepEqual(visibleThreads([pending, reply, root], false), [{ root, comments: [root, reply, pending] }]);
+    assert.deepEqual(visibleThreads([pending, root, reply], false), [{ root, comments: [root, reply, pending] }]);
+  });
   it('includes inline, off-patch, missing-file and conversation entries without inventing resolution', () => {
     const inline = [
       comment(1, bot),
